@@ -1,0 +1,10 @@
+.superpowers/
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+/data/media/
