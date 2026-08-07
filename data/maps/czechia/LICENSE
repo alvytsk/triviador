@@ -1,0 +1,6 @@
+Topology (map.json) is hand-authored from public administrative boundaries and
+is released under CC0.
+
+map.svg is NOT yet present. Before Plan 4, source an SVG of the Czech regions
+whose path ids match the region ids above, record its licence here, and verify
+the terms permit redistribution.
