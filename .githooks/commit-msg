@@ -1,0 +1,17 @@
+#!/bin/sh
+# Strip Co-Authored-By trailers from commit messages, then drop any blank
+# lines they left at the end. Runs on `git commit` and `git commit --amend`.
+#
+# To keep human co-authors and only drop the AI ones, narrow the pattern to:
+#   /^[Cc]o-[Aa]uthored-[Bb]y:.*@anthropic\.com>[[:space:]]*$/d
+
+msg_file="$1"
+tmp_file="$msg_file.coauthor.tmp"
+
+sed '/^[Cc]o-[Aa]uthored-[Bb]y:[[:space:]]/d' "$msg_file" |
+awk '
+  { lines[NR] = $0; if ($0 ~ /[^[:space:]]/) last = NR }
+  END { for (i = 1; i <= last; i++) print lines[i] }
+' > "$tmp_file" || exit 1
+
+mv "$tmp_file" "$msg_file"
