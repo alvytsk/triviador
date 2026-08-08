@@ -78,3 +78,25 @@ def test_covers_compares_against_a_budget() -> None:
 
 def test_correct_choice_index_is_derived() -> None:
     assert a_mc(1).correct_choice_index() == 0
+
+
+def test_correct_choice_index_raises_when_no_choice_is_correct() -> None:
+    mc_with_no_correct = QuestionSnapshot(
+        question_id=QuestionId("m_bad"),
+        version=1,
+        kind=QuestionKind.MULTIPLE_CHOICE,
+        prompt="mc bad?",
+        category=CATEGORY,
+        difficulty=Difficulty.EASY,
+        choices=(
+            ChoiceSnapshot(0, "a", is_correct=False, media_asset_id=None),
+            ChoiceSnapshot(1, "b", is_correct=False, media_asset_id=None),
+            ChoiceSnapshot(2, "c", is_correct=False, media_asset_id=None),
+            ChoiceSnapshot(3, "d", is_correct=False, media_asset_id=None),
+        ),
+        numeric_answer=None,
+        unit=None,
+        media_asset_id=None,
+    )
+    with pytest.raises(ValueError, match="has no correct choice"):
+        mc_with_no_correct.correct_choice_index()

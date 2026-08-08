@@ -54,7 +54,10 @@ class QuestionSnapshot:
     def correct_choice_index(self) -> int:
         if self.choices is None:
             raise ValueError(f"question {self.question_id!r} has no choices")
-        return next(c.idx for c in self.choices if c.is_correct)
+        index = next((c.idx for c in self.choices if c.is_correct), None)
+        if index is None:
+            raise ValueError(f"question {self.question_id!r} has no correct choice")
+        return index
 
 
 @dataclass(frozen=True)
