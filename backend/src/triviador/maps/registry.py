@@ -34,13 +34,17 @@ class MapRegistry:
         except json.JSONDecodeError as exc:
             raise InvalidMapError(f"map {map_id!r}: malformed JSON — {exc}") from exc
 
-        defn = MapDefinition(
-            map_id=MapId(raw["map_id"]),
-            regions=tuple(Region(RegionId(r["id"]), r["name"]) for r in raw["regions"]),
-            adjacency={
-                RegionId(k): frozenset(RegionId(n) for n in v) for k, v in raw["adjacency"].items()
-            },
-        )
+        try:
+            defn = MapDefinition(
+                map_id=MapId(raw["map_id"]),
+                regions=tuple(Region(RegionId(r["id"]), r["name"]) for r in raw["regions"]),
+                adjacency={
+                    RegionId(k): frozenset(RegionId(n) for n in v)
+                    for k, v in raw["adjacency"].items()
+                },
+            )
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise InvalidMapError(f"map {map_id!r}: structurally invalid — {exc}") from exc
 
         problems = validate_map(defn)
         if problems:

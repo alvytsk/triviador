@@ -36,6 +36,22 @@ def test_invalid_map_raises_with_problems(tmp_path: Path) -> None:
     assert "asymmetric" in str(excinfo.value)
 
 
+def test_structurally_invalid_map_raises(tmp_path: Path) -> None:
+    broken = tmp_path / "malformed"
+    broken.mkdir()
+    (broken / "map.json").write_text(
+        json.dumps(
+            {
+                "map_id": "malformed",
+                "regions": [{"id": "a"}],  # missing "name" key
+                "adjacency": {"a": []},
+            }
+        )
+    )
+    with pytest.raises(InvalidMapError):
+        MapRegistry(tmp_path).load(MapId("malformed"))
+
+
 def test_unknown_map_raises(tmp_path: Path) -> None:
     with pytest.raises(InvalidMapError):
         MapRegistry(tmp_path).load(MapId("nope"))
