@@ -9,6 +9,7 @@ Replay is therefore fold(evolve, events) and needs no context at all.
 
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
+from datetime import timedelta
 
 from triviador.domain.game import events as ev
 from triviador.domain.game.actions import (
@@ -26,18 +27,27 @@ from triviador.domain.game.actions import (
     SubmitAnswer,
     Surrender,
 )
+from triviador.domain.game.rules import required_question_budget
 from triviador.domain.game.state import (
     TERMINAL_PHASES,
+    AcquisitionKind,
     BattleDuel,
     BattleTargetSelect,
     BattleTiebreak,
+    Deadline,
+    DeadlineKind,
     ExpansionPicking,
     ExpansionQuestion,
     FinalTiebreak,
     GameState,
     NeutralChallenge,
+    Phase,
+    PlayerState,
+    Territory,
+    TerritoryKind,
     Turn,
 )
+from triviador.domain.questions.types import QuestionSnapshot
 
 # Which commands are legal for which turn variant. `None` means "no open turn",
 # which in a non-terminal phase can only be LOBBY.
@@ -96,7 +106,68 @@ def decide(state: GameState, command: Command, ctx: DecisionContext) -> tuple[ev
 
 
 def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
-    raise NotImplementedError("filled in by later tasks")
+    match command:
+        case JoinGame():
+            return _decide_join(state, command)
+        case StartGame():
+            return _decide_start(state, ctx)
+    raise NotImplementedError(f"no handler for {type(command).__name__}")
+
+
+def _decide_join(state: GameState, command: JoinGame) -> tuple[ev.GameEvent, ...]:
+    if command.actor_id in state.players:
+        raise RejectedCommand(RejectCode.ALREADY_JOINED, f"{command.actor_id!r} already joined")
+    if len(state.players) >= state.rules.player_count:
+        raise RejectedCommand(RejectCode.GAME_FULL, "lobby is full")
+    return (ev.PlayerJoined(command.actor_id, command.display_name, seat=len(state.players)),)
+
+
+def _decide_start(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
+    if len(state.players) != state.rules.player_count:
+        raise RejectedCommand(
+            RejectCode.NOT_ENOUGH_PLAYERS,
+            f"need {state.rules.player_count} players, have {len(state.players)}",
+        )
+
+    pool = ctx.drawn_pool
+    if pool is None or not pool.covers(required_question_budget(state.rules)):
+        raise RejectedCommand(
+            RejectCode.QUESTION_POOL_INSUFFICIENT, "question bank cannot cover this preset"
+        )
+
+    order = ctx.shuffled_player_ids
+    bases = ctx.base_regions
+    if order is None or bases is None or len(bases) != len(order):
+        raise RejectedCommand(RejectCode.WRONG_TURN_STATE, "start context is incomplete")
+
+    assignments = dict(zip(order, bases, strict=True))
+    events: list[ev.GameEvent] = [ev.GameStarted(order), ev.BasesAssigned(assignments)]
+    for player_id in order:
+        events.append(
+            ev.ScoreChanged(
+                player_id, state.rules.pts_base, ev.ScoreReason.BASE, new_total=state.rules.pts_base
+            )
+        )
+    events.append(ev.QuestionPoolDrawn(pool))
+
+    # Fold what we have so the question window is opened against real state.
+    seeded = fold(state, events)
+    events.append(ev.ExpansionRoundStarted(1))
+    seeded = evolve(seeded, events[-1])
+    question_events, _ = _open_expansion_question(seeded, ctx)
+    events.extend(question_events)
+    return tuple(events)
+
+
+def _open_expansion_question(
+    state: GameState, ctx: DecisionContext
+) -> tuple[tuple[ev.GameEvent, ...], GameState]:
+    question, _ = state.pool.next_numeric()
+    deadline, _ = state.allocate_deadline(
+        DeadlineKind.ANSWER, ctx.now + timedelta(milliseconds=state.rules.answer_timeout_ms)
+    )
+    event = ev.QuestionPresented(question, deadline)
+    return (event,), evolve(state, event)
 
 
 def evolve(state: GameState, event: ev.GameEvent) -> GameState:
@@ -105,7 +176,72 @@ def evolve(state: GameState, event: ev.GameEvent) -> GameState:
 
 
 def _apply(state: GameState, event: ev.GameEvent) -> GameState:
-    raise NotImplementedError("filled in by later tasks")
+    match event:
+        case ev.PlayerJoined(player_id=pid, display_name=name, seat=seat):
+            player = PlayerState(
+                pid, name, seat, score=0, bonus_score=0, base_region=None, is_eliminated=False
+            )
+            return replace(
+                state,
+                players={**state.players, pid: player},
+                turn_order=(*state.turn_order, pid),
+            )
+
+        case ev.GameStarted(turn_order=order):
+            return replace(state, turn_order=order, phase=Phase.EXPANSION)
+
+        case ev.BasesAssigned(assignments=assignments):
+            territories = dict(state.territories)
+            players = dict(state.players)
+            for player_id, region_id in assignments.items():
+                territories[region_id] = Territory(
+                    region_id=region_id,
+                    owner_id=player_id,
+                    kind=TerritoryKind.BASE,
+                    base_owner_id=player_id,
+                    base_hp=state.rules.base_hp,
+                    acquisition=AcquisitionKind.BASE,
+                )
+                players[player_id] = replace(players[player_id], base_region=region_id)
+            return replace(state, territories=territories, players=players)
+
+        case ev.ScoreChanged(player_id=pid, reason=reason, delta=delta, new_total=total):
+            player = state.players[pid]
+            bonus = player.bonus_score
+            if reason in (ev.ScoreReason.DEFENSE, ev.ScoreReason.BONUS):
+                bonus += delta
+            return replace(
+                state,
+                players={**state.players, pid: replace(player, score=total, bonus_score=bonus)},
+            )
+
+        case ev.QuestionPoolDrawn(pool=pool):
+            return replace(state, pool=pool)
+
+        case ev.ExpansionRoundStarted(round_no=round_no):
+            return replace(state, phase=Phase.EXPANSION, round_no=round_no, turn=None)
+
+        case ev.QuestionPresented(question=question, deadline=deadline):
+            return _present_question(state, question, deadline)
+
+    raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
+
+
+def _present_question(
+    state: GameState, question: QuestionSnapshot, deadline: Deadline
+) -> GameState:
+    """Open a question window on whatever turn shape the phase calls for."""
+    from triviador.domain.questions.types import QuestionKind
+
+    if question.kind is QuestionKind.NUMERIC:
+        _, pool = state.pool.next_numeric()
+    else:
+        _, pool = state.pool.next_multiple_choice()
+    base = replace(state, pool=pool, next_deadline_id=max(state.next_deadline_id, deadline.id + 1))
+
+    if state.phase is Phase.EXPANSION:
+        return replace(base, turn=ExpansionQuestion(deadline, question, answers={}))
+    raise NotImplementedError("battle question windows arrive in Task 15")
 
 
 def fold(state: GameState, events: Iterable[ev.GameEvent]) -> GameState:
