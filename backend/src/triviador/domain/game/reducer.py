@@ -29,7 +29,7 @@ from triviador.domain.game.actions import (
     Surrender,
 )
 from triviador.domain.game.rules import required_question_budget
-from triviador.domain.game.scoring import expected_score
+from triviador.domain.game.scoring import expected_score, holding_value
 from triviador.domain.game.state import (
     TERMINAL_PHASES,
     AcquisitionKind,
@@ -133,6 +133,14 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_neutral_answer(state, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, NeutralChallenge):
             return _close_neutral_challenge(state, state.turn, ctx)
+        case SubmitAnswer() if isinstance(state.turn, BattleDuel):
+            return _decide_duel_answer(state, state.turn, command, ctx)
+        case ExpireDeadline() if isinstance(state.turn, BattleDuel):
+            return _close_duel(state, state.turn, ctx)
+        case SubmitAnswer() if isinstance(state.turn, BattleTiebreak):
+            return _decide_tiebreak_answer(state, state.turn, command, ctx)
+        case ExpireDeadline() if isinstance(state.turn, BattleTiebreak):
+            return _close_tiebreak(state, state.turn, ctx)
     raise NotImplementedError(f"no handler for {type(command).__name__}")
 
 
@@ -268,7 +276,16 @@ def _rank_numeric(
 ) -> tuple[PlayerId, ...]:
     correct = turn.question.numeric_answer
     assert correct is not None
-    contenders = turn.contenders if isinstance(turn, FinalTiebreak) else state.active_players()
+    # A BattleTiebreak ranks only the two combatants: everyone else is a
+    # bystander whose guess must never veto a capture the attacker or
+    # defender legitimately won or lost.
+    contenders = (
+        (turn.attacker_id, turn.defender_id)
+        if isinstance(turn, BattleTiebreak)
+        else turn.contenders
+        if isinstance(turn, FinalTiebreak)
+        else state.active_players()
+    )
 
     def key(player_id: PlayerId) -> tuple[int, Decimal, int, int]:
         submitted = turn.answers.get(player_id)
@@ -460,6 +477,174 @@ def _close_neutral_challenge(
     return (*head, captured, score, *_next_battle_turn(after, ctx))
 
 
+def _decide_duel_answer(
+    state: GameState, turn: BattleDuel, command: SubmitAnswer, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    if command.actor_id not in (turn.attacker_id, turn.defender_id):
+        raise RejectedCommand(
+            RejectCode.NOT_YOUR_TURN, f"{command.actor_id!r} is not part of this duel"
+        )
+    recorded = _record_answer(turn, command)
+    if recorded is None:
+        return ()
+    after = evolve(state, recorded)
+    assert isinstance(after.turn, BattleDuel)
+    if len(after.turn.answers) < 2:
+        return (recorded,)
+    return (recorded, *_close_duel(after, after.turn, ctx))
+
+
+def _close_duel(
+    state: GameState, turn: BattleDuel, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    correct_idx = turn.question.correct_choice_index()
+
+    def is_right(player_id: PlayerId) -> bool:
+        submitted = turn.answers.get(player_id)
+        return (
+            submitted is not None
+            and isinstance(submitted.value, ChoiceAnswer)
+            and submitted.value.idx == correct_idx
+        )
+
+    attacker_right, defender_right = is_right(turn.attacker_id), is_right(turn.defender_id)
+    correct = tuple(p for p in (turn.attacker_id, turn.defender_id) if is_right(p))
+    resolved = ev.QuestionResolved(correct_idx, None, (turn.attacker_id, turn.defender_id), correct)
+    head: tuple[ev.GameEvent, ...] = (ev.AnswerWindowClosed(turn.deadline), resolved)
+
+    if attacker_right and defender_right:
+        started = ev.TiebreakStarted(turn.region_id)
+        after = evolve(state, started)
+        question, _ = after.pool.next_numeric()
+        deadline, _ = after.allocate_deadline(
+            DeadlineKind.ANSWER, ctx.now + timedelta(milliseconds=after.rules.answer_timeout_ms)
+        )
+        return (*head, started, ev.QuestionPresented(question, deadline))
+
+    if attacker_right:
+        won = ev.DuelResolved(turn.attacker_id)
+        after = evolve(state, won)
+        return (
+            *head,
+            won,
+            *_resolve_capture(after, turn.attacker_id, turn.defender_id, turn.region_id, ctx),
+        )
+
+    if defender_right:
+        won = ev.DuelResolved(turn.defender_id)
+        held = ev.DefenseHeld(turn.region_id, turn.defender_id)
+        after = fold(state, (won, held))
+        score = ev.ScoreChanged(
+            turn.defender_id,
+            state.rules.pts_defense,
+            ev.ScoreReason.DEFENSE,
+            new_total=expected_score(after, turn.defender_id) + state.rules.pts_defense,
+        )
+        after = evolve(after, score)
+        return (*head, won, held, score, *_next_battle_turn(after, ctx))
+
+    nobody = ev.DuelResolved(None)
+    return (*head, nobody, *_next_battle_turn(evolve(state, nobody), ctx))
+
+
+def _decide_tiebreak_answer(
+    state: GameState, turn: BattleTiebreak, command: SubmitAnswer, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    if command.actor_id not in (turn.attacker_id, turn.defender_id):
+        raise RejectedCommand(
+            RejectCode.NOT_YOUR_TURN, f"{command.actor_id!r} is not part of this tiebreak"
+        )
+    recorded = _record_answer(turn, command)
+    if recorded is None:
+        return ()
+    after = evolve(state, recorded)
+    assert isinstance(after.turn, BattleTiebreak)
+    if len(after.turn.answers) < 2:
+        return (recorded,)
+    return (recorded, *_close_tiebreak(after, after.turn, ctx))
+
+
+def _close_tiebreak(
+    state: GameState, turn: BattleTiebreak, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    ranking = _rank_numeric(turn, state)
+    resolved = ev.QuestionResolved(
+        correct_choice_index=None,
+        correct_value=turn.question.numeric_answer,
+        ranking=ranking,
+        correct_players=(),
+    )
+    head: tuple[ev.GameEvent, ...] = (ev.AnswerWindowClosed(turn.deadline), resolved)
+
+    # The attacker wins only if they rank strictly first AND actually
+    # answered — under mutual silence everyone ties and sorts by seat, which
+    # would otherwise hand the attacker the region for free.
+    attacker_wins = turn.attacker_id in turn.answers and ranking[0] == turn.attacker_id
+
+    if attacker_wins:
+        won = ev.DuelResolved(turn.attacker_id)
+        after = evolve(state, won)
+        return (
+            *head,
+            won,
+            *_resolve_capture(after, turn.attacker_id, turn.defender_id, turn.region_id, ctx),
+        )
+
+    won = ev.DuelResolved(turn.defender_id)
+    held = ev.DefenseHeld(turn.region_id, turn.defender_id)
+    after = fold(state, (won, held))
+    score = ev.ScoreChanged(
+        turn.defender_id,
+        state.rules.pts_defense,
+        ev.ScoreReason.DEFENSE,
+        new_total=expected_score(after, turn.defender_id) + state.rules.pts_defense,
+    )
+    after = evolve(after, score)
+    return (*head, won, held, score, *_next_battle_turn(after, ctx))
+
+
+def _resolve_capture(
+    state: GameState,
+    attacker_id: PlayerId,
+    defender_id: PlayerId,
+    region_id: RegionId,
+    ctx: DecisionContext,
+) -> tuple[ev.GameEvent, ...]:
+    """A duel or tiebreak the attacker won, resolved into a capture.
+
+    Only the non-base branch is implemented here: an ordinary or claimed
+    region simply changes hands. Capturing a BASE region — damaging or
+    destroying it, eliminating its owner, and neutralizing whatever
+    territory they have left — is Task 17's `_Emitter`/`_eliminate`
+    machinery, which replaces this whole function. Task 16's fixtures never
+    give a player a BASE-kind region to defend (`battle_state()` uses
+    `own()`, which defaults every territory to `AcquisitionKind.CLAIMED`),
+    so that branch is unreachable in this task's suite; it fails loudly
+    rather than silently doing the wrong thing if it's ever hit early.
+    """
+    territory = state.territories[region_id]
+    if territory.kind is TerritoryKind.BASE:
+        raise NotImplementedError("base capture arrives in Task 17")
+
+    captured = ev.TerritoryCaptured(region_id, defender_id, attacker_id, AcquisitionKind.CONQUEST)
+    after = evolve(state, captured)
+    gain = ev.ScoreChanged(
+        attacker_id,
+        state.rules.pts_conquered,
+        ev.ScoreReason.CONQUEST,
+        new_total=expected_score(after, attacker_id),
+    )
+    after = evolve(after, gain)
+    loss = ev.ScoreChanged(
+        defender_id,
+        -holding_value(territory, state.rules),
+        ev.ScoreReason.TERRITORY_LOST,
+        new_total=expected_score(after, defender_id),
+    )
+    after = evolve(after, loss)
+    return (captured, gain, loss, *_next_battle_turn(after, ctx))
+
+
 def _next_battle_turn(
     state: GameState, ctx: DecisionContext, skipped_in_chain: frozenset[PlayerId] = frozenset()
 ) -> tuple[ev.GameEvent, ...]:
@@ -610,6 +795,31 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
         case ev.NeutralAttackFailed():
             return replace(state, turn=None)
 
+        case ev.DuelResolved():
+            # Win, loss, or draw, the duel/tiebreak window is over. Whatever
+            # comes next (a capture, a held defense, or nothing) starts from
+            # a clean slate — `_next_battle_turn` seeing `turn=None` here is
+            # exactly why it returns `()` on every path through `_close_duel`
+            # and `_close_tiebreak`; opening the next attacker's turn is
+            # Task 18's job.
+            return replace(state, turn=None)
+
+        case ev.DefenseHeld():
+            # The territory already belongs to the defender; nothing about
+            # ownership changes. `DuelResolved` already cleared `turn`.
+            return state
+
+        case ev.TiebreakStarted():
+            # `turn` is left as the just-resolved `BattleDuel` — attacker_id,
+            # defender_id and region_id are read back off it by
+            # `_present_question` when the numeric question that follows
+            # reshapes `turn` into a `BattleTiebreak`.
+            return state
+
+        case ev.TerritoryCaptured(region_id=rid, to_player_id=pid, acquisition=acq):
+            territory = replace(state.territories[rid], owner_id=pid, acquisition=acq)
+            return replace(state, territories={**state.territories, rid: territory})
+
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
 
 
@@ -629,22 +839,39 @@ def _present_question(
         return replace(base, turn=ExpansionQuestion(deadline, question, answers={}))
     if state.phase is Phase.BATTLE:
         attack = state.pending_attack
-        assert attack is not None, "battle question window opened without a declared attack"
         turn: Turn
-        if attack.defender_id is not None:
-            turn = BattleDuel(
-                deadline,
-                attack.attacker_id,
-                attack.defender_id,
-                attack.region_id,
-                question,
-                answers={},
-            )
-        else:
-            turn = NeutralChallenge(
-                deadline, attack.attacker_id, attack.region_id, question, answers={}
-            )
-        return replace(base, turn=turn, pending_attack=None)
+        if attack is not None:
+            if attack.defender_id is not None:
+                turn = BattleDuel(
+                    deadline,
+                    attack.attacker_id,
+                    attack.defender_id,
+                    attack.region_id,
+                    question,
+                    answers={},
+                )
+            else:
+                turn = NeutralChallenge(
+                    deadline, attack.attacker_id, attack.region_id, question, answers={}
+                )
+            return replace(base, turn=turn, pending_attack=None)
+        # No pending attack: this question window continues a duel that just
+        # tied, reshaping `turn` from the resolved `BattleDuel` (or a chained
+        # `BattleTiebreak`, on another tie) into a fresh numeric tiebreak that
+        # only the two original combatants play.
+        current = state.turn
+        assert isinstance(current, BattleDuel | BattleTiebreak), (
+            "battle question window opened without a declared attack or a pending tiebreak"
+        )
+        turn = BattleTiebreak(
+            deadline,
+            current.attacker_id,
+            current.defender_id,
+            current.region_id,
+            question,
+            answers={},
+        )
+        return replace(base, turn=turn)
     raise NotImplementedError(f"no question window shape for phase {state.phase}")
 
 
