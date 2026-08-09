@@ -29,6 +29,7 @@ from triviador.domain.game.actions import (
     Surrender,
 )
 from triviador.domain.game.rules import required_question_budget
+from triviador.domain.game.scoring import expected_score
 from triviador.domain.game.state import (
     TERMINAL_PHASES,
     AcquisitionKind,
@@ -50,7 +51,7 @@ from triviador.domain.game.state import (
     TerritoryKind,
     Turn,
 )
-from triviador.domain.ids import PlayerId
+from triviador.domain.ids import PlayerId, RegionId
 from triviador.domain.questions.types import QuestionKind, QuestionSnapshot
 
 # Which commands are legal for which turn variant. `None` means "no open turn",
@@ -119,6 +120,10 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_expansion_answer(state, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, ExpansionQuestion):
             return _close_expansion_question(state, state.turn, ctx)
+        case PickRegion() if isinstance(state.turn, ExpansionPicking):
+            return _decide_pick(state, state.turn, command, ctx)
+        case ExpireDeadline() if isinstance(state.turn, ExpansionPicking):
+            return _decide_auto_pick(state, state.turn, ctx)
     raise NotImplementedError(f"no handler for {type(command).__name__}")
 
 
@@ -266,8 +271,89 @@ def _rank_numeric(
     return tuple(sorted(contenders, key=key))
 
 
+def _decide_pick(
+    state: GameState, turn: ExpansionPicking, command: PickRegion, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    if command.actor_id != turn.current_picker:
+        raise RejectedCommand(RejectCode.NOT_YOUR_TURN, f"{turn.current_picker!r} is picking")
+    if command.region_id not in state.territories:
+        raise RejectedCommand(RejectCode.UNKNOWN_REGION, f"{command.region_id!r} is not on the map")
+    if state.territories[command.region_id].owner_id is not None:
+        raise RejectedCommand(RejectCode.REGION_NOT_FREE, f"{command.region_id!r} is taken")
+    return _claim(state, turn, command.region_id, automatic=False, ctx=ctx)
+
+
+def _decide_auto_pick(
+    state: GameState, turn: ExpansionPicking, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    free = set(state.free_regions())
+    order = ctx.shuffled_region_ids or state.free_regions()
+    region_id = next((r for r in order if r in free), None)
+    if region_id is None:
+        return _advance_expansion(state, ctx)
+    return _claim(state, turn, region_id, automatic=True, ctx=ctx)
+
+
+def _claim(
+    state: GameState,
+    turn: ExpansionPicking,
+    region_id: RegionId,
+    *,
+    automatic: bool,
+    ctx: DecisionContext,
+) -> tuple[ev.GameEvent, ...]:
+    picker = turn.current_picker
+    claimed = ev.TerritoryClaimed(picker, region_id, AcquisitionKind.CLAIMED, automatic)
+    after = evolve(state, claimed)
+    score = ev.ScoreChanged(
+        picker,
+        state.rules.pts_territory,
+        ev.ScoreReason.TERRITORY,
+        new_total=expected_score(after, picker),
+    )
+    after = evolve(after, score)
+
+    remaining = {**turn.grants_remaining, picker: turn.grants_remaining[picker] - 1}
+    next_picker = _next_picker(turn.pick_order, remaining, after)
+    if next_picker is None:
+        return (claimed, score, *_advance_expansion(after, ctx))
+
+    deadline, _ = after.allocate_deadline(
+        DeadlineKind.PICK, ctx.now + timedelta(milliseconds=after.rules.pick_timeout_ms)
+    )
+    return (claimed, score, ev.PicksGranted(turn.pick_order, remaining, deadline))
+
+
+def _next_picker(
+    order: tuple[PlayerId, ...], remaining: Mapping[PlayerId, int], state: GameState
+) -> PlayerId | None:
+    if not state.free_regions():
+        return None
+    return next((p for p in order if remaining.get(p, 0) > 0), None)
+
+
 def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
-    raise NotImplementedError("completed in Task 13")
+    done = ev.ExpansionRoundCompleted(state.round_no)
+    after = evolve(state, done)
+    rounds_left = after.round_no < after.rules.expansion_rounds
+    if rounds_left and after.free_regions():
+        started = ev.ExpansionRoundStarted(after.round_no + 1)
+        after = evolve(after, started)
+        question, _ = _open_expansion_question(after, ctx)
+        return (done, started, *question)
+    battle = ev.BattleRoundStarted(1)
+    after = evolve(after, battle)
+    return (done, battle, *_open_battle_turn(after, after.active_players()[0], ctx))
+
+
+def _open_battle_turn(
+    state: GameState, attacker_id: PlayerId, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    deadline, _ = state.allocate_deadline(
+        DeadlineKind.TARGET_SELECT,
+        ctx.now + timedelta(milliseconds=state.rules.answer_timeout_ms),
+    )
+    return (ev.TurnStarted(attacker_id, deadline),)
 
 
 def evolve(state: GameState, event: ev.GameEvent) -> GameState:
@@ -339,10 +425,33 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
             return state
 
         case ev.PicksGranted(pick_order=order, grants=grants, deadline=deadline):
+            # `order` is the round's fixed rank order; the picker due next is
+            # the earliest-ranked player who still has a grant. Re-grants
+            # (Task 13) reuse this same event/branch mid-round, once some
+            # entries in `order` are already exhausted, so this cannot simply
+            # take `order[0]`.
+            current_picker = next(p for p in order if grants.get(p, 0) > 0)
             return replace(
                 state,
                 next_deadline_id=max(state.next_deadline_id, deadline.id + 1),
-                turn=ExpansionPicking(deadline, order, dict(grants), order[0]),
+                turn=ExpansionPicking(deadline, order, dict(grants), current_picker),
+            )
+
+        case ev.TerritoryClaimed(player_id=pid, region_id=rid, acquisition=acq):
+            territory = replace(state.territories[rid], owner_id=pid, acquisition=acq)
+            return replace(state, territories={**state.territories, rid: territory})
+
+        case ev.ExpansionRoundCompleted():
+            return replace(state, turn=None)
+
+        case ev.BattleRoundStarted(round_no=round_no):
+            return replace(state, phase=Phase.BATTLE, round_no=round_no, turn=None)
+
+        case ev.TurnStarted(attacker_id=attacker, deadline=deadline):
+            return replace(
+                state,
+                next_deadline_id=max(state.next_deadline_id, deadline.id + 1),
+                turn=BattleTargetSelect(deadline, attacker),
             )
 
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
