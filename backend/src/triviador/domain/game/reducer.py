@@ -10,6 +10,7 @@ Replay is therefore fold(evolve, events) and needs no context at all.
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from datetime import timedelta
+from decimal import Decimal
 
 from triviador.domain.game import events as ev
 from triviador.domain.game.actions import (
@@ -41,13 +42,16 @@ from triviador.domain.game.state import (
     FinalTiebreak,
     GameState,
     NeutralChallenge,
+    NumericAnswer,
     Phase,
     PlayerState,
+    SubmittedAnswer,
     Territory,
     TerritoryKind,
     Turn,
 )
-from triviador.domain.questions.types import QuestionSnapshot
+from triviador.domain.ids import PlayerId
+from triviador.domain.questions.types import QuestionKind, QuestionSnapshot
 
 # Which commands are legal for which turn variant. `None` means "no open turn",
 # which in a non-terminal phase can only be LOBBY.
@@ -111,6 +115,10 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_join(state, command)
         case StartGame():
             return _decide_start(state, ctx)
+        case SubmitAnswer() if isinstance(state.turn, ExpansionQuestion):
+            return _decide_expansion_answer(state, command, ctx)
+        case ExpireDeadline() if isinstance(state.turn, ExpansionQuestion):
+            return _close_expansion_question(state, state.turn, ctx)
     raise NotImplementedError(f"no handler for {type(command).__name__}")
 
 
@@ -170,6 +178,98 @@ def _open_expansion_question(
     return (event,), evolve(state, event)
 
 
+def _record_answer(
+    turn: ExpansionQuestion | BattleDuel | BattleTiebreak | NeutralChallenge | FinalTiebreak,
+    command: SubmitAnswer,
+) -> ev.AnswerSubmitted | None:
+    """None means 'ignore' — an identical resubmission."""
+    existing = turn.answers.get(command.actor_id)
+    submitted = SubmittedAnswer(command.value, command.elapsed_ms)
+    if existing is not None:
+        if existing.value == submitted.value:
+            return None
+        raise RejectedCommand(
+            RejectCode.ALREADY_ANSWERED, f"{command.actor_id!r} already answered this window"
+        )
+    expected_numeric = turn.question.kind is QuestionKind.NUMERIC
+    if expected_numeric != isinstance(command.value, NumericAnswer):
+        raise RejectedCommand(
+            RejectCode.ANSWER_KIND_MISMATCH,
+            f"question is {turn.question.kind}, answer was {type(command.value).__name__}",
+        )
+    return ev.AnswerSubmitted(command.actor_id, submitted)
+
+
+def _decide_expansion_answer(
+    state: GameState, command: SubmitAnswer, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    turn = state.turn
+    assert isinstance(turn, ExpansionQuestion)
+    recorded = _record_answer(turn, command)
+    if recorded is None:
+        return ()
+    after = evolve(state, recorded)
+    assert isinstance(after.turn, ExpansionQuestion)
+    if len(after.turn.answers) < len(after.active_players()):
+        return (recorded,)
+    return (recorded, *_close_expansion_question(after, after.turn, ctx))
+
+
+def _close_expansion_question(
+    state: GameState, turn: ExpansionQuestion, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    ranking = _rank_numeric(turn, state)
+    resolved = ev.QuestionResolved(
+        correct_choice_index=None,
+        correct_value=turn.question.numeric_answer,
+        ranking=ranking,
+        correct_players=(),
+    )
+    free = len(state.free_regions())
+    grants: dict[PlayerId, int] = {}
+    for rank, player_id in enumerate(ranking):
+        want = state.rules.claims_by_rank[rank] if rank < len(state.rules.claims_by_rank) else 0
+        take = min(want, free)
+        grants[player_id] = take
+        free -= take
+    order = tuple(p for p in ranking if grants[p] > 0)
+
+    if not order:
+        return (ev.AnswerWindowClosed(turn.deadline), resolved, *_advance_expansion(state, ctx))
+
+    # decide() owns the clock, so the pick deadline is allocated here and
+    # carried on the event — evolve() never needs a timestamp of its own.
+    deadline, _ = state.allocate_deadline(
+        DeadlineKind.PICK, ctx.now + timedelta(milliseconds=state.rules.pick_timeout_ms)
+    )
+    return (
+        ev.AnswerWindowClosed(turn.deadline),
+        resolved,
+        ev.PicksGranted(order, grants, deadline),
+    )
+
+
+def _rank_numeric(
+    turn: ExpansionQuestion | BattleTiebreak | FinalTiebreak, state: GameState
+) -> tuple[PlayerId, ...]:
+    correct = turn.question.numeric_answer
+    assert correct is not None
+    contenders = turn.contenders if isinstance(turn, FinalTiebreak) else state.active_players()
+
+    def key(player_id: PlayerId) -> tuple[int, Decimal, int, int]:
+        submitted = turn.answers.get(player_id)
+        seat = state.players[player_id].seat
+        if submitted is None or not isinstance(submitted.value, NumericAnswer):
+            return (1, Decimal(0), 0, seat)
+        return (0, abs(submitted.value.value - correct), submitted.elapsed_ms, seat)
+
+    return tuple(sorted(contenders, key=key))
+
+
+def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
+    raise NotImplementedError("completed in Task 13")
+
+
 def evolve(state: GameState, event: ev.GameEvent) -> GameState:
     """Apply one event. Always advances seq; never consults anything but the event."""
     return replace(_apply(state, event), seq=state.seq + 1)
@@ -223,6 +323,27 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
 
         case ev.QuestionPresented(question=question, deadline=deadline):
             return _present_question(state, question, deadline)
+
+        case ev.AnswerSubmitted(player_id=pid, answer=submitted):
+            turn = state.turn
+            assert turn is not None and hasattr(turn, "answers")
+            return replace(
+                state,
+                turn=replace(turn, answers={**turn.answers, pid: submitted}),  # type: ignore[arg-type]
+            )
+
+        case ev.AnswerWindowClosed():
+            return state
+
+        case ev.QuestionResolved():
+            return state
+
+        case ev.PicksGranted(pick_order=order, grants=grants, deadline=deadline):
+            return replace(
+                state,
+                next_deadline_id=max(state.next_deadline_id, deadline.id + 1),
+                turn=ExpansionPicking(deadline, order, dict(grants), order[0]),
+            )
 
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
 
