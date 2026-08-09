@@ -361,11 +361,15 @@ def legal_targets(state: GameState, attacker_id: PlayerId) -> tuple[RegionId, ..
 
 
 def _open_battle_turn(
-    state: GameState, attacker_id: PlayerId, ctx: DecisionContext
+    state: GameState,
+    attacker_id: PlayerId,
+    ctx: DecisionContext,
+    skipped_in_chain: frozenset[PlayerId] = frozenset(),
 ) -> tuple[ev.GameEvent, ...]:
     if not legal_targets(state, attacker_id):
         skipped = ev.TurnSkipped(attacker_id, "no adjacent target")
-        return (skipped, *_next_battle_turn(evolve(state, skipped), ctx))
+        chain = skipped_in_chain | {attacker_id}
+        return (skipped, *_next_battle_turn(evolve(state, skipped), ctx, chain))
     deadline, _ = state.allocate_deadline(
         DeadlineKind.TARGET_SELECT,
         ctx.now + timedelta(milliseconds=state.rules.answer_timeout_ms),
@@ -402,7 +406,9 @@ def _decide_target_timeout(
     return (skipped, *_next_battle_turn(evolve(state, skipped), ctx))
 
 
-def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
+def _next_battle_turn(
+    state: GameState, ctx: DecisionContext, skipped_in_chain: frozenset[PlayerId] = frozenset()
+) -> tuple[ev.GameEvent, ...]:
     """Advance to the next attacker, the next round, or the end of the game.
 
     Only the single hop this task needs is implemented: when a target-selection
@@ -410,17 +416,28 @@ def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEv
     for the skipped attacker (`TurnSkipped` is a no-op for `evolve`), so the next
     active player in `turn_order` can be found and handed a turn via
     `_open_battle_turn`. Round completion, elimination-driven rotation, and
-    end-of-game are Task 18's job — when `_open_battle_turn`'s own "no legal
-    target" skip fires (there is no established `BattleTargetSelect` turn to read
-    an attacker from), this deliberately returns no further events rather than
-    guessing at that logic.
+    end-of-game are Task 18's job.
+
+    Because `turn.attacker_id` never advances (it is the same stale value for
+    every call in a single skip chain), `next_attacker` would otherwise be
+    recomputed identically forever whenever that next attacker also has no
+    legal target — `_open_battle_turn` would call back into this function with
+    the same state, same next_attacker, unbounded recursion. `skipped_in_chain`
+    tracks every attacker already skipped in the current chain; once the
+    recomputed `next_attacker` is already in it, this deliberately returns no
+    further events rather than guessing at Task 18's real rotation (which would
+    need to advance past the stuck anchor, handle round completion, and handle
+    elimination). Callers outside a skip chain never pass `skipped_in_chain`,
+    so the empty-set default is exact for them.
     """
     turn = state.turn
     if not isinstance(turn, BattleTargetSelect):
         return ()
     order = state.active_players()
     next_attacker = order[(order.index(turn.attacker_id) + 1) % len(order)]
-    return _open_battle_turn(state, next_attacker, ctx)
+    if next_attacker in skipped_in_chain:
+        return ()
+    return _open_battle_turn(state, next_attacker, ctx, skipped_in_chain)
 
 
 def evolve(state: GameState, event: ev.GameEvent) -> GameState:

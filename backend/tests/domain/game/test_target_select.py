@@ -135,3 +135,42 @@ def test_target_timeout_skips_the_turn_and_advances() -> None:
     after = fold(state, events)
     assert isinstance(after.turn, BattleTargetSelect)
     assert after.turn.attacker_id == P2
+
+
+def test_consecutive_skips_terminate_instead_of_recursing_forever() -> None:
+    """Regression: `evolve` treats `TurnSkipped` as a no-op, so `state.turn`
+    stays the stale `BattleTargetSelect` for the *original* attacker (p1)
+    across the whole skip chain. Before the fix, `_next_battle_turn` kept
+    recomputing the same "next attacker" (p2) from that stale anchor forever
+    whenever p2 also had no legal target — infinite recursion. p2 owns no
+    territory at all here, so `legal_targets(p2)` is trivially empty and the
+    chain must stop after skipping p2, without ever reaching p3.
+    """
+    layout = {
+        "r0": "p1",
+        "r1": "p1",
+        "r3": "p1",
+        "r2": "p3",
+        "r4": "p3",
+        "r5": "p3",
+        "r6": "p3",
+        "r7": "p3",
+        "r8": "p3",
+    }
+    assert legal_targets(battle_state(layout), P2) == ()
+
+    state = open_turn(battle_state(layout), P1)
+    assert isinstance(state.turn, BattleTargetSelect)
+    late = DecisionContext(now=NOW + timedelta(seconds=60))
+    events = decide(state, ExpireDeadline(state.turn.deadline.id), late)
+
+    first, second = events
+    assert isinstance(first, ev.TurnSkipped)
+    assert isinstance(second, ev.TurnSkipped)
+    assert first.attacker_id == P1
+    assert second.attacker_id == P2
+
+    # Folding the chain doesn't crash either, and no third attacker is ever
+    # reached — Task 18 owns advancing past a stuck anchor.
+    after = fold(state, events)
+    assert after.turn is not None
