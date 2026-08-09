@@ -3,11 +3,18 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from triviador.domain.game.rules import GameRules
 from triviador.domain.ids import DeadlineId, GameId, PlayerId, RegionId
 from triviador.domain.maps.definition import MapDefinition
 from triviador.domain.questions.types import QuestionPool, QuestionSnapshot
+
+if TYPE_CHECKING:
+    # `events.py` imports from this module, so importing it back here at
+    # runtime would be circular. `GameState.pending_attack` only needs the
+    # name for static typing, resolved via the quoted annotation below.
+    from triviador.domain.game.events import AttackDeclared
 
 
 class Phase(StrEnum):
@@ -169,6 +176,10 @@ class GameState:
     turn: Turn | None
     pool: QuestionPool
     winner_id: PlayerId | None
+    # Bridges `AttackDeclared` to the `QuestionPresented` that follows it: `evolve`
+    # sees them as two separate events and needs somewhere to carry the declared
+    # attack in between, since it builds the BattleDuel/NeutralChallenge turn.
+    pending_attack: "AttackDeclared | None" = None
 
     def active_players(self) -> tuple[PlayerId, ...]:
         return tuple(p for p in self.turn_order if not self.players[p].is_eliminated)

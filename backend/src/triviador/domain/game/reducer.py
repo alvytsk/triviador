@@ -124,6 +124,10 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_pick(state, state.turn, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, ExpansionPicking):
             return _decide_auto_pick(state, state.turn, ctx)
+        case SelectAttackTarget() if isinstance(state.turn, BattleTargetSelect):
+            return _decide_target(state, state.turn, command, ctx)
+        case ExpireDeadline() if isinstance(state.turn, BattleTargetSelect):
+            return _decide_target_timeout(state, state.turn, ctx)
     raise NotImplementedError(f"no handler for {type(command).__name__}")
 
 
@@ -346,14 +350,77 @@ def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameE
     return (done, battle, *_open_battle_turn(after, after.active_players()[0], ctx))
 
 
+def legal_targets(state: GameState, attacker_id: PlayerId) -> tuple[RegionId, ...]:
+    """The single source of the adjacency rule: `turn.your_options` in Plan 3's
+    projection is derived from this, never recomputed by the client."""
+    mine = set(state.owned_by(attacker_id))
+    reachable: set[RegionId] = set()
+    for region_id in mine:
+        reachable |= state.map.neighbours(region_id)
+    return tuple(r for r in state.map.region_ids() if r in reachable and r not in mine)
+
+
 def _open_battle_turn(
     state: GameState, attacker_id: PlayerId, ctx: DecisionContext
 ) -> tuple[ev.GameEvent, ...]:
+    if not legal_targets(state, attacker_id):
+        skipped = ev.TurnSkipped(attacker_id, "no adjacent target")
+        return (skipped, *_next_battle_turn(evolve(state, skipped), ctx))
     deadline, _ = state.allocate_deadline(
         DeadlineKind.TARGET_SELECT,
         ctx.now + timedelta(milliseconds=state.rules.answer_timeout_ms),
     )
     return (ev.TurnStarted(attacker_id, deadline),)
+
+
+def _decide_target(
+    state: GameState, turn: BattleTargetSelect, command: SelectAttackTarget, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    if command.actor_id != turn.attacker_id:
+        raise RejectedCommand(RejectCode.NOT_YOUR_TURN, f"{turn.attacker_id!r} is attacking")
+    if command.region_id not in state.territories:
+        raise RejectedCommand(RejectCode.UNKNOWN_REGION, f"{command.region_id!r} is not on the map")
+    target = state.territories[command.region_id]
+    if target.owner_id == command.actor_id:
+        raise RejectedCommand(RejectCode.OWN_TERRITORY, "cannot attack your own region")
+    if command.region_id not in legal_targets(state, command.actor_id):
+        raise RejectedCommand(RejectCode.NOT_ADJACENT, f"{command.region_id!r} is not adjacent")
+
+    declared = ev.AttackDeclared(command.actor_id, target.owner_id, command.region_id)
+    after = evolve(state, declared)
+    question, _ = after.pool.next_multiple_choice()
+    deadline, _ = after.allocate_deadline(
+        DeadlineKind.ANSWER, ctx.now + timedelta(milliseconds=after.rules.answer_timeout_ms)
+    )
+    return (declared, ev.QuestionPresented(question, deadline))
+
+
+def _decide_target_timeout(
+    state: GameState, turn: BattleTargetSelect, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    skipped = ev.TurnSkipped(turn.attacker_id, "no target selected in time")
+    return (skipped, *_next_battle_turn(evolve(state, skipped), ctx))
+
+
+def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
+    """Advance to the next attacker, the next round, or the end of the game.
+
+    Only the single hop this task needs is implemented: when a target-selection
+    timeout just skipped a turn, `state.turn` is still the stale `BattleTargetSelect`
+    for the skipped attacker (`TurnSkipped` is a no-op for `evolve`), so the next
+    active player in `turn_order` can be found and handed a turn via
+    `_open_battle_turn`. Round completion, elimination-driven rotation, and
+    end-of-game are Task 18's job — when `_open_battle_turn`'s own "no legal
+    target" skip fires (there is no established `BattleTargetSelect` turn to read
+    an attacker from), this deliberately returns no further events rather than
+    guessing at that logic.
+    """
+    turn = state.turn
+    if not isinstance(turn, BattleTargetSelect):
+        return ()
+    order = state.active_players()
+    next_attacker = order[(order.index(turn.attacker_id) + 1) % len(order)]
+    return _open_battle_turn(state, next_attacker, ctx)
 
 
 def evolve(state: GameState, event: ev.GameEvent) -> GameState:
@@ -454,6 +521,15 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
                 turn=BattleTargetSelect(deadline, attacker),
             )
 
+        case ev.TurnSkipped():
+            return state
+
+        case ev.AttackDeclared():
+            # `turn` stays the BattleTargetSelect it already was — the following
+            # `QuestionPresented` reads this back to build the BattleDuel or
+            # NeutralChallenge turn shape.
+            return replace(state, pending_attack=event)
+
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
 
 
@@ -471,7 +547,25 @@ def _present_question(
 
     if state.phase is Phase.EXPANSION:
         return replace(base, turn=ExpansionQuestion(deadline, question, answers={}))
-    raise NotImplementedError("battle question windows arrive in Task 15")
+    if state.phase is Phase.BATTLE:
+        attack = state.pending_attack
+        assert attack is not None, "battle question window opened without a declared attack"
+        turn: Turn
+        if attack.defender_id is not None:
+            turn = BattleDuel(
+                deadline,
+                attack.attacker_id,
+                attack.defender_id,
+                attack.region_id,
+                question,
+                answers={},
+            )
+        else:
+            turn = NeutralChallenge(
+                deadline, attack.attacker_id, attack.region_id, question, answers={}
+            )
+        return replace(base, turn=turn, pending_attack=None)
+    raise NotImplementedError(f"no question window shape for phase {state.phase}")
 
 
 def fold(state: GameState, events: Iterable[ev.GameEvent]) -> GameState:
