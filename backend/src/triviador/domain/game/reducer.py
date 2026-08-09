@@ -36,6 +36,7 @@ from triviador.domain.game.state import (
     BattleDuel,
     BattleTargetSelect,
     BattleTiebreak,
+    ChoiceAnswer,
     Deadline,
     DeadlineKind,
     ExpansionPicking,
@@ -128,6 +129,10 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_target(state, state.turn, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, BattleTargetSelect):
             return _decide_target_timeout(state, state.turn, ctx)
+        case SubmitAnswer() if isinstance(state.turn, NeutralChallenge):
+            return _decide_neutral_answer(state, command, ctx)
+        case ExpireDeadline() if isinstance(state.turn, NeutralChallenge):
+            return _close_neutral_challenge(state, state.turn, ctx)
     raise NotImplementedError(f"no handler for {type(command).__name__}")
 
 
@@ -406,6 +411,55 @@ def _decide_target_timeout(
     return (skipped, *_next_battle_turn(evolve(state, skipped), ctx))
 
 
+def _decide_neutral_answer(
+    state: GameState, command: SubmitAnswer, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    turn = state.turn
+    assert isinstance(turn, NeutralChallenge)
+    if command.actor_id != turn.attacker_id:
+        raise RejectedCommand(RejectCode.NOT_YOUR_TURN, f"{turn.attacker_id!r} is attacking")
+    recorded = _record_answer(turn, command)
+    if recorded is None:
+        return ()
+    after = evolve(state, recorded)
+    assert isinstance(after.turn, NeutralChallenge)
+    return (recorded, *_close_neutral_challenge(after, after.turn, ctx))
+
+
+def _close_neutral_challenge(
+    state: GameState, turn: NeutralChallenge, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    submitted = turn.answers.get(turn.attacker_id)
+    correct_idx = turn.question.correct_choice_index()
+    won = (
+        submitted is not None
+        and isinstance(submitted.value, ChoiceAnswer)
+        and submitted.value.idx == correct_idx
+    )
+    resolved = ev.QuestionResolved(
+        correct_choice_index=correct_idx,
+        correct_value=None,
+        ranking=(turn.attacker_id,),
+        correct_players=(turn.attacker_id,) if won else (),
+    )
+    head: tuple[ev.GameEvent, ...] = (ev.AnswerWindowClosed(turn.deadline), resolved)
+
+    if not won:
+        failed = ev.NeutralAttackFailed(turn.region_id, turn.attacker_id)
+        return (*head, failed, *_next_battle_turn(evolve(state, failed), ctx))
+
+    captured = ev.NeutralTerritoryCaptured(turn.region_id, turn.attacker_id)
+    after = evolve(state, captured)
+    score = ev.ScoreChanged(
+        turn.attacker_id,
+        state.rules.pts_territory,
+        ev.ScoreReason.TERRITORY,
+        new_total=expected_score(after, turn.attacker_id),
+    )
+    after = evolve(after, score)
+    return (*head, captured, score, *_next_battle_turn(after, ctx))
+
+
 def _next_battle_turn(
     state: GameState, ctx: DecisionContext, skipped_in_chain: frozenset[PlayerId] = frozenset()
 ) -> tuple[ev.GameEvent, ...]:
@@ -546,6 +600,15 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
             # `QuestionPresented` reads this back to build the BattleDuel or
             # NeutralChallenge turn shape.
             return replace(state, pending_attack=event)
+
+        case ev.NeutralTerritoryCaptured(region_id=rid, player_id=pid):
+            territory = replace(
+                state.territories[rid], owner_id=pid, acquisition=AcquisitionKind.CLAIMED
+            )
+            return replace(state, territories={**state.territories, rid: territory}, turn=None)
+
+        case ev.NeutralAttackFailed():
+            return replace(state, turn=None)
 
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
 
