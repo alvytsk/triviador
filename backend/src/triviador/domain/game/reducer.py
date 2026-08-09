@@ -8,7 +8,7 @@ Replay is therefore fold(evolve, events) and needs no context at all.
 """
 
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -603,6 +603,25 @@ def _close_tiebreak(
     return (*head, won, held, score, *_next_battle_turn(after, ctx))
 
 
+@dataclass
+class _Emitter:
+    """Accumulates events while keeping `state` folded up to date."""
+
+    state: GameState
+    events: list[ev.GameEvent] = field(default_factory=list)
+
+    def emit(self, *new_events: ev.GameEvent) -> None:
+        for event in new_events:
+            self.state = evolve(self.state, event)
+            self.events.append(event)
+
+    def score(self, player_id: PlayerId, delta: int, reason: ev.ScoreReason) -> None:
+        """Emit a ScoreChanged whose new_total reflects the state after the delta."""
+        bonus = delta if reason in (ev.ScoreReason.DEFENSE, ev.ScoreReason.BONUS) else 0
+        new_total = expected_score(self.state, player_id) + bonus
+        self.emit(ev.ScoreChanged(player_id, delta, reason, new_total))
+
+
 def _resolve_capture(
     state: GameState,
     attacker_id: PlayerId,
@@ -610,39 +629,50 @@ def _resolve_capture(
     region_id: RegionId,
     ctx: DecisionContext,
 ) -> tuple[ev.GameEvent, ...]:
-    """A duel or tiebreak the attacker won, resolved into a capture.
-
-    Only the non-base branch is implemented here: an ordinary or claimed
-    region simply changes hands. Capturing a BASE region — damaging or
-    destroying it, eliminating its owner, and neutralizing whatever
-    territory they have left — is Task 17's `_Emitter`/`_eliminate`
-    machinery, which replaces this whole function. Task 16's fixtures never
-    give a player a BASE-kind region to defend (`battle_state()` uses
-    `own()`, which defaults every territory to `AcquisitionKind.CLAIMED`),
-    so that branch is unreachable in this task's suite; it fails loudly
-    rather than silently doing the wrong thing if it's ever hit early.
-    """
+    """A duel or tiebreak the attacker won, resolved into a capture."""
     territory = state.territories[region_id]
-    if territory.kind is TerritoryKind.BASE:
-        raise NotImplementedError("base capture arrives in Task 17")
+    rules = state.rules
+    out = _Emitter(state)
 
-    captured = ev.TerritoryCaptured(region_id, defender_id, attacker_id, AcquisitionKind.CONQUEST)
-    after = evolve(state, captured)
-    gain = ev.ScoreChanged(
-        attacker_id,
-        state.rules.pts_conquered,
-        ev.ScoreReason.CONQUEST,
-        new_total=expected_score(after, attacker_id),
-    )
-    after = evolve(after, gain)
-    loss = ev.ScoreChanged(
-        defender_id,
-        -holding_value(territory, state.rules),
-        ev.ScoreReason.TERRITORY_LOST,
-        new_total=expected_score(after, defender_id),
-    )
-    after = evolve(after, loss)
-    return (captured, gain, loss, *_next_battle_turn(after, ctx))
+    # A base with towers left absorbs the hit; the region does not change hands.
+    if territory.kind is TerritoryKind.BASE and (territory.base_hp or 0) > 1:
+        out.emit(ev.BaseDamaged(region_id, (territory.base_hp or 0) - 1))
+        return (*out.events, *_next_battle_turn(out.state, ctx))
+
+    old_value = holding_value(territory, rules)
+    is_base = territory.kind is TerritoryKind.BASE
+
+    if is_base:
+        out.emit(
+            ev.BaseDestroyed(region_id, defender_id),
+            ev.TerritoryCaptured(region_id, defender_id, attacker_id, AcquisitionKind.BASE),
+        )
+        out.score(attacker_id, rules.pts_base, ev.ScoreReason.BASE)
+        out.score(defender_id, -old_value, ev.ScoreReason.BASE_LOST)
+        _eliminate(out, defender_id, keep_base=False)
+    else:
+        out.emit(
+            ev.TerritoryCaptured(region_id, defender_id, attacker_id, AcquisitionKind.CONQUEST)
+        )
+        out.score(attacker_id, rules.pts_conquered, ev.ScoreReason.CONQUEST)
+        out.score(defender_id, -old_value, ev.ScoreReason.TERRITORY_LOST)
+
+    return (*out.events, *_next_battle_turn(out.state, ctx))
+
+
+def _eliminate(out: _Emitter, player_id: PlayerId, *, keep_base: bool) -> None:
+    """Eliminate a player and neutralize everything they still hold.
+
+    The base that was just destroyed has already transferred to the attacker, so
+    it is not in owned_by() any more. On surrender (keep_base=False as well) the
+    player's own base is still theirs and neutralizes with the rest.
+    Accumulated bonuses are never touched.
+    """
+    out.emit(ev.PlayerEliminated(player_id))
+    for region_id in out.state.owned_by(player_id):
+        value = holding_value(out.state.territories[region_id], out.state.rules)
+        out.emit(ev.TerritoryNeutralized(region_id, player_id))
+        out.score(player_id, -value, ev.ScoreReason.TERRITORY_LOST)
 
 
 def _next_battle_turn(
@@ -655,7 +685,11 @@ def _next_battle_turn(
     for the skipped attacker (`TurnSkipped` is a no-op for `evolve`), so the next
     active player in `turn_order` can be found and handed a turn via
     `_open_battle_turn`. Round completion, elimination-driven rotation, and
-    end-of-game are Task 18's job.
+    end-of-game are Task 18's job — except the single-survivor case, which this
+    task's own tests pin: if capture/elimination has left at most one active
+    player, the game ends here, before anything about turn shape or rotation
+    is even looked at (state.turn is typically already None at this point,
+    cleared by the DuelResolved that preceded the capture).
 
     Because `turn.attacker_id` never advances (it is the same stale value for
     every call in a single skip chain), `next_attacker` would otherwise be
@@ -669,6 +703,12 @@ def _next_battle_turn(
     elimination). Callers outside a skip chain never pass `skipped_in_chain`,
     so the empty-set default is exact for them.
     """
+    active = state.active_players()
+    if len(active) <= 1:
+        winner_id = active[0] if active else None
+        final_scores = {p: state.players[p].score for p in state.players}
+        return (ev.GameFinished(winner_id, final_scores),)
+
     turn = state.turn
     if not isinstance(turn, BattleTargetSelect):
         return ()
@@ -819,6 +859,35 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
         case ev.TerritoryCaptured(region_id=rid, to_player_id=pid, acquisition=acq):
             territory = replace(state.territories[rid], owner_id=pid, acquisition=acq)
             return replace(state, territories={**state.territories, rid: territory})
+
+        case ev.BaseDamaged(region_id=rid, hp_remaining=hp):
+            territory = replace(state.territories[rid], base_hp=hp)
+            return replace(state, territories={**state.territories, rid: territory})
+
+        case ev.BaseDestroyed(region_id=rid):
+            # Ownership itself moves via the `TerritoryCaptured` that follows
+            # this event; here only the base's own identity is torn down.
+            territory = replace(
+                state.territories[rid], kind=TerritoryKind.NORMAL, base_owner_id=None, base_hp=None
+            )
+            return replace(state, territories={**state.territories, rid: territory})
+
+        case ev.PlayerEliminated(player_id=pid):
+            player = state.players[pid]
+            return replace(
+                state,
+                players={
+                    **state.players,
+                    pid: replace(player, is_eliminated=True, base_region=None),
+                },
+            )
+
+        case ev.TerritoryNeutralized(region_id=rid):
+            territory = replace(state.territories[rid], owner_id=None, acquisition=None)
+            return replace(state, territories={**state.territories, rid: territory})
+
+        case ev.GameFinished(winner_id=winner_id):
+            return replace(state, phase=Phase.FINISHED, winner_id=winner_id)
 
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
 
