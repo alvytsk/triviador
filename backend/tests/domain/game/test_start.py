@@ -78,6 +78,34 @@ def test_starting_with_a_base_count_mismatch_is_rejected() -> None:
     assert exc.value.code is RejectCode.WRONG_TURN_STATE
 
 
+def test_starting_with_an_unknown_player_id_is_rejected() -> None:
+    """A malformed `shuffled_player_ids` (an id not in the lobby) used to
+    escape as a raw `KeyError` from `zip`/`state.players[...]` lookups
+    downstream instead of a `RejectedCommand` at the boundary."""
+    ctx = replace(start_ctx(), shuffled_player_ids=(P1, P2, PlayerId("ghost")))
+    with pytest.raises(RejectedCommand) as exc:
+        decide(lobby_state(), StartGame(P1), ctx)
+    assert exc.value.code is RejectCode.WRONG_TURN_STATE
+
+
+def test_starting_with_a_duplicate_base_region_is_rejected() -> None:
+    """A malformed `base_regions` with a duplicate used to be accepted
+    structurally (`len(bases) == len(order)` still holds), silently giving
+    one player no base at all and breaking the `score == holdings + bonus`
+    invariant from the very first tick."""
+    ctx = replace(start_ctx(), base_regions=(RegionId("r0"), RegionId("r0"), RegionId("r6")))
+    with pytest.raises(RejectedCommand) as exc:
+        decide(lobby_state(), StartGame(P1), ctx)
+    assert exc.value.code is RejectCode.WRONG_TURN_STATE
+
+
+def test_starting_with_a_base_region_not_on_the_map_is_rejected() -> None:
+    ctx = replace(start_ctx(), base_regions=(RegionId("r0"), RegionId("r2"), RegionId("nope")))
+    with pytest.raises(RejectedCommand) as exc:
+        decide(lobby_state(), StartGame(P1), ctx)
+    assert exc.value.code is RejectCode.WRONG_TURN_STATE
+
+
 def test_start_emits_the_full_opening_sequence() -> None:
     events = decide(lobby_state(), StartGame(P1), start_ctx())
     kinds = [type(e) for e in events]

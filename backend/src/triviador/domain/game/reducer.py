@@ -175,7 +175,14 @@ def _decide_start(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent,
 
     order = ctx.shuffled_player_ids
     bases = ctx.base_regions
-    if order is None or bases is None or len(bases) != len(order):
+    if (
+        order is None
+        or bases is None
+        or len(bases) != len(order)
+        or set(order) != set(state.players)
+        or len(set(bases)) != len(bases)
+        or not set(bases) <= set(state.map.region_ids())
+    ):
         raise RejectedCommand(RejectCode.WRONG_TURN_STATE, "start context is incomplete")
 
     assignments = dict(zip(order, bases, strict=True))
