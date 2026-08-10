@@ -15,6 +15,7 @@ from triviador.domain.game.actions import (
     RejectedCommand,
     StartGame,
     SubmitAnswer,
+    Surrender,
 )
 from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.state import (
@@ -90,6 +91,53 @@ def test_each_pick_opens_a_fresh_window() -> None:
     assert isinstance(state.turn, ExpansionPicking)
     assert state.turn.current_picker == P1, "p1 was granted two picks"
     assert state.turn.deadline.id != first_window
+
+
+def test_auto_pick_forfeits_an_eliminated_pickers_remaining_grants() -> None:
+    """Regression (fix review, item 4/property machine): surrender during
+    EXPANSION never touches the open turn (`_is_involved_in_turn` only knows
+    about BATTLE turn shapes), so `current_picker` can go stale. Before the
+    fix, a timeout on this window handed p1's region to p1 anyway, even
+    though they were already eliminated and neutralized — the Hypothesis
+    machine caught this within a handful of steps once `surrender` was wired
+    up as a rule."""
+    state = picking_state()
+    assert isinstance(state.turn, ExpansionPicking)
+    assert state.turn.current_picker == P1
+    window = state.turn.deadline.id
+    state = fold(state, decide(state, Surrender(P1), CTX))
+    assert isinstance(state.turn, ExpansionPicking)
+    assert state.turn.current_picker == P1  # still stale: the turn was untouched
+
+    late = DecisionContext(now=NOW + timedelta(seconds=60))
+    events = decide(state, ExpireDeadline(window), late)
+    assert not any(isinstance(e, ev.TerritoryClaimed) for e in events)
+    granted = next(e for e in events if isinstance(e, ev.PicksGranted))
+    assert granted.grants[P1] == 0
+    after = fold(state, events)
+    assert isinstance(after.turn, ExpansionPicking)
+    assert after.turn.current_picker == P2
+
+
+def test_auto_pick_finishes_the_game_when_every_remaining_picker_is_eliminated() -> None:
+    """Same regression, other branch: if forfeiting the stale picker leaves
+    no eligible picker at all (everyone else with a grant is also
+    eliminated) and this is the last expansion round, `_advance_expansion`
+    used to crash on `active_players()[0]` while trying to open the first
+    battle turn for nobody. It must finish the game instead."""
+    state = picking_state({"expansion_rounds": 1})
+    assert isinstance(state.turn, ExpansionPicking)
+    window = state.turn.deadline.id
+    state = fold(state, decide(state, Surrender(P1), CTX))
+    state = fold(state, decide(state, Surrender(P2), CTX))
+    assert state.active_players() == (P3,)
+
+    late = DecisionContext(now=NOW + timedelta(seconds=60))
+    events = decide(state, ExpireDeadline(window), late)
+    assert any(isinstance(e, ev.GameFinished) for e in events)
+    after = fold(state, events)
+    assert after.phase is Phase.FINISHED
+    assert after.winner_id == P3
 
 
 def test_auto_pick_with_a_stale_shuffle_advances_instead_of_claiming() -> None:

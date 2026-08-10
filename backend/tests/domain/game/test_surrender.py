@@ -44,6 +44,20 @@ def test_surrender_in_the_lobby_is_just_leaving() -> None:
     assert decide(state, Surrender(P1), CTX) == (ev.PlayerLeft(P1),)
 
 
+def test_folding_a_lobby_surrender_removes_the_player() -> None:
+    """Regression: `_apply` had no arm for `PlayerLeft`, so replaying (or
+    even just applying) the event this exact command produces crashed with
+    `NotImplementedError: no evolve branch for PlayerLeft` — `decide` was
+    fine, `fold` was not, and nothing in the matrix (Task 20) caught it
+    because the matrix only ever calls `decide`."""
+    state = lobby_state()
+    events = decide(state, Surrender(P1), CTX)
+    after = fold(state, events)
+    assert P1 not in after.players
+    assert P1 not in after.turn_order
+    assert set(after.players) == {P2, P3}
+
+
 def test_the_current_attacker_surrendering_aborts_the_turn_and_advances() -> None:
     state = with_p1_base()
     events = decide(state, Surrender(P1), CTX)  # type: ignore[arg-type]

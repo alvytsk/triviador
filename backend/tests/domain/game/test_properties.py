@@ -6,6 +6,7 @@ from hypothesis.stateful import RuleBasedStateMachine, invariant, precondition, 
 
 from tests.conftest import NOW, full_pool, lobby_state
 from triviador.domain.game.actions import Command, DecisionContext
+from triviador.domain.game.events import GameEvent
 from triviador.domain.game.rules import (
     DEFAULT_RULES,
     GameRules,
@@ -55,12 +56,37 @@ class GameMachine(RuleBasedStateMachine):
         self.accepted = 0
         self.budget = required_question_budget(self.state.rules)
 
-    def _apply(self, command: Command) -> None:
+    def _decide_purely(self, command: Command, ctx: DecisionContext) -> tuple[GameEvent, ...]:
+        """The `purity` property from spec §12.1: `decide(state, command,
+        ctx)` called twice with the exact same inputs must behave exactly
+        the same way — the same events, or the same rejection — since
+        nothing about `decide` is allowed to be stateful or time-dependent
+        beyond what `ctx` already says. Every command the machine issues
+        goes through here, so this is checked on every step, not just once."""
         from triviador.domain.game.actions import RejectedCommand
-        from triviador.domain.game.reducer import decide, fold
+        from triviador.domain.game.reducer import decide
 
         try:
-            events = decide(self.state, command, self._ctx())
+            events = decide(self.state, command, ctx)
+        except RejectedCommand as exc:
+            try:
+                decide(self.state, command, ctx)
+            except RejectedCommand as exc2:
+                assert exc2.code == exc.code, "decide is not pure: repeat rejection differed"
+            else:
+                raise AssertionError("decide is not pure: repeat call did not reject") from None
+            raise
+        assert decide(self.state, command, ctx) == events, (
+            "decide is not pure: repeat call differed"
+        )
+        return events
+
+    def _apply(self, command: Command) -> None:
+        from triviador.domain.game.actions import RejectedCommand
+        from triviador.domain.game.reducer import fold
+
+        try:
+            events = self._decide_purely(command, self._ctx())
         except RejectedCommand:
             return  # rejections change nothing; that is itself under test
         if events:
@@ -81,12 +107,48 @@ class GameMachine(RuleBasedStateMachine):
             drawn_pool=full_pool(),
         )
 
-    @precondition(lambda self: self.state.phase is Phase.LOBBY)
+    @precondition(lambda self: self.state.phase is Phase.LOBBY and self.state.players)
     @rule()
     def start(self) -> None:
         from triviador.domain.game.actions import StartGame
 
         self._apply(StartGame(next(iter(self.state.players))))
+
+    @precondition(
+        lambda self: (
+            self.state.phase is Phase.LOBBY
+            and len(self.state.players) < self.state.rules.player_count
+        )
+    )
+    @rule(seat=st.integers(0, 3))
+    def join(self, seat: int) -> None:
+        """Companion to `surrender`: once `LOBBY` surrender can empty the
+        roster (Task 21 fix review — `PlayerLeft` used to crash `fold`
+        outright), the machine needs a way back in, or Hypothesis reports
+        `InvalidDefinition` on an empty lobby where no other rule's
+        precondition can ever fire again."""
+        from triviador.domain.game.actions import JoinGame
+        from triviador.domain.ids import PlayerId
+
+        self._apply(JoinGame(PlayerId(f"p{seat}"), f"Newcomer{seat}"))
+
+    @precondition(
+        lambda self: self.state.phase not in TERMINAL_PHASES and self.state.active_players()
+    )
+    @rule(player_index=st.integers(0, 3))
+    def surrender(self, player_index: int) -> None:
+        from triviador.domain.game.actions import Surrender
+
+        active = self.state.active_players()
+        self._apply(Surrender(active[player_index % len(active)]))
+
+    @precondition(lambda self: self.state.phase not in TERMINAL_PHASES and self.state.players)
+    @rule(player_index=st.integers(0, 3))
+    def abort(self, player_index: int) -> None:
+        from triviador.domain.game.actions import AbortGame
+
+        candidates = self.state.active_players() or tuple(self.state.players)
+        self._apply(AbortGame(candidates[player_index % len(candidates)]))
 
     @precondition(lambda self: self.state.current_deadline() is not None)
     @rule(
@@ -145,12 +207,12 @@ class GameMachine(RuleBasedStateMachine):
     @rule()
     def expire(self) -> None:
         from triviador.domain.game.actions import ExpireDeadline, RejectedCommand
-        from triviador.domain.game.reducer import decide, fold
+        from triviador.domain.game.reducer import fold
 
         window = self.state.current_deadline()
         assert window is not None
         try:
-            events = decide(self.state, ExpireDeadline(window.id), self._ctx(late=True))
+            events = self._decide_purely(ExpireDeadline(window.id), self._ctx(late=True))
         except RejectedCommand:
             return
         if events:

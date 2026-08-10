@@ -320,6 +320,24 @@ def _decide_pick(
 def _decide_auto_pick(
     state: GameState, turn: ExpansionPicking, ctx: DecisionContext
 ) -> tuple[ev.GameEvent, ...]:
+    if state.players[turn.current_picker].is_eliminated:
+        # The picker surrendered (or was otherwise eliminated) after this
+        # window opened. Elimination during EXPANSION never touches the open
+        # turn the way `_next_battle_turn` does for BATTLE — `current_picker`
+        # is a snapshot taken when `PicksGranted` fired and nothing revisits
+        # it — so on timeout it can point at someone who no longer owns
+        # anything. Forfeit their remaining grants instead of handing a
+        # region to an eliminated player; `_next_picker` (below) already
+        # skips eliminated candidates, so this just needs to zero this
+        # picker's own remaining count and let it decide what happens next.
+        remaining = {**turn.grants_remaining, turn.current_picker: 0}
+        next_picker = _next_picker(turn.pick_order, remaining, state)
+        if next_picker is None:
+            return _advance_expansion(state, ctx)
+        deadline, _ = state.allocate_deadline(
+            DeadlineKind.PICK, ctx.now + timedelta(milliseconds=state.rules.pick_timeout_ms)
+        )
+        return (ev.PicksGranted(turn.pick_order, remaining, deadline),)
     free = set(state.free_regions())
     order = ctx.shuffled_region_ids or state.free_regions()
     region_id = next((r for r in order if r in free), None)
@@ -363,7 +381,10 @@ def _next_picker(
 ) -> PlayerId | None:
     if not state.free_regions():
         return None
-    return next((p for p in order if remaining.get(p, 0) > 0), None)
+    return next(
+        (p for p in order if remaining.get(p, 0) > 0 and not state.players[p].is_eliminated),
+        None,
+    )
 
 
 def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
@@ -375,9 +396,21 @@ def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameE
         after = evolve(after, started)
         question, _ = _open_expansion_question(after, ctx)
         return (done, started, *question)
+    # Mirrors `_next_battle_turn`'s own "one active player left ends the
+    # game" check (there, "before anything about turn shape or rotation is
+    # even looked at"). EXPANSION-phase elimination via surrender never
+    # revisits the open turn the way BATTLE's rotation does, so it is only
+    # here — the one place EXPANSION hands control to BATTLE — that a
+    # trajectory eliminating everyone (or all but one) during EXPANSION
+    # would otherwise crash on `active_players()[0]` instead of ending the
+    # game. Skip opening a battle round altogether rather than start one
+    # with no legal first attacker.
+    active = after.active_players()
+    if len(active) <= 1:
+        return (done, *_finish(after, ctx))
     battle = ev.BattleRoundStarted(1)
     after = evolve(after, battle)
-    return (done, battle, *_open_battle_turn(after, after.active_players()[0], ctx))
+    return (done, battle, *_open_battle_turn(after, active[0], ctx))
 
 
 def legal_targets(state: GameState, attacker_id: PlayerId) -> tuple[RegionId, ...]:
@@ -832,6 +865,22 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
                 turn_order=(*state.turn_order, pid),
             )
 
+        case ev.PlayerLeft(player_id=pid):
+            # Only reachable from a LOBBY surrender (`_decide_surrender`'s
+            # `Phase.LOBBY` branch) — the player never got far enough to hold
+            # a base, a score, or a seat in an open turn, so undoing
+            # `PlayerJoined` is exactly its inverse: drop them from both
+            # `players` and `turn_order`. NOTE: seats are not renumbered, so
+            # a later `JoinGame` (`seat=len(players)`) can re-mint a seat
+            # number still held by a remaining player — a pre-existing gap
+            # in seat allocation, not introduced or fixed here; out of scope
+            # for this arm.
+            return replace(
+                state,
+                players={p: s for p, s in state.players.items() if p != pid},
+                turn_order=tuple(p for p in state.turn_order if p != pid),
+            )
+
         case ev.GameStarted(turn_order=order):
             return replace(state, turn_order=order, phase=Phase.EXPANSION)
 
@@ -1010,6 +1059,18 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
         case ev.GameAborted():
             return replace(state, phase=Phase.ABORTED, turn=None, winner_id=None)
 
+    # Every `ev.X(...)` construction site in this module (i.e. every event
+    # `decide()` can actually emit) has a `case` above — cross-checked by
+    # grepping every emission site against this match's arms; `PlayerLeft`
+    # was missing that arm until a review caught `fold()` crashing on a real
+    # lobby-surrender trajectory (`decide()` emits it, `_apply` had no case).
+    # The one `GameEvent` member with no arm, `GameCreated`, is never
+    # constructed anywhere in `decide()`/`_dispatch` — the initial `GameState`
+    # is materialised directly by whatever constructs it (`lobby_state()`
+    # here; presumably a runtime-level "create game" step in Plan 2), never
+    # folded from a `GameCreated` event. So this fallthrough is unreachable
+    # for any event sequence `decide()` could have produced; it only fires if
+    # `evolve`/`fold` is handed a fabricated or foreign event directly.
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")  # pragma: no cover
 
 

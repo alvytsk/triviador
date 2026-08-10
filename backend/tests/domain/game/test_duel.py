@@ -49,6 +49,15 @@ def both(
     return fold(state, events), events
 
 
+def test_repeating_the_same_duel_answer_is_ignored() -> None:
+    state = dueling()
+    assert isinstance(state.turn, BattleDuel)
+    cmd = mc(state, P1, CORRECT)
+    state = fold(state, decide(state, cmd, CTX))
+    assert isinstance(state.turn, BattleDuel)  # still waiting on p2
+    assert decide(state, cmd, CTX) == ()
+
+
 def test_attacker_right_defender_wrong_captures() -> None:
     _, events = both(dueling(), CORRECT, WRONG)
     resolved = next(e for e in events if isinstance(e, ev.DuelResolved))
