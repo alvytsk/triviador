@@ -771,8 +771,17 @@ def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEv
     same "next attacker" twice, which is what makes this recursion (via
     `_open_battle_turn` for an attacker with no legal target) provably
     terminating without needing to track visited attackers explicitly:
-    `index` strictly increases each call until it reaches `len(active)`, at
-    which point the round is over.
+    the search position in `turn_order` strictly increases each call until
+    it reaches the end, at which point the round is over.
+
+    Rotation is anchored on `turn_order` (which retains eliminated players in
+    their original seats) rather than the pre-filtered `active` list. `last`
+    is the attacker whose turn just ended — including one who surrendered
+    *during* their own open turn, in which case `last` is no longer active
+    and would not appear in `active` at all. Anchoring on `turn_order` still
+    finds the correct next active player after them; anchoring on `active`
+    would silently skip straight to "round over" and cut every remaining
+    player's turn short.
 
     One active player remaining also ends the game — before anything about
     turn shape or rotation is even looked at, since `state.turn` is typically
@@ -783,10 +792,12 @@ def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEv
     if len(active) <= 1:
         return _finish(state, ctx)
 
+    order = state.turn_order
     last = state.last_attacker_id
-    index = active.index(last) + 1 if last in active else len(active)
-    if index < len(active):
-        return _open_battle_turn(state, active[index], ctx)
+    start = order.index(last) + 1 if last in order else len(order)
+    nxt = next((p for p in order[start:] if not state.players[p].is_eliminated), None)
+    if nxt is not None:
+        return _open_battle_turn(state, nxt, ctx)
 
     completed = ev.BattleRoundCompleted(state.round_no)
     after = evolve(state, completed)

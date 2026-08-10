@@ -59,6 +59,14 @@ def test_folding_a_lobby_surrender_removes_the_player() -> None:
 
 
 def test_the_current_attacker_surrendering_aborts_the_turn_and_advances() -> None:
+    """Regression: `_next_battle_turn` used to rotate on the pre-filtered
+    `active` list. The surrendering attacker is eliminated (and so dropped
+    from `active`) before rotation runs, so `last not in active` made the
+    old code jump straight to "round over" — completing round 1 early and
+    starting round 2, whose first attacker is *also* P2. That coincidence
+    let this test pass while silently cutting P2 and P3's round-1 turns.
+    Asserting no `BattleRoundCompleted` (and that we're still in round 1)
+    pins the real fix, not the accidental one."""
     state = with_p1_base()
     events = decide(state, Surrender(P1), CTX)  # type: ignore[arg-type]
     kinds = [type(e) for e in events]
@@ -66,8 +74,30 @@ def test_the_current_attacker_surrendering_aborts_the_turn_and_advances() -> Non
     assert ev.PlayerEliminated in kinds
     assert ev.TerritoryNeutralized in kinds
     assert ev.TurnAborted in kinds
+    assert ev.BattleRoundCompleted not in kinds
     assert kinds.index(ev.TurnAborted) < kinds.index(ev.TurnStarted)
     after = fold(state, events)  # type: ignore[arg-type]
+    assert after.round_no == 1
+    assert isinstance(after.turn, BattleTargetSelect)
+    assert after.turn.attacker_id == P2
+
+
+def test_the_final_round_attacker_surrendering_still_gives_the_rest_their_turns() -> None:
+    """Regression: with the `active`-anchored rotation, a player out of
+    contention could surrender at the start of the LAST battle round to
+    immediately complete it and finish the game, denying every other
+    player their round-4 turn (and freezing standings in their favour)."""
+    state = battle_state()
+    state = replace(state, round_no=state.rules.battle_rounds)
+    state = open_turn(state)
+    events = decide(state, Surrender(P1), CTX)
+    kinds = [type(e) for e in events]
+    assert ev.GameFinished not in kinds
+    assert ev.BattleRoundCompleted not in kinds
+    assert ev.TurnStarted in kinds
+    after = fold(state, events)
+    assert after.phase is not Phase.FINISHED
+    assert after.round_no == state.rules.battle_rounds
     assert isinstance(after.turn, BattleTargetSelect)
     assert after.turn.attacker_id == P2
 
