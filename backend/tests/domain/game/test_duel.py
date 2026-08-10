@@ -112,6 +112,15 @@ def test_equal_distance_is_broken_by_speed() -> None:
     assert any(isinstance(e, ev.DefenseHeld) for e in events), "faster defender holds"
 
 
+def test_repeating_the_same_tiebreak_answer_is_ignored() -> None:
+    state, _ = both(dueling(), CORRECT, CORRECT)
+    assert isinstance(state.turn, BattleTiebreak)
+    cmd = numeric(state, P1, 123, 300)
+    state = fold(state, decide(state, cmd, CTX))
+    assert isinstance(state.turn, BattleTiebreak)  # still waiting on p2
+    assert decide(state, cmd, CTX) == ()
+
+
 def test_mutual_silence_in_a_tiebreak_favours_the_defender() -> None:
     state, _ = both(dueling(), CORRECT, CORRECT)
     assert isinstance(state.turn, BattleTiebreak)

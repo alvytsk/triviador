@@ -38,3 +38,7 @@ addopts = "-q"
 
 [tool.coverage.report]
 show_missing = true
+
+[tool.coverage.run]
+branch = true
+source = ["src/triviador"]

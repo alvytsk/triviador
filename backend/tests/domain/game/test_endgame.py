@@ -1,10 +1,18 @@
 from dataclasses import replace
 from decimal import Decimal
 
+import pytest
+
 from tests.domain.game.test_target_select import CTX, P1, P2, P3, battle_state, open_turn
 from triviador.domain.game import events as ev
-from triviador.domain.game.actions import DecisionContext, ExpireDeadline, SubmitAnswer
-from triviador.domain.game.reducer import _next_battle_turn, decide, fold
+from triviador.domain.game.actions import (
+    DecisionContext,
+    ExpireDeadline,
+    RejectCode,
+    RejectedCommand,
+    SubmitAnswer,
+)
+from triviador.domain.game.reducer import _finish, _next_battle_turn, decide, fold
 from triviador.domain.game.state import (
     BattleTargetSelect,
     FinalTiebreak,
@@ -99,6 +107,50 @@ def test_the_highest_scorer_wins_outright() -> None:
     events = decide(state, ExpireDeadline(state.turn.deadline.id), _expired(state))
     finished = next(e for e in events if isinstance(e, ev.GameFinished))
     assert finished.winner_id == P3
+
+
+def test_finish_with_no_active_players_declares_no_winner() -> None:
+    """`_finish` is keyed off `state.players`, not `active_players()`
+    (rotation bookkeeping), so a state where every player has been
+    eliminated must resolve to `GameFinished(None, ...)` rather than
+    crashing on an empty `max()`."""
+    state = battle_state()
+    state = replace(
+        state,
+        players={pid: replace(p, is_eliminated=True) for pid, p in state.players.items()},
+    )
+    events = _finish(state, CTX)
+    assert events == (ev.GameFinished(None, {p: s.score for p, s in state.players.items()}),)
+
+
+def _tied_final_tiebreak() -> GameState:
+    state = battle_state()
+    tied = {P1: 500, P2: 500, P3: 100}
+    state = replace(
+        state,
+        players={p: replace(s, score=tied[p]) for p, s in state.players.items()},
+        round_no=state.rules.battle_rounds,
+    )
+    return fold(state, _next_battle_turn(state, CTX))
+
+
+def test_a_non_contender_cannot_answer_the_final_tiebreak() -> None:
+    state = _tied_final_tiebreak()
+    assert isinstance(state.turn, FinalTiebreak)
+    assert P3 not in state.turn.contenders
+    bystander = SubmitAnswer(P3, state.turn.deadline.id, NumericAnswer(Decimal(0)), 100)
+    with pytest.raises(RejectedCommand) as exc:
+        decide(state, bystander, CTX)
+    assert exc.value.code is RejectCode.NOT_YOUR_TURN
+
+
+def test_repeating_the_same_final_tiebreak_answer_is_ignored() -> None:
+    state = _tied_final_tiebreak()
+    assert isinstance(state.turn, FinalTiebreak)
+    cmd = SubmitAnswer(P1, state.turn.deadline.id, NumericAnswer(Decimal(123)), 300)
+    state = fold(state, decide(state, cmd, CTX))
+    assert isinstance(state.turn, FinalTiebreak)  # still waiting on the other contender
+    assert decide(state, cmd, CTX) == ()
 
 
 def test_a_score_tie_opens_a_final_tiebreak_among_the_tied_only() -> None:

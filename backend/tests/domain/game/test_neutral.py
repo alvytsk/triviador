@@ -1,17 +1,28 @@
+from dataclasses import replace
 from datetime import timedelta
 
+import pytest
+
 from tests.conftest import NOW
-from tests.domain.game.test_target_select import CTX, P1, battle_state, open_turn
+from tests.domain.game.test_target_select import CTX, P1, P2, battle_state, open_turn
 from triviador.domain.game import events as ev
 from triviador.domain.game.actions import (
     DecisionContext,
     ExpireDeadline,
+    RejectCode,
+    RejectedCommand,
     SelectAttackTarget,
     SubmitAnswer,
 )
 from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.scoring import holding_value
-from triviador.domain.game.state import AcquisitionKind, ChoiceAnswer, GameState, NeutralChallenge
+from triviador.domain.game.state import (
+    AcquisitionKind,
+    ChoiceAnswer,
+    GameState,
+    NeutralChallenge,
+    SubmittedAnswer,
+)
 from triviador.domain.ids import RegionId
 
 NEUTRAL = RegionId("r4")
@@ -81,3 +92,26 @@ def test_only_the_attacker_may_answer_a_neutral_challenge() -> None:
     assert isinstance(state.turn, NeutralChallenge)
     assert state.turn.attacker_id == P1
     assert SubmitAnswer in LEGAL_COMMANDS[NeutralChallenge]
+
+
+def test_a_bystander_cannot_answer_someone_elses_neutral_challenge() -> None:
+    state = challenging()
+    assert isinstance(state.turn, NeutralChallenge)
+    bystander_answer = SubmitAnswer(P2, state.turn.deadline.id, ChoiceAnswer(0), 200)
+    with pytest.raises(RejectedCommand) as exc:
+        decide(state, bystander_answer, CTX)
+    assert exc.value.code is RejectCode.NOT_YOUR_TURN
+
+
+def test_repeating_the_same_neutral_answer_is_ignored() -> None:
+    """A `NeutralChallenge` resolves atomically on the attacker's first (and
+    only) answer, so `decide` never itself hands back a state where
+    `turn.answers` is already populated — `_record_answer`'s idempotent-
+    resubmission guard is exercised directly here instead, the same guard
+    the multi-answerer turn shapes reach naturally by waiting on a second
+    player."""
+    state = challenging()
+    assert isinstance(state.turn, NeutralChallenge)
+    already_answered = replace(state.turn, answers={P1: SubmittedAnswer(ChoiceAnswer(0), 400)})
+    doctored = replace(state, turn=already_answered)
+    assert decide(doctored, answer(doctored, 0), CTX) == ()

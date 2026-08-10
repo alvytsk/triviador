@@ -92,6 +92,25 @@ def test_each_pick_opens_a_fresh_window() -> None:
     assert state.turn.deadline.id != first_window
 
 
+def test_auto_pick_with_a_stale_shuffle_advances_instead_of_claiming() -> None:
+    """`shuffled_region_ids` is the runtime's snapshot; if none of it is still
+    free by the time the timer fires, auto-pick has nothing legal to claim
+    and falls through to `_advance_expansion` rather than crashing or
+    inventing a target."""
+    state = picking_state()
+    assert isinstance(state.turn, ExpansionPicking)
+    ctx = DecisionContext(
+        now=NOW + timedelta(seconds=60),
+        shuffled_region_ids=(RegionId("r0"), RegionId("r2")),  # both bases: never free
+    )
+    events = decide(state, ExpireDeadline(state.turn.deadline.id), ctx)
+    assert not any(isinstance(e, ev.TerritoryClaimed) for e in events)
+    assert isinstance(events[0], ev.ExpansionRoundCompleted)
+    after = fold(state, events)
+    assert after.round_no == 2
+    assert isinstance(after.turn, ExpansionQuestion)
+
+
 def test_timeout_auto_picks_from_the_shuffled_order() -> None:
     state = picking_state()
     assert isinstance(state.turn, ExpansionPicking)

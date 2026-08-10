@@ -32,6 +32,15 @@ def test_joining_an_empty_lobby_emits_player_joined() -> None:
     assert events == (ev.PlayerJoined(P1, "One", seat=0),)
 
 
+def test_folding_player_joined_adds_the_player_to_the_state() -> None:
+    state = lobby_state(players={})
+    events = decide(state, JoinGame(P1, "One"), DecisionContext(now=NOW))
+    after = fold(state, events)
+    assert after.players[P1].display_name == "One"
+    assert after.players[P1].seat == 0
+    assert after.turn_order == (P1,)
+
+
 def test_joining_twice_is_rejected() -> None:
     state = lobby_state(players={"p1": 0})
     with pytest.raises(RejectedCommand) as exc:
@@ -58,6 +67,15 @@ def test_starting_without_enough_questions_is_rejected() -> None:
     with pytest.raises(RejectedCommand) as exc:
         decide(lobby_state(), StartGame(P1), ctx)
     assert exc.value.code is RejectCode.QUESTION_POOL_INSUFFICIENT
+
+
+def test_starting_with_a_base_count_mismatch_is_rejected() -> None:
+    """The runtime is trusted to shuffle players and draw bases, but `decide`
+    still validates the shapes line up before committing to them."""
+    ctx = replace(start_ctx(), base_regions=BASES[:2])
+    with pytest.raises(RejectedCommand) as exc:
+        decide(lobby_state(), StartGame(P1), ctx)
+    assert exc.value.code is RejectCode.WRONG_TURN_STATE
 
 
 def test_start_emits_the_full_opening_sequence() -> None:

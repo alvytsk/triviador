@@ -149,7 +149,7 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_final_tiebreak_answer(state, state.turn, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, FinalTiebreak):
             return _close_final_tiebreak(state, state.turn, ctx)
-    raise NotImplementedError(f"no handler for {type(command).__name__}")
+    raise NotImplementedError(f"no handler for {type(command).__name__}")  # pragma: no cover
 
 
 def _decide_join(state: GameState, command: JoinGame) -> tuple[ev.GameEvent, ...]:
@@ -1010,7 +1010,7 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
         case ev.GameAborted():
             return replace(state, phase=Phase.ABORTED, turn=None, winner_id=None)
 
-    raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
+    raise NotImplementedError(f"no evolve branch for {type(event).__name__}")  # pragma: no cover
 
 
 def _present_question(

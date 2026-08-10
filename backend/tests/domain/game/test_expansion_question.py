@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -13,8 +14,10 @@ from triviador.domain.game.actions import (
     RejectedCommand,
     StartGame,
     SubmitAnswer,
+    Surrender,
 )
 from triviador.domain.game.reducer import decide, fold
+from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.game.state import (
     ChoiceAnswer,
     ExpansionPicking,
@@ -109,6 +112,28 @@ def test_grants_follow_claims_by_rank_and_open_picking() -> None:
     assert granted.pick_order == (P1, P2)
     assert isinstance(state.turn, ExpansionPicking)
     assert state.turn.current_picker == P1
+
+
+def test_when_every_ranked_player_has_a_zero_claim_no_picking_window_opens() -> None:
+    """`claims_by_rank` grants by rank position among the currently *active*
+    players, not by seat. If the only nonzero rank is one that elimination
+    has pushed out of range, nobody gets picks and the round moves straight
+    on — `order` comes back empty even though free regions remain."""
+    rules = replace(DEFAULT_RULES, claims_by_rank=(0, 0, 3))
+    base = lobby_state(rules=rules)
+    state = fold(base, decide(base, StartGame(P1), start_ctx()))
+    state = fold(state, decide(state, Surrender(P3), DecisionContext(now=NOW)))
+    assert isinstance(state.turn, ExpansionQuestion)
+    assert state.active_players() == (P1, P2)
+
+    state = fold(state, decide(state, answer(state, P1, 100, 500), DecisionContext(now=NOW)))
+    events = decide(state, answer(state, P2, 110, 500), DecisionContext(now=NOW))
+    assert not any(isinstance(e, ev.PicksGranted) for e in events)
+    assert any(isinstance(e, ev.ExpansionRoundCompleted) for e in events)
+
+    after = fold(state, events)
+    assert after.round_no == 2
+    assert isinstance(after.turn, ExpansionQuestion)
 
 
 def test_grants_are_truncated_to_free_regions() -> None:
