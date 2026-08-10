@@ -117,6 +117,10 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_join(state, command)
         case StartGame():
             return _decide_start(state, ctx)
+        case Surrender():
+            return _decide_surrender(state, command, ctx)
+        case AbortGame():
+            return _decide_abort(state, command)
         case SubmitAnswer() if isinstance(state.turn, ExpansionQuestion):
             return _decide_expansion_answer(state, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, ExpansionQuestion):
@@ -677,6 +681,48 @@ def _eliminate(out: _Emitter, player_id: PlayerId, *, keep_base: bool) -> None:
         out.score(player_id, -value, ev.ScoreReason.TERRITORY_LOST)
 
 
+def _decide_surrender(
+    state: GameState, command: Surrender, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    if state.phase is Phase.LOBBY:
+        return (ev.PlayerLeft(command.actor_id),)
+
+    # HUMAN RULING: a contender in a FinalTiebreak cannot eliminate themselves
+    # by surrendering — that would be exploitable (surrender to hand the win
+    # to a specific rival). `Surrender` stays in LEGAL_COMMANDS[FinalTiebreak]
+    # (Task 10) so the command is accepted rather than rejected, but it is
+    # silently dropped here: no events, no elimination.
+    if isinstance(state.turn, FinalTiebreak):
+        return ()
+
+    out = _Emitter(state)
+    out.emit(ev.PlayerSurrendered(command.actor_id))
+    _eliminate(out, command.actor_id, keep_base=False)
+
+    if _is_involved_in_turn(state.turn, command.actor_id):
+        out.emit(ev.TurnAborted(f"{command.actor_id} surrendered"))
+        return (*out.events, *_next_battle_turn(out.state, ctx))
+    return tuple(out.events)
+
+
+def _decide_abort(state: GameState, command: AbortGame) -> tuple[ev.GameEvent, ...]:
+    return (ev.GameAborted(f"aborted by {command.actor_id}"),)
+
+
+def _is_involved_in_turn(turn: Turn | None, player_id: PlayerId) -> bool:
+    match turn:
+        case BattleTargetSelect(attacker_id=a):
+            return a == player_id
+        case (
+            BattleDuel(attacker_id=a, defender_id=d) | BattleTiebreak(attacker_id=a, defender_id=d)
+        ):
+            return player_id in (a, d)
+        case NeutralChallenge(attacker_id=a):
+            return a == player_id
+        case _:
+            return False
+
+
 def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
     """Advance to the next attacker, the next round, or the end of the game.
 
@@ -952,6 +998,17 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
 
         case ev.GameFinished(winner_id=winner_id):
             return replace(state, phase=Phase.FINISHED, winner_id=winner_id, turn=None)
+
+        case ev.PlayerSurrendered():
+            # No state change of its own — the `PlayerEliminated` that always
+            # follows it does the work.
+            return state
+
+        case ev.TurnAborted():
+            return replace(state, turn=None)
+
+        case ev.GameAborted():
+            return replace(state, phase=Phase.ABORTED, turn=None, winner_id=None)
 
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
 
