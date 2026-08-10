@@ -143,8 +143,13 @@ def test_consecutive_skips_terminate_instead_of_recursing_forever() -> None:
     across the whole skip chain. Before the fix, `_next_battle_turn` kept
     recomputing the same "next attacker" (p2) from that stale anchor forever
     whenever p2 also had no legal target — infinite recursion. p2 owns no
-    territory at all here, so `legal_targets(p2)` is trivially empty and the
-    chain must stop after skipping p2, without ever reaching p3.
+    territory at all here, so `legal_targets(p2)` is trivially empty and it is
+    skipped in turn too.
+
+    Task 18 gave `_next_battle_turn` a real rotation anchor
+    (`last_attacker_id`, advanced by every `TurnSkipped`), so the chain no
+    longer just proves it stops — it now correctly keeps going past the stuck
+    p2 and reaches p3, who does have a legal target and gets a real turn.
     """
     layout = {
         "r0": "p1",
@@ -164,13 +169,14 @@ def test_consecutive_skips_terminate_instead_of_recursing_forever() -> None:
     late = DecisionContext(now=NOW + timedelta(seconds=60))
     events = decide(state, ExpireDeadline(state.turn.deadline.id), late)
 
-    first, second = events
+    first, second, third = events
     assert isinstance(first, ev.TurnSkipped)
     assert isinstance(second, ev.TurnSkipped)
     assert first.attacker_id == P1
     assert second.attacker_id == P2
+    assert isinstance(third, ev.TurnStarted)
+    assert third.attacker_id == P3
 
-    # Folding the chain doesn't crash either, and no third attacker is ever
-    # reached — Task 18 owns advancing past a stuck anchor.
     after = fold(state, events)
-    assert after.turn is not None
+    assert isinstance(after.turn, BattleTargetSelect)
+    assert after.turn.attacker_id == P3

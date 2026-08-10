@@ -141,6 +141,10 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_tiebreak_answer(state, state.turn, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, BattleTiebreak):
             return _close_tiebreak(state, state.turn, ctx)
+        case SubmitAnswer() if isinstance(state.turn, FinalTiebreak):
+            return _decide_final_tiebreak_answer(state, state.turn, command, ctx)
+        case ExpireDeadline() if isinstance(state.turn, FinalTiebreak):
+            return _close_final_tiebreak(state, state.turn, ctx)
     raise NotImplementedError(f"no handler for {type(command).__name__}")
 
 
@@ -386,12 +390,10 @@ def _open_battle_turn(
     state: GameState,
     attacker_id: PlayerId,
     ctx: DecisionContext,
-    skipped_in_chain: frozenset[PlayerId] = frozenset(),
 ) -> tuple[ev.GameEvent, ...]:
     if not legal_targets(state, attacker_id):
         skipped = ev.TurnSkipped(attacker_id, "no adjacent target")
-        chain = skipped_in_chain | {attacker_id}
-        return (skipped, *_next_battle_turn(evolve(state, skipped), ctx, chain))
+        return (skipped, *_next_battle_turn(evolve(state, skipped), ctx))
     deadline, _ = state.allocate_deadline(
         DeadlineKind.TARGET_SELECT,
         ctx.now + timedelta(milliseconds=state.rules.answer_timeout_ms),
@@ -675,48 +677,96 @@ def _eliminate(out: _Emitter, player_id: PlayerId, *, keep_base: bool) -> None:
         out.score(player_id, -value, ev.ScoreReason.TERRITORY_LOST)
 
 
-def _next_battle_turn(
-    state: GameState, ctx: DecisionContext, skipped_in_chain: frozenset[PlayerId] = frozenset()
-) -> tuple[ev.GameEvent, ...]:
+def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
     """Advance to the next attacker, the next round, or the end of the game.
 
-    Only the single hop this task needs is implemented: when a target-selection
-    timeout just skipped a turn, `state.turn` is still the stale `BattleTargetSelect`
-    for the skipped attacker (`TurnSkipped` is a no-op for `evolve`), so the next
-    active player in `turn_order` can be found and handed a turn via
-    `_open_battle_turn`. Round completion, elimination-driven rotation, and
-    end-of-game are Task 18's job — except the single-survivor case, which this
-    task's own tests pin: if capture/elimination has left at most one active
-    player, the game ends here, before anything about turn shape or rotation
-    is even looked at (state.turn is typically already None at this point,
-    cleared by the DuelResolved that preceded the capture).
+    `state.last_attacker_id` is the rotation anchor: it is updated by both the
+    `TurnStarted` and `TurnSkipped` `_apply` branches, so it advances on every
+    single hop through this function — a skip chain can never recompute the
+    same "next attacker" twice, which is what makes this recursion (via
+    `_open_battle_turn` for an attacker with no legal target) provably
+    terminating without needing to track visited attackers explicitly:
+    `index` strictly increases each call until it reaches `len(active)`, at
+    which point the round is over.
 
-    Because `turn.attacker_id` never advances (it is the same stale value for
-    every call in a single skip chain), `next_attacker` would otherwise be
-    recomputed identically forever whenever that next attacker also has no
-    legal target — `_open_battle_turn` would call back into this function with
-    the same state, same next_attacker, unbounded recursion. `skipped_in_chain`
-    tracks every attacker already skipped in the current chain; once the
-    recomputed `next_attacker` is already in it, this deliberately returns no
-    further events rather than guessing at Task 18's real rotation (which would
-    need to advance past the stuck anchor, handle round completion, and handle
-    elimination). Callers outside a skip chain never pass `skipped_in_chain`,
-    so the empty-set default is exact for them.
+    One active player remaining also ends the game — before anything about
+    turn shape or rotation is even looked at, since `state.turn` is typically
+    already `None` at that point, cleared by the `DuelResolved` that preceded
+    the capture.
     """
     active = state.active_players()
     if len(active) <= 1:
-        winner_id = active[0] if active else None
-        final_scores = {p: state.players[p].score for p in state.players}
-        return (ev.GameFinished(winner_id, final_scores),)
+        return _finish(state, ctx)
 
-    turn = state.turn
-    if not isinstance(turn, BattleTargetSelect):
+    last = state.last_attacker_id
+    index = active.index(last) + 1 if last in active else len(active)
+    if index < len(active):
+        return _open_battle_turn(state, active[index], ctx)
+
+    completed = ev.BattleRoundCompleted(state.round_no)
+    after = evolve(state, completed)
+    if after.round_no >= after.rules.battle_rounds:
+        return (completed, *_finish(after, ctx))
+    started = ev.BattleRoundStarted(after.round_no + 1)
+    after = evolve(after, started)
+    return (completed, started, *_open_battle_turn(after, after.active_players()[0], ctx))
+
+
+def _finish(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
+    """Compare scores among non-eliminated players and end the game.
+
+    Deliberately keyed off `state.players` (filtered by `is_eliminated`)
+    rather than `state.active_players()`: winner determination is a property
+    of who is still in the game, not of `turn_order`'s rotation bookkeeping.
+    """
+    final_scores = {p: s.score for p, s in state.players.items()}
+    scores = {p: s.score for p, s in state.players.items() if not s.is_eliminated}
+    if not scores:
+        return (ev.GameFinished(None, final_scores),)
+
+    best = max(scores.values())
+    leaders = tuple(p for p, s in scores.items() if s == best)
+    if len(leaders) == 1:
+        return (ev.GameFinished(leaders[0], final_scores),)
+
+    started = ev.FinalTiebreakStarted(leaders)
+    after = evolve(state, started)
+    question, _ = after.pool.next_numeric()
+    deadline, _ = after.allocate_deadline(
+        DeadlineKind.ANSWER, ctx.now + timedelta(milliseconds=after.rules.answer_timeout_ms)
+    )
+    return (started, ev.QuestionPresented(question, deadline))
+
+
+def _decide_final_tiebreak_answer(
+    state: GameState, turn: FinalTiebreak, command: SubmitAnswer, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    if command.actor_id not in turn.contenders:
+        raise RejectedCommand(
+            RejectCode.NOT_YOUR_TURN, f"{command.actor_id!r} is not part of this tiebreak"
+        )
+    recorded = _record_answer(turn, command)
+    if recorded is None:
         return ()
-    order = state.active_players()
-    next_attacker = order[(order.index(turn.attacker_id) + 1) % len(order)]
-    if next_attacker in skipped_in_chain:
-        return ()
-    return _open_battle_turn(state, next_attacker, ctx, skipped_in_chain)
+    after = evolve(state, recorded)
+    assert isinstance(after.turn, FinalTiebreak)
+    if len(after.turn.answers) < len(after.turn.contenders):
+        return (recorded,)
+    return (recorded, *_close_final_tiebreak(after, after.turn, ctx))
+
+
+def _close_final_tiebreak(
+    state: GameState, turn: FinalTiebreak, ctx: DecisionContext
+) -> tuple[ev.GameEvent, ...]:
+    ranking = _rank_numeric(turn, state)
+    resolved = ev.QuestionResolved(
+        correct_choice_index=None,
+        correct_value=turn.question.numeric_answer,
+        ranking=ranking,
+        correct_players=(),
+    )
+    finished = ev.GameFinished(ranking[0], {p: s.score for p, s in state.players.items()})
+    return (ev.AnswerWindowClosed(turn.deadline), resolved, finished)
 
 
 def evolve(state: GameState, event: ev.GameEvent) -> GameState:
@@ -815,10 +865,15 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
                 state,
                 next_deadline_id=max(state.next_deadline_id, deadline.id + 1),
                 turn=BattleTargetSelect(deadline, attacker),
+                last_attacker_id=attacker,
             )
 
-        case ev.TurnSkipped():
-            return state
+        case ev.TurnSkipped(attacker_id=attacker):
+            # `turn` itself is left untouched (still the just-skipped
+            # `BattleTargetSelect`, or unrelated) — only the rotation anchor
+            # advances, which is all `_next_battle_turn` needs to find the
+            # next active attacker.
+            return replace(state, last_attacker_id=attacker)
 
         case ev.AttackDeclared():
             # `turn` stays the BattleTargetSelect it already was — the following
@@ -886,8 +941,17 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
             territory = replace(state.territories[rid], owner_id=None, acquisition=None)
             return replace(state, territories={**state.territories, rid: territory})
 
+        case ev.BattleRoundCompleted():
+            # `round_no` itself only advances on the `BattleRoundStarted` that
+            # follows when there is a next round; this event is purely a
+            # boundary marker.
+            return state
+
+        case ev.FinalTiebreakStarted(contenders=contenders):
+            return replace(state, turn=None, pending_final_contenders=contenders)
+
         case ev.GameFinished(winner_id=winner_id):
-            return replace(state, phase=Phase.FINISHED, winner_id=winner_id)
+            return replace(state, phase=Phase.FINISHED, winner_id=winner_id, turn=None)
 
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")
 
@@ -907,8 +971,11 @@ def _present_question(
     if state.phase is Phase.EXPANSION:
         return replace(base, turn=ExpansionQuestion(deadline, question, answers={}))
     if state.phase is Phase.BATTLE:
-        attack = state.pending_attack
         turn: Turn
+        if state.pending_final_contenders:
+            turn = FinalTiebreak(deadline, state.pending_final_contenders, question, answers={})
+            return replace(base, turn=turn, pending_final_contenders=())
+        attack = state.pending_attack
         if attack is not None:
             if attack.defender_id is not None:
                 turn = BattleDuel(

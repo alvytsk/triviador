@@ -180,6 +180,15 @@ class GameState:
     # sees them as two separate events and needs somewhere to carry the declared
     # attack in between, since it builds the BattleDuel/NeutralChallenge turn.
     pending_attack: "AttackDeclared | None" = None
+    # The rotation anchor for `_next_battle_turn`: the attacker who was most
+    # recently started or skipped. Set by both the `TurnStarted` and
+    # `TurnSkipped` `_apply` branches so the anchor advances on every skip,
+    # never just on a completed turn — that's what lets turn rotation find
+    # the next active player in `turn_order` without recursing.
+    last_attacker_id: PlayerId | None = None
+    # Bridges `FinalTiebreakStarted` to the `QuestionPresented` that follows
+    # it, mirroring `pending_attack` for the final-tiebreak case.
+    pending_final_contenders: tuple[PlayerId, ...] = ()
 
     def active_players(self) -> tuple[PlayerId, ...]:
         return tuple(p for p in self.turn_order if not self.players[p].is_eliminated)
