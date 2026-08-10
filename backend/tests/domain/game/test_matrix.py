@@ -28,7 +28,7 @@ from triviador.domain.game.actions import (
     SubmitAnswer,
     Surrender,
 )
-from triviador.domain.game.reducer import decide
+from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.state import (
     TERMINAL_PHASES,
     BattleDuel,
@@ -248,4 +248,6 @@ def test_cell(
         with pytest.raises(RejectedCommand):
             decide(state, command, ctx)
     else:
-        assert decide(state, command, ctx) != ()
+        events = decide(state, command, ctx)
+        assert events != ()
+        fold(state, events)
