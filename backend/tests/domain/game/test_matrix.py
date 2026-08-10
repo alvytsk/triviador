@@ -1,14 +1,45 @@
-"""Spec §6.3 as an executable artifact. 10 turn states x 8 commands = 80 cells."""
+"""Spec §6.3 as an executable artifact. 10 turn states x 8 commands = 80 cells.
+
+`test_the_matrix_is_complete` doesn't just check MATRIX's own shape — it
+cross-references MATRIX's row and column labels against the live `Turn` and
+`Command` unions (via `TURN_ROWS`/`COMMAND_COLUMNS` below), so adding or
+removing a turn variant or a command type turns this red before anyone
+remembers to touch this file, not just after.
+"""
 
 from datetime import timedelta
+from typing import get_args
 
 import pytest
 
 from tests.conftest import NOW, lobby_state
 from tests.domain.game.conftest import CommandBuilder, States
 from tests.domain.game.test_start import start_ctx
-from triviador.domain.game.actions import DecisionContext, RejectedCommand
+from triviador.domain.game.actions import (
+    AbortGame,
+    Command,
+    DecisionContext,
+    ExpireDeadline,
+    JoinGame,
+    PickRegion,
+    RejectedCommand,
+    SelectAttackTarget,
+    StartGame,
+    SubmitAnswer,
+    Surrender,
+)
 from triviador.domain.game.reducer import decide
+from triviador.domain.game.state import (
+    TERMINAL_PHASES,
+    BattleDuel,
+    BattleTargetSelect,
+    BattleTiebreak,
+    ExpansionPicking,
+    ExpansionQuestion,
+    FinalTiebreak,
+    NeutralChallenge,
+    Turn,
+)
 
 ACCEPT, IGNORE, REJECT = "accept", "ignore", "reject"
 
@@ -118,10 +149,73 @@ MATRIX: dict[str, dict[str, str]] = {
 }
 
 
+# MATRIX's row labels for every non-terminal turn shape `decide` switches on
+# (`None` meaning "no open turn", i.e. the lobby) — this is the one place a
+# new `Turn` variant must be named, so `test_the_matrix_is_complete` fails the
+# moment `Turn` gains a member this dict doesn't know about yet.
+TURN_ROWS: dict[type[Turn] | None, str] = {
+    None: "lobby",
+    ExpansionQuestion: "expansion_question",
+    ExpansionPicking: "expansion_picking",
+    BattleTargetSelect: "battle_target",
+    BattleDuel: "battle_duel",
+    BattleTiebreak: "battle_tiebreak",
+    NeutralChallenge: "neutral_challenge",
+    FinalTiebreak: "final_tiebreak",
+}
+
+# MATRIX's remaining two rows are terminal *phases*, not turn shapes: guard 1
+# in `decide` short-circuits on `state.phase in TERMINAL_PHASES` before `Turn`
+# ever enters the picture, so `finished`/`aborted` are cross-referenced
+# against `TERMINAL_PHASES` instead of `Turn`.
+TERMINAL_ROWS = {"finished", "aborted"}
+
+# MATRIX's column labels, one per `Command` union member.
+COMMAND_COLUMNS: dict[type[Command], str] = {
+    JoinGame: "join",
+    StartGame: "start",
+    SubmitAnswer: "answer",
+    PickRegion: "pick",
+    SelectAttackTarget: "target",
+    ExpireDeadline: "expire",
+    Surrender: "surrender",
+    AbortGame: "abort",
+}
+
+
 def test_the_matrix_is_complete() -> None:
     assert len(MATRIX) == 10
     assert all(len(row) == 8 for row in MATRIX.values())
     assert sum(len(row) for row in MATRIX.values()) == 80
+
+    # Cross-reference against the live domain types, not just MATRIX's own
+    # internal shape: this is what makes a new `Turn` variant or `Command`
+    # type turn the suite red instead of silently going unchecked.
+    live_turns = set(get_args(Turn)) | {None}
+    named_turns = set(TURN_ROWS)
+    assert live_turns == named_turns, (
+        f"Turn union and TURN_ROWS disagree: "
+        f"missing from TURN_ROWS={live_turns - named_turns}, "
+        f"stale in TURN_ROWS={named_turns - live_turns}"
+    )
+    assert set(TURN_ROWS.values()) | TERMINAL_ROWS == set(MATRIX)
+
+    terminal_phase_names = {phase.value for phase in TERMINAL_PHASES}
+    assert terminal_phase_names == TERMINAL_ROWS, (
+        f"TERMINAL_PHASES and TERMINAL_ROWS disagree: "
+        f"missing from TERMINAL_ROWS={terminal_phase_names - TERMINAL_ROWS}, "
+        f"stale in TERMINAL_ROWS={TERMINAL_ROWS - terminal_phase_names}"
+    )
+
+    live_commands = set(get_args(Command))
+    named_commands = set(COMMAND_COLUMNS)
+    assert live_commands == named_commands, (
+        f"Command union and COMMAND_COLUMNS disagree: "
+        f"missing from COMMAND_COLUMNS={live_commands - named_commands}, "
+        f"stale in COMMAND_COLUMNS={named_commands - live_commands}"
+    )
+    column_names = set(COMMAND_COLUMNS.values())
+    assert all(set(row) == column_names for row in MATRIX.values())
 
 
 @pytest.mark.parametrize("turn_name", sorted(MATRIX))
