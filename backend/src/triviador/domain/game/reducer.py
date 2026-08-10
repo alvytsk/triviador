@@ -327,9 +327,15 @@ def _decide_auto_pick(
         # is a snapshot taken when `PicksGranted` fired and nothing revisits
         # it — so on timeout it can point at someone who no longer owns
         # anything. Forfeit their remaining grants instead of handing a
-        # region to an eliminated player; `_next_picker` (below) already
-        # skips eliminated candidates, so this just needs to zero this
-        # picker's own remaining count and let it decide what happens next.
+        # region to an eliminated player. `_next_picker` (below) skips
+        # eliminated candidates when choosing who is up next, but it does
+        # *not* scrub `remaining` itself — other entries in this dict can
+        # still carry stale positive grants for players eliminated earlier
+        # in the round. That's fine only because `_apply`'s `PicksGranted`
+        # handler re-derives `current_picker` through this same
+        # `_next_picker` call rather than trusting the raw grants; this line
+        # just needs to zero this picker's own remaining count and let
+        # `_next_picker` decide what happens next.
         remaining = {**turn.grants_remaining, turn.current_picker: 0}
         next_picker = _next_picker(turn.pick_order, remaining, state)
         if next_picker is None:
@@ -934,11 +940,27 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
 
         case ev.PicksGranted(pick_order=order, grants=grants, deadline=deadline):
             # `order` is the round's fixed rank order; the picker due next is
-            # the earliest-ranked player who still has a grant. Re-grants
-            # (Task 13) reuse this same event/branch mid-round, once some
-            # entries in `order` are already exhausted, so this cannot simply
-            # take `order[0]`.
-            current_picker = next(p for p in order if grants.get(p, 0) > 0)
+            # the earliest-ranked player who still has a grant and hasn't
+            # been eliminated since the grant was computed (surrender during
+            # EXPANSION never revisits the open turn, so `grants` can carry a
+            # stale positive entry for a player eliminated after this event
+            # was decided). Re-grants (Task 13) reuse this same event/branch
+            # mid-round, once some entries in `order` are already exhausted,
+            # so this cannot simply take `order[0]`.
+            #
+            # Delegate to `_next_picker` rather than re-deriving the same
+            # rule here: it's the function decide() itself used (on the same
+            # state, by construction — `state` is this event's predecessor
+            # state, threaded through unchanged or via events already folded
+            # earlier in the same batch) to decide whether to emit this event
+            # at all, so decide-time and apply-time can never disagree about
+            # who picks next.
+            current_picker = _next_picker(order, grants, state)
+            assert current_picker is not None, (
+                "PicksGranted is only emitted once _next_picker confirms a "
+                "candidate exists; state must have changed between decide() "
+                "and apply() for this to fire"
+            )
             return replace(
                 state,
                 next_deadline_id=max(state.next_deadline_id, deadline.id + 1),

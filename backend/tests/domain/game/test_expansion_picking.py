@@ -119,6 +119,35 @@ def test_auto_pick_forfeits_an_eliminated_pickers_remaining_grants() -> None:
     assert after.turn.current_picker == P2
 
 
+def test_picking_skips_a_stale_grant_left_by_a_non_current_eliminated_picker() -> None:
+    """Regression (task 21): `_apply`'s `PicksGranted` handler used to
+    recompute `current_picker` by scanning `grants` for the first positive
+    entry with no elimination filter, disagreeing with `_next_picker` (which
+    the earlier `test_auto_pick_forfeits_...` test exercises, but only for
+    the case where the *current* picker is the one who was eliminated).
+    Here p2 — who is neither the current picker nor the one being acted
+    on — surrenders mid-round, leaving `grants_remaining[p2] == 1` stale.
+    p1 then claims their own pick, and `_next_picker` (used by both decide()
+    and `_apply`) must skip the eliminated p2 and land on p3, not install
+    p2 as `current_picker`."""
+    state = picking_state({"claims_by_rank": (1, 1, 1)})
+    assert isinstance(state.turn, ExpansionPicking)
+    assert state.turn.pick_order == (P1, P2, P3)
+    assert state.turn.current_picker == P1
+
+    state = fold(state, decide(state, Surrender(P2), CTX))
+    assert isinstance(state.turn, ExpansionPicking)
+    assert state.turn.current_picker == P1  # untouched: surrender doesn't revisit the turn
+    assert state.turn.grants_remaining[P2] == 1  # stale positive grant
+
+    events = decide(state, PickRegion(P1, state.turn.deadline.id, RegionId("r1")), CTX)
+    granted = next(e for e in events if isinstance(e, ev.PicksGranted))
+    assert granted.grants[P2] == 1  # still un-scrubbed on the event itself
+    after = fold(state, events)
+    assert isinstance(after.turn, ExpansionPicking)
+    assert after.turn.current_picker == P3
+
+
 def test_auto_pick_finishes_the_game_when_every_remaining_picker_is_eliminated() -> None:
     """Same regression, other branch: if forfeiting the stale picker leaves
     no eligible picker at all (everyone else with a grant is also
