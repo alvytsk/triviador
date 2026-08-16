@@ -1,0 +1,62 @@
+[project]
+name = "triviador"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "hypothesis>=6.115",
+    "mypy>=1.13",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/triviador"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["src/triviador", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `--cov` (source/branch config below) runs on every plain `uv run pytest`,
+# and `--cov-fail-under` is deliberately omitted here so pytest-cov falls
+# back to `[tool.coverage.report] fail_under`, which is scoped by `include`
+# to reducer.py alone — see that section for why. A partial run (e.g.
+# `uv run pytest tests/domain/game/test_start.py`) will not exercise every
+# reducer.py branch and can therefore fail this gate on its own; pass
+# `--no-cov` for a quick iterative run of a subset.
+addopts = "-q --cov --cov-report=term-missing"
+
+[tool.coverage.report]
+show_missing = true
+# The 100% branch-coverage gate applies to reducer.py only: it is the one
+# module this plan requires provably exhaustive (every branch is a reachable
+# game state). The rest of `src/triviador` is measured (via `[tool.coverage.
+# run] source` below, visible in the term-missing report) but not gated —
+# rules.py, scoring.py, maps/validation.py and questions/types.py are
+# currently below 100% and a repo-wide `fail_under` would make every `pytest`
+# run red today. Raise this to cover more once those are closed out, or add
+# a second `coverage report --include=... --fail-under=...` invocation
+# rather than loosening this one.
+include = ["*/domain/game/reducer.py"]
+fail_under = 100
+
+[tool.coverage.run]
+branch = true
+source = ["src/triviador"]

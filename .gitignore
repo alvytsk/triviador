@@ -1,7 +1,9 @@
 .superpowers/
+.claude/
 __pycache__/
 *.py[cod]
 .venv/
+.coverage
 node_modules/
 dist/
 .env

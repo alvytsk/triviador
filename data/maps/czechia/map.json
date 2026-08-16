@@ -1,0 +1,35 @@
+{
+  "map_id": "czechia",
+  "regions": [
+    {"id": "praha", "name": "Praha"},
+    {"id": "stredocesky", "name": "Středočeský"},
+    {"id": "jihocesky", "name": "Jihočeský"},
+    {"id": "plzensky", "name": "Plzeňský"},
+    {"id": "karlovarsky", "name": "Karlovarský"},
+    {"id": "ustecky", "name": "Ústecký"},
+    {"id": "liberecky", "name": "Liberecký"},
+    {"id": "kralovehradecky", "name": "Královéhradecký"},
+    {"id": "pardubicky", "name": "Pardubický"},
+    {"id": "vysocina", "name": "Vysočina"},
+    {"id": "jihomoravsky", "name": "Jihomoravský"},
+    {"id": "olomoucky", "name": "Olomoucký"},
+    {"id": "zlinsky", "name": "Zlínský"},
+    {"id": "moravskoslezsky", "name": "Moravskoslezský"}
+  ],
+  "adjacency": {
+    "praha": ["stredocesky"],
+    "stredocesky": ["praha", "jihocesky", "plzensky", "ustecky", "liberecky", "kralovehradecky", "pardubicky", "vysocina"],
+    "jihocesky": ["stredocesky", "plzensky", "vysocina", "jihomoravsky"],
+    "plzensky": ["stredocesky", "jihocesky", "karlovarsky", "ustecky"],
+    "karlovarsky": ["plzensky", "ustecky"],
+    "ustecky": ["stredocesky", "plzensky", "karlovarsky", "liberecky"],
+    "liberecky": ["stredocesky", "ustecky", "kralovehradecky"],
+    "kralovehradecky": ["stredocesky", "liberecky", "pardubicky"],
+    "pardubicky": ["stredocesky", "kralovehradecky", "vysocina", "olomoucky", "jihomoravsky"],
+    "vysocina": ["stredocesky", "jihocesky", "pardubicky", "jihomoravsky"],
+    "jihomoravsky": ["jihocesky", "pardubicky", "vysocina", "olomoucky", "zlinsky"],
+    "olomoucky": ["pardubicky", "jihomoravsky", "zlinsky", "moravskoslezsky"],
+    "zlinsky": ["jihomoravsky", "olomoucky", "moravskoslezsky"],
+    "moravskoslezsky": ["olomoucky", "zlinsky"]
+  }
+}

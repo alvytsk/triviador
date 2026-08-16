@@ -4345,10 +4345,20 @@ def _next_battle_turn(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEv
     if len(active) <= 1:
         return _finish(state, ctx)
 
+    # Rotate on `turn_order`, which retains eliminated players in their
+    # original seats — NOT on the pre-filtered `active`. `last` is the
+    # attacker whose turn just ended, and that includes one who surrendered
+    # *during* their own open turn, in which case they are already eliminated
+    # and do not appear in `active` at all. Anchoring on `active` would make
+    # the lookup miss, fall through to "round over", and cut every remaining
+    # player's turn short — in the final round that ends the game outright,
+    # letting a player out of contention surrender to freeze the standings.
+    order = state.turn_order
     last = state.last_attacker_id
-    index = active.index(last) + 1 if last in active else len(active)
-    if index < len(active):
-        return _open_battle_turn(state, active[index], ctx)
+    start = order.index(last) + 1 if last in order else len(order)
+    nxt = next((p for p in order[start:] if not state.players[p].is_eliminated), None)
+    if nxt is not None:
+        return _open_battle_turn(state, nxt, ctx)
 
     completed = ev.BattleRoundCompleted(state.round_no)
     after = evolve(state, completed)
