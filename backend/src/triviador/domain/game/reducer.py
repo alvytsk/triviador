@@ -441,7 +441,11 @@ def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameE
     # replaced with the assertion below rather than left as dead code the
     # reducer's 100%-branch-coverage gate could never satisfy.
     active = after.active_players()
-    assert len(active) > 1
+    assert len(active) > 1, (
+        "during EXPANSION only Surrender eliminates players, and "
+        "_decide_surrender finishes the game before this point when that "
+        "would drop active players to one"
+    )
     battle = ev.BattleRoundStarted(1)
     after = evolve(after, battle)
     return (done, battle, *_open_battle_turn(after, active[0], ctx))
@@ -852,6 +856,15 @@ def _finish(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
     Deliberately keyed off `state.players` (filtered by `is_eliminated`)
     rather than `state.active_players()`: winner determination is a property
     of who is still in the game, not of `turn_order`'s rotation bookkeeping.
+
+    Callable from either phase, but a tied-leaders call in EXPANSION would
+    mishandle the tiebreak: `_present_question` checks `state.phase is
+    Phase.EXPANSION` first, so it would build an `ExpansionQuestion` turn
+    instead of a `FinalTiebreak` one and strand `pending_final_contenders`,
+    with no error raised. This is unreachable today — `_decide_surrender` is
+    the sole EXPANSION-phase caller, and it only finishes the game when at
+    most one non-eliminated player remains, so there is never more than one
+    leader to tie on that path.
     """
     final_scores = {p: s.score for p, s in state.players.items()}
     scores = {p: s.score for p, s in state.players.items() if not s.is_eliminated}

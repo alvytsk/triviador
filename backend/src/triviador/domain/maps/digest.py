@@ -1,4 +1,8 @@
-"""Content digest for map topology.
+"""Content digest for a map's parsed JSON.
+
+Hashes the whole parsed `map.json`, not just its topology — display-only
+fields such as region names are included too, deliberately: a cosmetic-looking
+edit is still a content change recovery should notice.
 
 Pure: hashes a value already in memory. The *reading* of map.json lives in
 `triviador.maps.registry`, outside the domain.

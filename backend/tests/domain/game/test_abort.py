@@ -1,5 +1,7 @@
 """AbortGame, player-issued and system-issued."""
 
+from dataclasses import replace
+
 import pytest
 
 from tests.conftest import NOW, lobby_state
@@ -44,3 +46,19 @@ def test_the_system_can_abort_an_empty_lobby() -> None:
 def test_the_system_can_abort_a_populated_lobby() -> None:
     state = lobby_state()
     assert decide(state, AbortGame(), CTX) == (ev.GameAborted("aborted by system"),)
+
+
+def test_a_system_abort_is_rejected_once_the_game_has_finished() -> None:
+    """Guard 1 short-circuits on terminal phases before actor checks ever run,
+    so even the actor-less system form is rejected here — not ignored."""
+    state = replace(lobby_state(), phase=Phase.FINISHED, turn=None)
+    with pytest.raises(RejectedCommand) as exc:
+        decide(state, AbortGame(), CTX)
+    assert exc.value.code is RejectCode.WRONG_TURN_STATE
+
+
+def test_a_system_abort_is_rejected_once_the_game_has_aborted() -> None:
+    state = replace(lobby_state(), phase=Phase.ABORTED, turn=None)
+    with pytest.raises(RejectedCommand) as exc:
+        decide(state, AbortGame(), CTX)
+    assert exc.value.code is RejectCode.WRONG_TURN_STATE

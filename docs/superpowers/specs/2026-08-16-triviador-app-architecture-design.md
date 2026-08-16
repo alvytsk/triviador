@@ -162,8 +162,8 @@ hashlib.sha256(
 ```
 
 Canonical form, not file bytes, so reformatting is not a false positive. Recovery
-loads via `MapRegistry.load(map_id)`, recomputes, and **refuses to load the game on
-mismatch**. This is not exotic: maps are a two-file drop with no version and no
+loads via `MapRegistry.load_with_digest(map_id)`, recomputes, and **refuses to load
+the game on mismatch**. This is not exotic: maps are a two-file drop with no version and no
 migration, so silent edits are the expected failure mode. `map.svg` is excluded — the
 backend reads it for validation only and never to construct domain state.
 

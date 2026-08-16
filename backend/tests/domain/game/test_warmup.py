@@ -67,6 +67,8 @@ def test_expiring_the_warmup_starts_round_one_and_presents_a_question() -> None:
     assert isinstance(after.turn, ExpansionQuestion)
     assert after.round_no == 1
     assert after.turn.deadline.kind is DeadlineKind.ANSWER
+    assert after.pool.numeric_used == 1
+    assert after.turn.question.prompt == "numeric 0?"
 
 
 def test_an_early_warmup_expiry_is_ignored() -> None:

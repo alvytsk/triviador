@@ -176,7 +176,7 @@ def expire_warmup(state: GameState) -> GameState:
         decide(
             state,
             ExpireDeadline(state.turn.deadline.id),
-            DecisionContext(now=NOW + timedelta(minutes=1)),
+            DecisionContext(now=state.turn.deadline.deadline_at + timedelta(seconds=1)),
         ),
     )
 
