@@ -1,0 +1,45 @@
+# Golden corpus
+
+Three complete game trajectories, played once through the real
+`decide`/`fold` reducer and committed here as raw event rows.
+`tests/codec/test_golden_corpus.py` reads these files, decodes each row with
+`db.codec.codec.decode`, folds them through the reducer, and compares the
+result to a committed expected summary. It never calls `encode` — a test
+that encodes its own output and decodes it back only proves the codec agrees
+with itself, which is true of every broken codec too. This is the one test
+in the suite that can catch a *semantic* change to the reducer, not just a
+shape change to its wire format.
+
+## Trajectories
+
+- **`expansion_to_battle.json`** — creation, three joins, start, the
+  `MediaWarmup` window, a full two-round expansion phase that fills the 3x3
+  grid (3 bases + 6 claimed regions), and three battle-round-1 attacks (a
+  capture, a held defense, a mutual miss) that carry the game into the
+  opening of battle round 2. The broad trajectory: touches lifecycle,
+  question, expansion, and battle events.
+- **`surrender_ends_game.json`** — two consecutive surrenders during
+  EXPANSION drop active players to one, which finishes the game immediately.
+  This pins Plan 2's fix for Spec 1 §3.6 Defect A (`_decide_surrender`
+  checking `active_players() <= 1` itself, rather than relying on a stale
+  window later expiring). Its `winner_id` is deliberately **not** null —
+  that's what the fix is for.
+- **`abort_from_lobby.json`** — genesis, one join, a system-authorized
+  `AbortGame(actor_id=None)`. Short, and the only corpus entry covering that
+  path.
+
+## Regenerating
+
+```
+uv run python tests/tools/generate_golden.py
+```
+
+The generator and the test both resolve `MapDefinition` from the same
+shared builder in `tests/conftest.py` (`grid_map()`) — there is no second,
+hand-rolled map definition anywhere in this corpus.
+
+**A diff in these files during an unrelated change is a finding, not a
+chore.** Regenerate only when a domain change is *intended* to alter game
+history, and review the diff with the same care as the code change that
+produced it. Skimming past a diff here to make the suite green again is
+exactly the failure mode this corpus exists to catch.

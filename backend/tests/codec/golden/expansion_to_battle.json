@@ -1,0 +1,3482 @@
+{
+  "expected": {
+    "eliminated": [],
+    "next_deadline_id": 17,
+    "phase": "battle",
+    "round_no": 2,
+    "scores": {
+      "p1": 2300,
+      "p2": 1200,
+      "p3": 1000
+    },
+    "seq": 78,
+    "territories": {
+      "r0": {
+        "base_hp": 3,
+        "kind": "base",
+        "owner_id": "p1"
+      },
+      "r1": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": "p1"
+      },
+      "r2": {
+        "base_hp": 3,
+        "kind": "base",
+        "owner_id": "p2"
+      },
+      "r3": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": "p1"
+      },
+      "r4": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": "p1"
+      },
+      "r5": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": "p1"
+      },
+      "r6": {
+        "base_hp": 3,
+        "kind": "base",
+        "owner_id": "p3"
+      },
+      "r7": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": "p1"
+      },
+      "r8": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": "p2"
+      }
+    },
+    "winner_id": null
+  },
+  "game_id": "g-expansion-to-battle",
+  "generated_from": "0a08ee90906c6b6bf9c5e86b9dd3a53de3118718",
+  "map_id": "grid",
+  "name": "expansion_to_battle",
+  "rows": [
+    {
+      "payload": {
+        "host_id": "p1",
+        "map_id": "grid",
+        "map_sha256": "a86046af323bc51022bdf6560e8ca4505909318d3aad94d47167d729e290ad61",
+        "rules": {
+          "answer_timeout_ms": 20000,
+          "base_hp": 3,
+          "battle_rounds": 4,
+          "claims_by_rank": [
+            2,
+            1,
+            0
+          ],
+          "expansion_rounds": 4,
+          "pick_timeout_ms": 15000,
+          "player_count": 3,
+          "pts_base": 1000,
+          "pts_conquered": 400,
+          "pts_defense": 100,
+          "pts_territory": 200,
+          "warmup_ms": 5000
+        }
+      },
+      "schema_version": 1,
+      "seq": 1,
+      "type": "game.created"
+    },
+    {
+      "payload": {
+        "display_name": "One",
+        "player_id": "p1",
+        "seat": 0
+      },
+      "schema_version": 1,
+      "seq": 2,
+      "type": "game.player_joined"
+    },
+    {
+      "payload": {
+        "display_name": "Two",
+        "player_id": "p2",
+        "seat": 1
+      },
+      "schema_version": 1,
+      "seq": 3,
+      "type": "game.player_joined"
+    },
+    {
+      "payload": {
+        "display_name": "Three",
+        "player_id": "p3",
+        "seat": 2
+      },
+      "schema_version": 1,
+      "seq": 4,
+      "type": "game.player_joined"
+    },
+    {
+      "payload": {
+        "turn_order": [
+          "p1",
+          "p2",
+          "p3"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 5,
+      "type": "game.started"
+    },
+    {
+      "payload": {
+        "assignments": {
+          "p1": "r0",
+          "p2": "r2",
+          "p3": "r6"
+        }
+      },
+      "schema_version": 1,
+      "seq": 6,
+      "type": "game.bases_assigned"
+    },
+    {
+      "payload": {
+        "delta": 1000,
+        "new_total": 1000,
+        "player_id": "p1",
+        "reason": "base"
+      },
+      "schema_version": 1,
+      "seq": 7,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "delta": 1000,
+        "new_total": 1000,
+        "player_id": "p2",
+        "reason": "base"
+      },
+      "schema_version": 1,
+      "seq": 8,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "delta": 1000,
+        "new_total": 1000,
+        "player_id": "p3",
+        "reason": "base"
+      },
+      "schema_version": 1,
+      "seq": 9,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "pool": {
+          "mc_used": 0,
+          "multiple_choice": [
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 0?",
+              "question_id": "m0",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 1?",
+              "question_id": "m1",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 2?",
+              "question_id": "m2",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 3?",
+              "question_id": "m3",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 4?",
+              "question_id": "m4",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 5?",
+              "question_id": "m5",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 6?",
+              "question_id": "m6",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 7?",
+              "question_id": "m7",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 8?",
+              "question_id": "m8",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 9?",
+              "question_id": "m9",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 10?",
+              "question_id": "m10",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 11?",
+              "question_id": "m11",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 12?",
+              "question_id": "m12",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 13?",
+              "question_id": "m13",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 14?",
+              "question_id": "m14",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 15?",
+              "question_id": "m15",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 16?",
+              "question_id": "m16",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 17?",
+              "question_id": "m17",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 18?",
+              "question_id": "m18",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 19?",
+              "question_id": "m19",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 20?",
+              "question_id": "m20",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 21?",
+              "question_id": "m21",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 22?",
+              "question_id": "m22",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 23?",
+              "question_id": "m23",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 24?",
+              "question_id": "m24",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 25?",
+              "question_id": "m25",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 26?",
+              "question_id": "m26",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 27?",
+              "question_id": "m27",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 28?",
+              "question_id": "m28",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 29?",
+              "question_id": "m29",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 30?",
+              "question_id": "m30",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 31?",
+              "question_id": "m31",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 32?",
+              "question_id": "m32",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 33?",
+              "question_id": "m33",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 34?",
+              "question_id": "m34",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 35?",
+              "question_id": "m35",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 36?",
+              "question_id": "m36",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 37?",
+              "question_id": "m37",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 38?",
+              "question_id": "m38",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": [
+                {
+                  "idx": 0,
+                  "is_correct": true,
+                  "media_asset_id": null,
+                  "text": "a"
+                },
+                {
+                  "idx": 1,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "b"
+                },
+                {
+                  "idx": 2,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "c"
+                },
+                {
+                  "idx": 3,
+                  "is_correct": false,
+                  "media_asset_id": null,
+                  "text": "d"
+                }
+              ],
+              "difficulty": "easy",
+              "kind": "multiple_choice",
+              "media_asset_id": null,
+              "numeric_answer": null,
+              "prompt": "mc 39?",
+              "question_id": "m39",
+              "unit": null,
+              "version": 1
+            }
+          ],
+          "numeric": [
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "100",
+              "prompt": "numeric 0?",
+              "question_id": "n0",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "101",
+              "prompt": "numeric 1?",
+              "question_id": "n1",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "102",
+              "prompt": "numeric 2?",
+              "question_id": "n2",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "103",
+              "prompt": "numeric 3?",
+              "question_id": "n3",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "104",
+              "prompt": "numeric 4?",
+              "question_id": "n4",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "105",
+              "prompt": "numeric 5?",
+              "question_id": "n5",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "106",
+              "prompt": "numeric 6?",
+              "question_id": "n6",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "107",
+              "prompt": "numeric 7?",
+              "question_id": "n7",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "108",
+              "prompt": "numeric 8?",
+              "question_id": "n8",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "109",
+              "prompt": "numeric 9?",
+              "question_id": "n9",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "110",
+              "prompt": "numeric 10?",
+              "question_id": "n10",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "111",
+              "prompt": "numeric 11?",
+              "question_id": "n11",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "112",
+              "prompt": "numeric 12?",
+              "question_id": "n12",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "113",
+              "prompt": "numeric 13?",
+              "question_id": "n13",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "114",
+              "prompt": "numeric 14?",
+              "question_id": "n14",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "115",
+              "prompt": "numeric 15?",
+              "question_id": "n15",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "116",
+              "prompt": "numeric 16?",
+              "question_id": "n16",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "117",
+              "prompt": "numeric 17?",
+              "question_id": "n17",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "118",
+              "prompt": "numeric 18?",
+              "question_id": "n18",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "119",
+              "prompt": "numeric 19?",
+              "question_id": "n19",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "120",
+              "prompt": "numeric 20?",
+              "question_id": "n20",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "121",
+              "prompt": "numeric 21?",
+              "question_id": "n21",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "122",
+              "prompt": "numeric 22?",
+              "question_id": "n22",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "123",
+              "prompt": "numeric 23?",
+              "question_id": "n23",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "124",
+              "prompt": "numeric 24?",
+              "question_id": "n24",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "125",
+              "prompt": "numeric 25?",
+              "question_id": "n25",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "126",
+              "prompt": "numeric 26?",
+              "question_id": "n26",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "127",
+              "prompt": "numeric 27?",
+              "question_id": "n27",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "128",
+              "prompt": "numeric 28?",
+              "question_id": "n28",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "129",
+              "prompt": "numeric 29?",
+              "question_id": "n29",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "130",
+              "prompt": "numeric 30?",
+              "question_id": "n30",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "131",
+              "prompt": "numeric 31?",
+              "question_id": "n31",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "132",
+              "prompt": "numeric 32?",
+              "question_id": "n32",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "133",
+              "prompt": "numeric 33?",
+              "question_id": "n33",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "134",
+              "prompt": "numeric 34?",
+              "question_id": "n34",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "135",
+              "prompt": "numeric 35?",
+              "question_id": "n35",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "136",
+              "prompt": "numeric 36?",
+              "question_id": "n36",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "137",
+              "prompt": "numeric 37?",
+              "question_id": "n37",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "138",
+              "prompt": "numeric 38?",
+              "question_id": "n38",
+              "unit": null,
+              "version": 1
+            },
+            {
+              "category": {
+                "category_id": "c",
+                "name": "General",
+                "slug": "general"
+              },
+              "choices": null,
+              "difficulty": "medium",
+              "kind": "numeric",
+              "media_asset_id": null,
+              "numeric_answer": "139",
+              "prompt": "numeric 39?",
+              "question_id": "n39",
+              "unit": null,
+              "version": 1
+            }
+          ],
+          "numeric_used": 0
+        }
+      },
+      "schema_version": 1,
+      "seq": 10,
+      "type": "game.question_pool_drawn"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:05Z",
+          "id": 1,
+          "kind": "warmup"
+        }
+      },
+      "schema_version": 1,
+      "seq": 11,
+      "type": "game.media_warmup_started"
+    },
+    {
+      "payload": {
+        "round_no": 1
+      },
+      "schema_version": 1,
+      "seq": 12,
+      "type": "expansion.round_started"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:26Z",
+          "id": 2,
+          "kind": "answer"
+        },
+        "question": {
+          "category": {
+            "category_id": "c",
+            "name": "General",
+            "slug": "general"
+          },
+          "choices": null,
+          "difficulty": "medium",
+          "kind": "numeric",
+          "media_asset_id": null,
+          "numeric_answer": "100",
+          "prompt": "numeric 0?",
+          "question_id": "n0",
+          "unit": null,
+          "version": 1
+        }
+      },
+      "schema_version": 1,
+      "seq": 13,
+      "type": "question.presented"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 300,
+          "value": {
+            "value": "100"
+          }
+        },
+        "player_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 14,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 400,
+          "value": {
+            "value": "110"
+          }
+        },
+        "player_id": "p2"
+      },
+      "schema_version": 1,
+      "seq": 15,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 500,
+          "value": {
+            "value": "120"
+          }
+        },
+        "player_id": "p3"
+      },
+      "schema_version": 1,
+      "seq": 16,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:26Z",
+          "id": 2,
+          "kind": "answer"
+        }
+      },
+      "schema_version": 1,
+      "seq": 17,
+      "type": "question.window_closed"
+    },
+    {
+      "payload": {
+        "correct_choice_index": null,
+        "correct_players": [],
+        "correct_value": "100",
+        "ranking": [
+          "p1",
+          "p2",
+          "p3"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 18,
+      "type": "question.resolved"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:15Z",
+          "id": 3,
+          "kind": "pick"
+        },
+        "grants": {
+          "p1": 2,
+          "p2": 1,
+          "p3": 0
+        },
+        "pick_order": [
+          "p1",
+          "p2"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 19,
+      "type": "expansion.picks_granted"
+    },
+    {
+      "payload": {
+        "acquisition": "claimed",
+        "automatic": false,
+        "player_id": "p1",
+        "region_id": "r1"
+      },
+      "schema_version": 1,
+      "seq": 20,
+      "type": "expansion.territory_claimed"
+    },
+    {
+      "payload": {
+        "delta": 200,
+        "new_total": 1200,
+        "player_id": "p1",
+        "reason": "territory"
+      },
+      "schema_version": 1,
+      "seq": 21,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:15Z",
+          "id": 4,
+          "kind": "pick"
+        },
+        "grants": {
+          "p1": 1,
+          "p2": 1,
+          "p3": 0
+        },
+        "pick_order": [
+          "p1",
+          "p2"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 22,
+      "type": "expansion.picks_granted"
+    },
+    {
+      "payload": {
+        "acquisition": "claimed",
+        "automatic": false,
+        "player_id": "p1",
+        "region_id": "r3"
+      },
+      "schema_version": 1,
+      "seq": 23,
+      "type": "expansion.territory_claimed"
+    },
+    {
+      "payload": {
+        "delta": 200,
+        "new_total": 1400,
+        "player_id": "p1",
+        "reason": "territory"
+      },
+      "schema_version": 1,
+      "seq": 24,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:15Z",
+          "id": 5,
+          "kind": "pick"
+        },
+        "grants": {
+          "p1": 0,
+          "p2": 1,
+          "p3": 0
+        },
+        "pick_order": [
+          "p1",
+          "p2"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 25,
+      "type": "expansion.picks_granted"
+    },
+    {
+      "payload": {
+        "acquisition": "claimed",
+        "automatic": false,
+        "player_id": "p2",
+        "region_id": "r4"
+      },
+      "schema_version": 1,
+      "seq": 26,
+      "type": "expansion.territory_claimed"
+    },
+    {
+      "payload": {
+        "delta": 200,
+        "new_total": 1200,
+        "player_id": "p2",
+        "reason": "territory"
+      },
+      "schema_version": 1,
+      "seq": 27,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "round_no": 1
+      },
+      "schema_version": 1,
+      "seq": 28,
+      "type": "expansion.round_completed"
+    },
+    {
+      "payload": {
+        "round_no": 2
+      },
+      "schema_version": 1,
+      "seq": 29,
+      "type": "expansion.round_started"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 6,
+          "kind": "answer"
+        },
+        "question": {
+          "category": {
+            "category_id": "c",
+            "name": "General",
+            "slug": "general"
+          },
+          "choices": null,
+          "difficulty": "medium",
+          "kind": "numeric",
+          "media_asset_id": null,
+          "numeric_answer": "101",
+          "prompt": "numeric 1?",
+          "question_id": "n1",
+          "unit": null,
+          "version": 1
+        }
+      },
+      "schema_version": 1,
+      "seq": 30,
+      "type": "question.presented"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 300,
+          "value": {
+            "value": "101"
+          }
+        },
+        "player_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 31,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 400,
+          "value": {
+            "value": "111"
+          }
+        },
+        "player_id": "p2"
+      },
+      "schema_version": 1,
+      "seq": 32,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 500,
+          "value": {
+            "value": "121"
+          }
+        },
+        "player_id": "p3"
+      },
+      "schema_version": 1,
+      "seq": 33,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 6,
+          "kind": "answer"
+        }
+      },
+      "schema_version": 1,
+      "seq": 34,
+      "type": "question.window_closed"
+    },
+    {
+      "payload": {
+        "correct_choice_index": null,
+        "correct_players": [],
+        "correct_value": "101",
+        "ranking": [
+          "p1",
+          "p2",
+          "p3"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 35,
+      "type": "question.resolved"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:15Z",
+          "id": 7,
+          "kind": "pick"
+        },
+        "grants": {
+          "p1": 2,
+          "p2": 1,
+          "p3": 0
+        },
+        "pick_order": [
+          "p1",
+          "p2"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 36,
+      "type": "expansion.picks_granted"
+    },
+    {
+      "payload": {
+        "acquisition": "claimed",
+        "automatic": false,
+        "player_id": "p1",
+        "region_id": "r5"
+      },
+      "schema_version": 1,
+      "seq": 37,
+      "type": "expansion.territory_claimed"
+    },
+    {
+      "payload": {
+        "delta": 200,
+        "new_total": 1600,
+        "player_id": "p1",
+        "reason": "territory"
+      },
+      "schema_version": 1,
+      "seq": 38,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:15Z",
+          "id": 8,
+          "kind": "pick"
+        },
+        "grants": {
+          "p1": 1,
+          "p2": 1,
+          "p3": 0
+        },
+        "pick_order": [
+          "p1",
+          "p2"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 39,
+      "type": "expansion.picks_granted"
+    },
+    {
+      "payload": {
+        "acquisition": "claimed",
+        "automatic": false,
+        "player_id": "p1",
+        "region_id": "r7"
+      },
+      "schema_version": 1,
+      "seq": 40,
+      "type": "expansion.territory_claimed"
+    },
+    {
+      "payload": {
+        "delta": 200,
+        "new_total": 1800,
+        "player_id": "p1",
+        "reason": "territory"
+      },
+      "schema_version": 1,
+      "seq": 41,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:15Z",
+          "id": 9,
+          "kind": "pick"
+        },
+        "grants": {
+          "p1": 0,
+          "p2": 1,
+          "p3": 0
+        },
+        "pick_order": [
+          "p1",
+          "p2"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 42,
+      "type": "expansion.picks_granted"
+    },
+    {
+      "payload": {
+        "acquisition": "claimed",
+        "automatic": false,
+        "player_id": "p2",
+        "region_id": "r8"
+      },
+      "schema_version": 1,
+      "seq": 43,
+      "type": "expansion.territory_claimed"
+    },
+    {
+      "payload": {
+        "delta": 200,
+        "new_total": 1400,
+        "player_id": "p2",
+        "reason": "territory"
+      },
+      "schema_version": 1,
+      "seq": 44,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "round_no": 2
+      },
+      "schema_version": 1,
+      "seq": 45,
+      "type": "expansion.round_completed"
+    },
+    {
+      "payload": {
+        "round_no": 1
+      },
+      "schema_version": 1,
+      "seq": 46,
+      "type": "battle.round_started"
+    },
+    {
+      "payload": {
+        "attacker_id": "p1",
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 10,
+          "kind": "target_select"
+        }
+      },
+      "schema_version": 1,
+      "seq": 47,
+      "type": "battle.turn_started"
+    },
+    {
+      "payload": {
+        "attacker_id": "p1",
+        "defender_id": "p2",
+        "region_id": "r4"
+      },
+      "schema_version": 1,
+      "seq": 48,
+      "type": "battle.attack_declared"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 11,
+          "kind": "answer"
+        },
+        "question": {
+          "category": {
+            "category_id": "c",
+            "name": "General",
+            "slug": "general"
+          },
+          "choices": [
+            {
+              "idx": 0,
+              "is_correct": true,
+              "media_asset_id": null,
+              "text": "a"
+            },
+            {
+              "idx": 1,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "b"
+            },
+            {
+              "idx": 2,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "c"
+            },
+            {
+              "idx": 3,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "d"
+            }
+          ],
+          "difficulty": "easy",
+          "kind": "multiple_choice",
+          "media_asset_id": null,
+          "numeric_answer": null,
+          "prompt": "mc 0?",
+          "question_id": "m0",
+          "unit": null,
+          "version": 1
+        }
+      },
+      "schema_version": 1,
+      "seq": 49,
+      "type": "question.presented"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 300,
+          "value": {
+            "idx": 0
+          }
+        },
+        "player_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 50,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 400,
+          "value": {
+            "idx": 1
+          }
+        },
+        "player_id": "p2"
+      },
+      "schema_version": 1,
+      "seq": 51,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 11,
+          "kind": "answer"
+        }
+      },
+      "schema_version": 1,
+      "seq": 52,
+      "type": "question.window_closed"
+    },
+    {
+      "payload": {
+        "correct_choice_index": 0,
+        "correct_players": [
+          "p1"
+        ],
+        "correct_value": null,
+        "ranking": [
+          "p1",
+          "p2"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 53,
+      "type": "question.resolved"
+    },
+    {
+      "payload": {
+        "winner_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 54,
+      "type": "battle.duel_resolved"
+    },
+    {
+      "payload": {
+        "acquisition": "conquest",
+        "from_player_id": "p2",
+        "region_id": "r4",
+        "to_player_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 55,
+      "type": "battle.territory_captured"
+    },
+    {
+      "payload": {
+        "delta": 400,
+        "new_total": 2200,
+        "player_id": "p1",
+        "reason": "conquest"
+      },
+      "schema_version": 1,
+      "seq": 56,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "delta": -200,
+        "new_total": 1200,
+        "player_id": "p2",
+        "reason": "territory_lost"
+      },
+      "schema_version": 1,
+      "seq": 57,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "attacker_id": "p2",
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 12,
+          "kind": "target_select"
+        }
+      },
+      "schema_version": 1,
+      "seq": 58,
+      "type": "battle.turn_started"
+    },
+    {
+      "payload": {
+        "attacker_id": "p2",
+        "defender_id": "p1",
+        "region_id": "r5"
+      },
+      "schema_version": 1,
+      "seq": 59,
+      "type": "battle.attack_declared"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 13,
+          "kind": "answer"
+        },
+        "question": {
+          "category": {
+            "category_id": "c",
+            "name": "General",
+            "slug": "general"
+          },
+          "choices": [
+            {
+              "idx": 0,
+              "is_correct": true,
+              "media_asset_id": null,
+              "text": "a"
+            },
+            {
+              "idx": 1,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "b"
+            },
+            {
+              "idx": 2,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "c"
+            },
+            {
+              "idx": 3,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "d"
+            }
+          ],
+          "difficulty": "easy",
+          "kind": "multiple_choice",
+          "media_asset_id": null,
+          "numeric_answer": null,
+          "prompt": "mc 1?",
+          "question_id": "m1",
+          "unit": null,
+          "version": 1
+        }
+      },
+      "schema_version": 1,
+      "seq": 60,
+      "type": "question.presented"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 400,
+          "value": {
+            "idx": 1
+          }
+        },
+        "player_id": "p2"
+      },
+      "schema_version": 1,
+      "seq": 61,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 300,
+          "value": {
+            "idx": 0
+          }
+        },
+        "player_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 62,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 13,
+          "kind": "answer"
+        }
+      },
+      "schema_version": 1,
+      "seq": 63,
+      "type": "question.window_closed"
+    },
+    {
+      "payload": {
+        "correct_choice_index": 0,
+        "correct_players": [
+          "p1"
+        ],
+        "correct_value": null,
+        "ranking": [
+          "p2",
+          "p1"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 64,
+      "type": "question.resolved"
+    },
+    {
+      "payload": {
+        "winner_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 65,
+      "type": "battle.duel_resolved"
+    },
+    {
+      "payload": {
+        "defender_id": "p1",
+        "region_id": "r5"
+      },
+      "schema_version": 1,
+      "seq": 66,
+      "type": "battle.defense_held"
+    },
+    {
+      "payload": {
+        "delta": 100,
+        "new_total": 2300,
+        "player_id": "p1",
+        "reason": "defense"
+      },
+      "schema_version": 1,
+      "seq": 67,
+      "type": "player.score_changed"
+    },
+    {
+      "payload": {
+        "attacker_id": "p3",
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 14,
+          "kind": "target_select"
+        }
+      },
+      "schema_version": 1,
+      "seq": 68,
+      "type": "battle.turn_started"
+    },
+    {
+      "payload": {
+        "attacker_id": "p3",
+        "defender_id": "p1",
+        "region_id": "r3"
+      },
+      "schema_version": 1,
+      "seq": 69,
+      "type": "battle.attack_declared"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 15,
+          "kind": "answer"
+        },
+        "question": {
+          "category": {
+            "category_id": "c",
+            "name": "General",
+            "slug": "general"
+          },
+          "choices": [
+            {
+              "idx": 0,
+              "is_correct": true,
+              "media_asset_id": null,
+              "text": "a"
+            },
+            {
+              "idx": 1,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "b"
+            },
+            {
+              "idx": 2,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "c"
+            },
+            {
+              "idx": 3,
+              "is_correct": false,
+              "media_asset_id": null,
+              "text": "d"
+            }
+          ],
+          "difficulty": "easy",
+          "kind": "multiple_choice",
+          "media_asset_id": null,
+          "numeric_answer": null,
+          "prompt": "mc 2?",
+          "question_id": "m2",
+          "unit": null,
+          "version": 1
+        }
+      },
+      "schema_version": 1,
+      "seq": 70,
+      "type": "question.presented"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 400,
+          "value": {
+            "idx": 1
+          }
+        },
+        "player_id": "p3"
+      },
+      "schema_version": 1,
+      "seq": 71,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "answer": {
+          "elapsed_ms": 300,
+          "value": {
+            "idx": 1
+          }
+        },
+        "player_id": "p1"
+      },
+      "schema_version": 1,
+      "seq": 72,
+      "type": "question.answer_submitted"
+    },
+    {
+      "payload": {
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 15,
+          "kind": "answer"
+        }
+      },
+      "schema_version": 1,
+      "seq": 73,
+      "type": "question.window_closed"
+    },
+    {
+      "payload": {
+        "correct_choice_index": 0,
+        "correct_players": [],
+        "correct_value": null,
+        "ranking": [
+          "p3",
+          "p1"
+        ]
+      },
+      "schema_version": 1,
+      "seq": 74,
+      "type": "question.resolved"
+    },
+    {
+      "payload": {
+        "winner_id": null
+      },
+      "schema_version": 1,
+      "seq": 75,
+      "type": "battle.duel_resolved"
+    },
+    {
+      "payload": {
+        "round_no": 1
+      },
+      "schema_version": 1,
+      "seq": 76,
+      "type": "battle.round_completed"
+    },
+    {
+      "payload": {
+        "round_no": 2
+      },
+      "schema_version": 1,
+      "seq": 77,
+      "type": "battle.round_started"
+    },
+    {
+      "payload": {
+        "attacker_id": "p1",
+        "deadline": {
+          "deadline_at": "2026-08-07T12:00:20Z",
+          "id": 16,
+          "kind": "target_select"
+        }
+      },
+      "schema_version": 1,
+      "seq": 78,
+      "type": "battle.turn_started"
+    }
+  ]
+}

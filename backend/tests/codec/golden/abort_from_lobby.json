@@ -1,0 +1,112 @@
+{
+  "expected": {
+    "eliminated": [],
+    "next_deadline_id": 1,
+    "phase": "aborted",
+    "round_no": 0,
+    "scores": {
+      "p1": 0
+    },
+    "seq": 3,
+    "territories": {
+      "r0": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r1": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r2": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r3": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r4": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r5": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r6": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r7": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      },
+      "r8": {
+        "base_hp": null,
+        "kind": "normal",
+        "owner_id": null
+      }
+    },
+    "winner_id": null
+  },
+  "game_id": "g-abort-from-lobby",
+  "generated_from": "0a08ee90906c6b6bf9c5e86b9dd3a53de3118718",
+  "map_id": "grid",
+  "name": "abort_from_lobby",
+  "rows": [
+    {
+      "payload": {
+        "host_id": "p1",
+        "map_id": "grid",
+        "map_sha256": "a86046af323bc51022bdf6560e8ca4505909318d3aad94d47167d729e290ad61",
+        "rules": {
+          "answer_timeout_ms": 20000,
+          "base_hp": 3,
+          "battle_rounds": 4,
+          "claims_by_rank": [
+            2,
+            1,
+            0
+          ],
+          "expansion_rounds": 4,
+          "pick_timeout_ms": 15000,
+          "player_count": 3,
+          "pts_base": 1000,
+          "pts_conquered": 400,
+          "pts_defense": 100,
+          "pts_territory": 200,
+          "warmup_ms": 5000
+        }
+      },
+      "schema_version": 1,
+      "seq": 1,
+      "type": "game.created"
+    },
+    {
+      "payload": {
+        "display_name": "One",
+        "player_id": "p1",
+        "seat": 0
+      },
+      "schema_version": 1,
+      "seq": 2,
+      "type": "game.player_joined"
+    },
+    {
+      "payload": {
+        "reason": "aborted by system"
+      },
+      "schema_version": 1,
+      "seq": 3,
+      "type": "game.aborted"
+    }
+  ]
+}
