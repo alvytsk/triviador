@@ -6,7 +6,9 @@ Pure and PostgreSQL-free: no `integration` marker, no asyncio marks.
 """
 
 import json
-from datetime import UTC, datetime
+from collections.abc import Mapping
+from dataclasses import dataclass, fields
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -14,7 +16,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from triviador.db.codec.codec import decode, encode
+from triviador.db.codec.codec import _adapter_for, decode, encode, normalize_utc
 from triviador.db.codec.registry import CURRENT_VERSION
 from triviador.db.codec.upcasters import _compose
 from triviador.db.errors import NaiveDatetime, UnknownEventType, UnknownSchemaVersion
@@ -151,7 +153,7 @@ SAMPLE_EVENTS: tuple[GameEvent, ...] = (
     QuestionPresented(a_mc_question(), a_deadline()),
     AnswerSubmitted(PlayerId("p1"), SubmittedAnswer(ChoiceAnswer(idx=0), elapsed_ms=1200)),
     AnswerWindowClosed(a_deadline()),
-    QuestionResolved(0, None, (PlayerId("p1"), PlayerId("p2")), (PlayerId("p1"),)),
+    QuestionResolved(None, Decimal("42.5"), (PlayerId("p1"), PlayerId("p2")), (PlayerId("p1"),)),
     ExpansionRoundStarted(1),
     PicksGranted(
         (PlayerId("p1"), PlayerId("p2")),
@@ -276,6 +278,104 @@ def test_answer_value_union_decodes_to_the_right_variant() -> None:
     assert isinstance(decoded_numeric, AnswerSubmitted)
     assert type(decoded_choice.answer.value) is ChoiceAnswer
     assert type(decoded_numeric.answer.value) is NumericAnswer
+
+
+def test_answer_value_variants_have_disjoint_field_names() -> None:
+    """Smart-union resolution of `AnswerValue = ChoiceAnswer | NumericAnswer` is
+    safe only because each variant has exactly one required field and the two
+    field names don't overlap — Pydantic would need a discriminator to tell
+    them apart otherwise. Stated here as an explicit invariant this codec
+    depends on, rather than a happy accident nobody wrote down."""
+    choice_fields = {f.name for f in fields(ChoiceAnswer)}
+    numeric_fields = {f.name for f in fields(NumericAnswer)}
+    assert choice_fields.isdisjoint(numeric_fields)
+
+
+def test_adapter_for_is_cached() -> None:
+    """The brief requires per-class caching (building a `TypeAdapter` per
+    event during a 300-event replay is waste); this is the only test that
+    would fail if the cache were removed entirely."""
+    assert _adapter_for(GameCreated) is _adapter_for(GameCreated)
+
+
+# --- the walker's structural claim, proven rather than assumed -------------
+#
+# No real event today nests a datetime inside a tuple element or a Mapping
+# value (only top-level `Deadline`-typed fields carry one), so the round-trip
+# table above executes those branches in `_walk` without ever exercising
+# their behaviour on a nested datetime. These test-local dataclasses close
+# that gap directly: they call `normalize_utc` on a shape no real event
+# happens to have, proving the walk really is structural rather than merely
+# looking that way while secretly depending on `Deadline` being top-level.
+
+
+@dataclass(frozen=True)
+class _TimestampedItem:
+    when: datetime
+
+
+@dataclass(frozen=True)
+class _NestedInTuple:
+    items: tuple[_TimestampedItem, ...]
+
+
+@dataclass(frozen=True)
+class _NestedInMapping:
+    items: Mapping[str, _TimestampedItem]
+
+
+PLUS_TWO = timezone(timedelta(hours=2))
+
+
+def test_walker_normalizes_a_datetime_nested_inside_a_tuple_element() -> None:
+    value = _NestedInTuple((_TimestampedItem(datetime(2026, 8, 16, 14, 0, tzinfo=PLUS_TWO)),))
+    normalized = normalize_utc(value)
+    assert normalized.items[0].when.tzinfo is UTC
+    assert normalized.items[0].when == NOW
+
+
+def test_walker_rejects_a_naive_datetime_nested_inside_a_tuple_element() -> None:
+    value = _NestedInTuple((_TimestampedItem(datetime(2026, 8, 16, 12, 0)),))
+    with pytest.raises(NaiveDatetime):
+        normalize_utc(value)
+
+
+def test_walker_normalizes_a_datetime_nested_inside_a_mapping_value() -> None:
+    value = _NestedInMapping({"a": _TimestampedItem(datetime(2026, 8, 16, 14, 0, tzinfo=PLUS_TWO))})
+    normalized = normalize_utc(value)
+    assert normalized.items["a"].when.tzinfo is UTC
+    assert normalized.items["a"].when == NOW
+
+
+def test_walker_rejects_a_naive_datetime_nested_inside_a_mapping_value() -> None:
+    value = _NestedInMapping({"a": _TimestampedItem(datetime(2026, 8, 16, 12, 0))})
+    with pytest.raises(NaiveDatetime):
+        normalize_utc(value)
+
+
+# --- unsupported containers fail loud, rather than being silently skipped --
+#
+# No event field uses a `list`, `set`, or `frozenset` today, but `frozenset`
+# is already in the domain's vocabulary (`MapDefinition.adjacency`), so it is
+# one refactor from appearing in an event. Verified directly: before the
+# fail-loud guard was added, a naive datetime inside a `list` or `frozenset`
+# passed through `_walk` completely unexamined — no normalization, no
+# rejection, no error.
+
+
+def test_walking_a_list_raises_rather_than_silently_skipping_it() -> None:
+    with pytest.raises(TypeError):
+        normalize_utc([datetime(2026, 8, 16, 12, 0)])
+
+
+def test_walking_a_set_raises_rather_than_silently_skipping_it() -> None:
+    with pytest.raises(TypeError):
+        normalize_utc({1, 2, 3})
+
+
+def test_walking_a_frozenset_raises_rather_than_silently_skipping_it() -> None:
+    with pytest.raises(TypeError):
+        normalize_utc(frozenset({1, 2, 3}))
 
 
 @pytest.mark.parametrize("event", SAMPLE_EVENTS, ids=lambda e: type(e).__name__)

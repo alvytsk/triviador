@@ -3,6 +3,13 @@
 Enforced by reading the source, not by convention. The domain's value is that
 it is plain Python — the whole ruleset runs in milliseconds with no database,
 no event loop, and no third-party package. One stray import ends that quietly.
+
+A second, narrower gate below covers `db/codec/`: the event codec's whole
+reason for living in its own package — pure translation, no session, no
+engine — is what lets `tests/codec/` run with PostgreSQL stopped (see
+`db/codec/__init__.py`'s docstring). Nothing else enforced that; importing
+`db.models` or `sqlalchemy` into the codec would break no test today, only
+quietly turn the "PG-stopped" claim into wishful thinking.
 """
 
 import ast
@@ -12,6 +19,7 @@ import pytest
 
 SRC = Path(__file__).parent.parent / "src"
 DOMAIN = SRC / "triviador" / "domain"
+CODEC = SRC / "triviador" / "db" / "codec"
 
 FORBIDDEN = (
     "triviador.db",
@@ -26,12 +34,27 @@ FORBIDDEN = (
     "fastapi",
 )
 
+# `db/codec/` legitimately imports `triviador.db.errors` (its exception
+# types) and `pydantic` (its serialization engine) — both fine, neither
+# pulls in a database. What must stay out is anything that talks to
+# PostgreSQL, or anything a level up the stack that would make the codec's
+# purity a one-way trip to import it from `services/` or `api/`.
+CODEC_FORBIDDEN = (
+    "sqlalchemy",
+    "asyncpg",
+    "alembic",
+    "triviador.db.models",
+    "triviador.db.repositories",
+    "triviador.services",
+    "triviador.api",
+)
 
-def _is_forbidden(module: str) -> bool:
+
+def _is_forbidden(module: str, forbidden: tuple[str, ...] = FORBIDDEN) -> bool:
     # Exact match or a real dotted descendant. A bare `startswith` would also
     # flag a hypothetical `triviador.mapsomething`, and a gate that reports
     # phantom violations is a gate people learn to edit around.
-    return any(module == f or module.startswith(f + ".") for f in FORBIDDEN)
+    return any(module == f or module.startswith(f + ".") for f in forbidden)
 
 
 def _package_of(path: Path) -> list[str]:
@@ -75,6 +98,57 @@ def test_domain_imports_nothing_below_it() -> None:
         if _is_forbidden(module)
     ]
     assert violations == [], "domain/ must stay pure:\n" + "\n".join(violations)
+
+
+def test_codec_stays_free_of_the_database_and_the_layers_above_it() -> None:
+    violations = [
+        f"{path.relative_to(SRC)}: {module}"
+        for path in sorted(CODEC.rglob("*.py"))
+        for module in sorted(_imported_modules(path))
+        if _is_forbidden(module, CODEC_FORBIDDEN)
+    ]
+    assert violations == [], "db/codec/ must stay pure:\n" + "\n".join(violations)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import sqlalchemy",
+        "import asyncpg",
+        "import alembic",
+        "from triviador.db.models import games",
+        "from triviador.db import models",
+        "from ...db.repositories import events",  # relative — same bypass as the domain gate
+        "from triviador import services",
+        "from triviador import api",
+    ],
+)
+def test_the_codec_gate_sees_each_form_of_violation(source: str) -> None:
+    """Mirrors `test_the_gate_sees_each_form_of_violation` for the narrower
+    `CODEC_FORBIDDEN` list: a guard nobody has watched fail is a guard nobody
+    can trust."""
+    module = CODEC / "_probe.py"
+    module.write_text(source, encoding="utf-8")
+    try:
+        assert any(_is_forbidden(m, CODEC_FORBIDDEN) for m in _imported_modules(module)), source
+    finally:
+        module.unlink()
+
+
+def test_a_legitimate_codec_import_is_not_flagged() -> None:
+    """The codec's own real imports — its sibling registry/upcasters modules,
+    `db.errors` for its exception types, and `pydantic` — must all pass."""
+    module = CODEC / "_probe.py"
+    module.write_text(
+        "from triviador.db.errors import NaiveDatetime\n"
+        "from triviador.db.codec.registry import WIRE_NAMES\n"
+        "import pydantic\n",
+        encoding="utf-8",
+    )
+    try:
+        assert not any(_is_forbidden(m, CODEC_FORBIDDEN) for m in _imported_modules(module))
+    finally:
+        module.unlink()
 
 
 @pytest.mark.parametrize(
