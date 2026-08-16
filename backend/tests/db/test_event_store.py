@@ -20,6 +20,8 @@ from triviador.db.models.auth import User
 from triviador.db.models.games import Game, GameEventRow, GamePlayer
 from triviador.db.unit_of_work import PersistedEventRef, UnitOfWork
 from triviador.domain.game.events import (
+    BattleRoundStarted,
+    ExpansionRoundStarted,
     GameAborted,
     GameEvent,
     GameFinished,
@@ -101,6 +103,41 @@ async def _game_players(
         return result.scalars().all()
 
 
+async def _wait_until_a_backend_is_blocked_on_a_lock(
+    sessionmaker: async_sessionmaker[AsyncSession], *, timeout_s: float = 5.0
+) -> None:
+    """Poll `pg_stat_activity` from a third connection until Postgres itself
+    reports some backend waiting on a lock.
+
+    A plain `asyncio.Event` signalled right before the second attempt's
+    conflicting `UPDATE` is *not* sufficient on its own to guarantee that
+    `UPDATE` has actually reached the database and started blocking by the
+    time the first attempt resumes and commits: `session.begin()` and `SET
+    LOCAL` each cross an await boundary of their own, and empirically (see
+    the task report) the first attempt's commit can still land first often
+    enough that the second attempt finds the row already free instead of
+    genuinely blocking on it. Asking Postgres directly — rather than
+    inferring "second must be blocked by now" from Python-side event
+    ordering — is what makes the contention itself deterministic. Every
+    iteration here is a real round trip to the database, not a timing-based
+    wait, and the deadline is a safety bound against a stuck test hanging
+    forever on a real bug, not the synchronization mechanism itself.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    async with sessionmaker() as session:
+        while True:
+            count = (
+                await session.execute(
+                    text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
+                )
+            ).scalar_one()
+            if count > 0:
+                return
+            if loop.time() > deadline:
+                raise AssertionError("timed out waiting for the second attempt to block on a lock")
+
+
 # --------------------------------------------------------------------------
 # append + optimistic check
 # --------------------------------------------------------------------------
@@ -157,50 +194,72 @@ async def test_stale_expected_last_seq_raises_concurrent_modification(
     clean_db: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
     """Two transactions genuinely concurrent, both computing from the same
-    `last_seq`. `SET LOCAL lock_timeout` bounds the second's wait on the
-    `games` row lock instead of letting a stuck test hang forever; the
-    outcome is asserted, never a sleep. The loser must not have written
-    anything — the rollback is what makes the check meaningful."""
+    `last_seq`. `first` signals `first_updated` once its own `UPDATE` has
+    returned — meaning it already holds the `games` row lock inside its
+    still-open transaction — and `second` doesn't even open its own
+    transaction until that fires. `first` then holds its transaction open
+    until `_wait_until_a_backend_is_blocked_on_a_lock` observes, via a
+    third connection, that some backend is genuinely waiting on a lock — at
+    which point `second`'s conflicting `UPDATE` is provably in flight and
+    blocked, not merely scheduled to run. `SET LOCAL lock_timeout` bounds
+    that block instead of letting a stuck test hang forever; nothing here
+    waits on wall-clock time, and the outcome is asserted, never a sleep.
+    The loser must not have written anything — the rollback is what makes
+    the check meaningful."""
     await _seed_user(sessions, "host")
     await _seed_user(sessions, "p1")
     await _seed_user(sessions, "p2")
     await _seed_game(sessions, "g1", host_id="host", last_seq=5)
 
     uow = UnitOfWork(sessions)
+    first_updated = asyncio.Event()
 
-    async def attempt(player_id: str, seat: int) -> None:
+    async def first() -> None:
         async with uow.begin() as tx:
             await tx.session.execute(text("SET LOCAL lock_timeout = '2s'"))
             await tx.append(
                 GameId("g1"),
                 expected_last_seq=5,
-                events=(PlayerJoined(PlayerId(player_id), player_id, seat),),
-                operation_id=f"op-{player_id}",
+                events=(PlayerJoined(PlayerId("p1"), "p1", 0),),
+                operation_id="op-p1",
+            )
+            first_updated.set()
+            await _wait_until_a_backend_is_blocked_on_a_lock(sessions)
+
+    async def second() -> None:
+        await first_updated.wait()
+        async with uow.begin() as tx:
+            await tx.session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            await tx.append(
+                GameId("g1"),
+                expected_last_seq=5,
+                events=(PlayerJoined(PlayerId("p2"), "p2", 1),),
+                operation_id="op-p2",
             )
 
-    results = await asyncio.gather(attempt("p1", 0), attempt("p2", 1), return_exceptions=True)
+    results = await asyncio.gather(first(), second(), return_exceptions=True)
 
-    successes = [r for r in results if r is None]
-    failures = [r for r in results if isinstance(r, ConcurrentModification)]
-    assert len(successes) == 1, results
-    assert len(failures) == 1, results
+    assert results[0] is None, results
+    assert isinstance(results[1], ConcurrentModification), results
+    assert results[1].args == (GameId("g1"), 5)
 
     game = await _get_game(sessions, "g1")
     assert game.last_seq == 6
 
     rows = await _event_rows(sessions, "g1")
     assert len(rows) == 1, "the loser's rollback must leave zero rows behind"
+    assert rows[0].operation_id == "op-p1"
 
 
 async def test_concurrent_modification_leaves_no_partial_events(
     clean_db: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
-    """Same shape as the previous test, with a two-event batch on each side:
-    whichever one loses, a rollback that only partially undid its inserts
-    would still corrupt the stream, even though the `games` row would look
-    consistent. Which side wins the row lock is a genuine race — the DB
-    decides, not this test — so the assertions are keyed off the outcome
-    rather than off which coroutine was listed first."""
+    """Same barrier shape as the previous test — the first attempt holds
+    its transaction open until a third connection observes the second
+    attempt genuinely blocked on a lock, not merely signalled to start —
+    with a two-event batch on each side: a rollback that only partially
+    undid the loser's inserts would still corrupt the stream, even though
+    the `games` row would look consistent."""
     await _seed_user(sessions, "host")
     await _seed_user(sessions, "p1")
     await _seed_user(sessions, "p2")
@@ -209,40 +268,52 @@ async def test_concurrent_modification_leaves_no_partial_events(
     await _seed_game(sessions, "g1", host_id="host", last_seq=5)
 
     uow = UnitOfWork(sessions)
+    first_updated = asyncio.Event()
 
-    async def attempt(operation_id: str, events: tuple[GameEvent, ...]) -> None:
+    async def first() -> None:
         async with uow.begin() as tx:
             await tx.session.execute(text("SET LOCAL lock_timeout = '2s'"))
             await tx.append(
-                GameId("g1"), expected_last_seq=5, events=events, operation_id=operation_id
+                GameId("g1"),
+                expected_last_seq=5,
+                events=(
+                    PlayerJoined(PlayerId("p1"), "p1", 0),
+                    PlayerJoined(PlayerId("p2"), "p2", 1),
+                ),
+                operation_id="op-winner",
+            )
+            first_updated.set()
+            await _wait_until_a_backend_is_blocked_on_a_lock(sessions)
+
+    async def second() -> None:
+        await first_updated.wait()
+        async with uow.begin() as tx:
+            await tx.session.execute(text("SET LOCAL lock_timeout = '2s'"))
+            await tx.append(
+                GameId("g1"),
+                expected_last_seq=5,
+                events=(
+                    PlayerJoined(PlayerId("p3"), "p3", 2),
+                    PlayerJoined(PlayerId("p4"), "p4", 3),
+                ),
+                operation_id="op-loser",
             )
 
-    batch_a: tuple[GameEvent, ...] = (
-        PlayerJoined(PlayerId("p1"), "p1", 0),
-        PlayerJoined(PlayerId("p2"), "p2", 1),
-    )
-    batch_b: tuple[GameEvent, ...] = (
-        PlayerJoined(PlayerId("p3"), "p3", 2),
-        PlayerJoined(PlayerId("p4"), "p4", 3),
-    )
-    results = await asyncio.gather(
-        attempt("op-a", batch_a), attempt("op-b", batch_b), return_exceptions=True
-    )
-    successes = [r for r in results if r is None]
-    failures = [r for r in results if isinstance(r, ConcurrentModification)]
-    assert len(successes) == 1, results
-    assert len(failures) == 1, results
+    results = await asyncio.gather(first(), second(), return_exceptions=True)
 
-    winning_batch = batch_a if results[0] is None else batch_b
-    winning_op = "op-a" if results[0] is None else "op-b"
+    assert results[0] is None, results
+    assert isinstance(results[1], ConcurrentModification), results
+    assert results[1].args == (GameId("g1"), 5)
+
+    game = await _get_game(sessions, "g1")
+    assert game.last_seq == 7
 
     rows = await _event_rows(sessions, "g1")
-    assert len(rows) == len(winning_batch), "the loser's rollback must leave zero rows behind"
-    assert all(row.operation_id == winning_op for row in rows)
+    assert len(rows) == 2, "the loser's rollback must leave zero rows behind"
+    assert all(row.operation_id == "op-winner" for row in rows)
 
     players = await _game_players(sessions, "g1")
-    expected_players = {e.player_id for e in winning_batch if isinstance(e, PlayerJoined)}
-    assert {p.user_id for p in players} == expected_players
+    assert {p.user_id for p in players} == {"p1", "p2"}
 
 
 async def test_append_is_rejected_when_events_is_empty(
@@ -307,6 +378,52 @@ async def test_status_started_at_finished_at_winner_are_projected(
     assert game.finished_at is not None
     assert game.finished_at.tzinfo is not None
     assert game.winner_id == "p1"
+
+
+async def test_status_transitions_through_expansion_round_and_battle_round(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """`ExpansionRoundStarted` and `BattleRoundStarted` are the two other
+    phase-bearing event types besides `GameStarted`/`GameFinished`/
+    `GameAborted`. Neither appeared anywhere in this module before this
+    test, and `unit_of_work.py` is measured by the coverage report but not
+    gated by it (the 100% branch gate is scoped to reducer.py and
+    db/codec/ only), so the `status == "battle"` branch shipped with zero
+    coverage until now."""
+    await _seed_user(sessions, "host")
+    await _seed_user(sessions, "p1")
+    await _seed_game(sessions, "g1", host_id="host", last_seq=0)
+
+    uow = UnitOfWork(sessions)
+    async with uow.begin() as tx:
+        await tx.append(
+            GameId("g1"),
+            expected_last_seq=0,
+            events=(GameStarted((PlayerId("p1"),)),),
+            operation_id="op-1",
+        )
+    game = await _get_game(sessions, "g1")
+    assert game.status == "expansion"
+
+    async with uow.begin() as tx:
+        await tx.append(
+            GameId("g1"),
+            expected_last_seq=1,
+            events=(ExpansionRoundStarted(2),),
+            operation_id="op-2",
+        )
+    game = await _get_game(sessions, "g1")
+    assert game.status == "expansion"
+
+    async with uow.begin() as tx:
+        await tx.append(
+            GameId("g1"),
+            expected_last_seq=2,
+            events=(BattleRoundStarted(1),),
+            operation_id="op-3",
+        )
+    game = await _get_game(sessions, "g1")
+    assert game.status == "battle"
 
 
 async def test_game_aborted_sets_status_and_finished_at_with_no_winner(

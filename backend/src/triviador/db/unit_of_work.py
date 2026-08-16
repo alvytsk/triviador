@@ -5,12 +5,12 @@ Two properties this module exists to guarantee:
 
 1. **The optimistic check is one statement.** `TransactionContext.append`
    issues `UPDATE games SET last_seq = :new WHERE id = :gid AND last_seq =
-   :expected` before any insert. That statement takes the row lock and
-   performs the check together, so two concurrent appends against the same
-   game serialize on the `games` row rather than racing on `game_events`'s
-   primary key. `rowcount == 0` means someone else already advanced
-   `last_seq`; `append` raises `ConcurrentModification`, which the runtime
-   quarantines on and never retries.
+   :expected RETURNING id` before any insert. That statement takes the row
+   lock and performs the check together, so two concurrent appends against
+   the same game serialize on the `games` row rather than racing on
+   `game_events`'s primary key. No returned row means someone else already
+   advanced `last_seq`; `append` raises `ConcurrentModification`, which the
+   runtime quarantines on and never retries.
 
 2. **The read model is projected in the same transaction.** `append` also
    applies `_project`'s effects on `games` and `game_players` before
@@ -27,9 +27,9 @@ module.
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import cast
+from typing import assert_never
 
-from sqlalchemy import CursorResult, delete, func, update
+from sqlalchemy import delete, func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from triviador.db.codec.codec import decode
@@ -99,15 +99,19 @@ class TransactionContext:
             raise ValueError("append requires at least one event; a no-op resolves earlier")
 
         new_seq = expected_last_seq + len(events)
-        result = cast(
-            CursorResult[tuple[()]],
-            await self.session.execute(
-                update(Game)
-                .where(Game.id == game_id, Game.last_seq == expected_last_seq)
-                .values(last_seq=new_seq)
-            ),
+        result = await self.session.execute(
+            update(Game)
+            .where(Game.id == game_id, Game.last_seq == expected_last_seq)
+            .values(last_seq=new_seq)
+            .returning(Game.id)
         )
-        if result.rowcount == 0:
+        # `.returning(Game.id)` in place of a bare rowcount check: `Result`
+        # (the type `session.execute` is annotated to return) has no
+        # `.rowcount` under mypy strict — only `CursorResult`, which is what
+        # this statement actually returns at runtime, does — so a `.returning`
+        # clause plus `.first() is None` gets the same single-statement
+        # lock-and-check with no cast needed to satisfy the type checker.
+        if result.first() is None:
             raise ConcurrentModification(game_id, expected_last_seq)
 
         insert_event_rows(self.session, game_id, expected_last_seq, events, operation_id)
@@ -164,6 +168,22 @@ class TransactionContext:
                     )
 
                 case ev.GameStarted():
+                    # `func.now()` here is transaction-*start* time in
+                    # PostgreSQL, stable for the whole transaction — and this
+                    # projection runs in the same transaction as the INSERT
+                    # of the `GameStarted` row itself. So `games.started_at`
+                    # is exactly `game_events.created_at` of the causing row,
+                    # derivable from the log rather than floating free of
+                    # it: no domain event carries its own timestamp today
+                    # (`GameStarted(turn_order)` has none), so there is no
+                    # "decision time" to project instead. The replay-safe
+                    # shape is `_project(game_id, events, occurred_at)` —
+                    # live `append` passing `func.now()`, a future replay
+                    # passing the stored row's `created_at` — but no replay
+                    # path exists yet; that's Plan 4's change. Once a
+                    # `Clock` gives events their own decision time, this and
+                    # the row's `created_at` can diverge, and that's the
+                    # trigger to switch this projection to the event's time.
                     await self.session.execute(
                         update(Game)
                         .where(Game.id == game_id)
@@ -242,11 +262,13 @@ class TransactionContext:
                     pass
 
                 case _:  # pragma: no cover — unreachable while the branches
-                    # above cover every member of the `GameEvent` union; a
-                    # new event type lands here instead of silently no-op'ing.
-                    raise NotImplementedError(
-                        f"no read-model projection branch for {type(event).__name__}"
-                    )
+                    # above cover every member of the `GameEvent` union.
+                    # `assert_never`, not a bare raise: mypy narrows `event`
+                    # to `Never` here as long as every branch above is
+                    # exhaustive, so a 37th event type added to the union
+                    # without a branch fails *type-checking* (CI), not the
+                    # first production append of that event.
+                    assert_never(event)
 
 
 class UnitOfWork:
