@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Correct five defects and gaps in the pure domain core that the persistence, runtime, and API layers cannot be built on top of as they stand.
+**Goal:** Correct six defects and gaps in the pure domain core that the persistence, runtime, and API layers cannot be built on top of as they stand.
 
 **Architecture:** Pure event-sourced domain, unchanged. `decide(state, command, ctx) -> events` answers *what happened*; `evolve(state, event) -> state` answers *what the state becomes*. Every change here stays inside `domain/` (plus one filesystem-side addition to `maps/registry.py`) and performs no I/O.
 
@@ -131,7 +131,7 @@ def test_a_seat_freed_from_the_middle_is_reused() -> None:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_join.py -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_join.py -v --no-cov`
 Expected: `test_a_seat_freed_from_the_middle_is_reused` FAILS — the emitted seat is 2, colliding with p3.
 
 - [ ] **Step 3: Write the implementation**
@@ -243,7 +243,7 @@ def test_the_system_can_abort_a_populated_lobby() -> None:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_abort.py -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_abort.py -v --no-cov`
 Expected: the two system tests FAIL with `TypeError: AbortGame.__init__() missing 1 required positional argument: 'actor_id'`.
 
 - [ ] **Step 3: Make the actor optional**
@@ -324,7 +324,7 @@ def test_warmup_does_not_change_the_question_budget() -> None:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_rules.py -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_rules.py -v --no-cov`
 Expected: FAIL with `TypeError: GameRules.__init__() got an unexpected keyword argument 'warmup_ms'`.
 
 - [ ] **Step 3: Add the field, the bounds, and the validation**
@@ -380,10 +380,10 @@ git commit -m "feat(domain): add warmup_ms to GameRules"
 
 ---
 
-### Task 4: A surrender that leaves one player finishes the game
+### Task 4: Two surrender defects in non-battle turns
 
 **Files:**
-- Modify: `backend/src/triviador/domain/game/reducer.py` (`_decide_surrender`)
+- Modify: `backend/src/triviador/domain/game/reducer.py` (`_decide_surrender`, `_decide_expansion_answer`)
 - Test: `backend/tests/domain/game/test_surrender.py`
 
 **Interfaces:**
@@ -392,7 +392,19 @@ git commit -m "feat(domain): add warmup_ms to GameRules"
 
 **Why this is in Plan 2.** Spec §3.4 requires that a surrender during `MediaWarmup` finishes the game if it leaves one active player. `_decide_surrender` only reaches an endgame check when the surrendering player was *involved in the turn* (`reducer.py:748-750`), and `_is_involved_in_turn` returns `False` for every non-battle turn (`reducer.py:766-767`, the `case _` arm) — including `ExpansionQuestion`, `ExpansionPicking`, and the `MediaWarmup` added in Task 5.
 
-So this is a **pre-existing gap**, not one MediaWarmup introduces: today, in a 2-player game, a surrender during expansion leaves one active player and the game keeps running, contradicting Spec 1 §3.6 ("the game finishes when … only one active player remains"). Task 5 cannot meet its specification without fixing it, so it is fixed here, once, for every turn shape.
+Both defects below are **pre-existing**, not introduced by `MediaWarmup`. Task 5 cannot meet its specification without the first, and the second is the same `active_players()` blind spot one line further on, so they are fixed together, once, for every turn shape.
+
+**Defect A — no endgame check on the uninvolved path.** In a 2-player game, a surrender during expansion leaves one active player and the game keeps running, contradicting Spec 1 §3.6 ("the game finishes when … only one active player remains").
+
+**Defect B — a surrendered player's answer still counts toward closing the window.** `reducer.py:250` compares `len(after.turn.answers)` — every answer ever recorded in this window, including one from a player who has since surrendered — against `len(after.active_players())`, which has shrunk. Spec 1 §3.3 requires every active player to answer or time out.
+
+```
+3 players. P1 answers.  answers={P1}          active={P1,P2,P3}   1 < 3  → window stays open
+           P1 surrenders.                     active={P2,P3}
+           P2 answers.  answers={P1,P2}       active={P2,P3}      2 < 2  → window CLOSES
+```
+
+P3 never got to answer, and never timed out. `_rank_numeric` is already correct — it ranks `state.active_players()`, so P1 is excluded from grants — which is exactly why this stayed invisible: the ranking looks right, only the timing is wrong.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -426,16 +438,43 @@ def test_surrender_during_expansion_finishes_a_two_player_game() -> None:
     after = fold(state, events)
     assert after.phase is Phase.FINISHED
     assert after.winner_id == PlayerId("p1")
+
+
+def test_a_surrendered_players_answer_does_not_close_the_window() -> None:
+    """Spec 1 §3.3: every *active* player answers or times out. The window used
+    to close as soon as `len(answers) >= len(active_players())`, and a
+    surrendered player's answer stays in `answers` while they leave `active` —
+    so two counts that should both shrink moved toward each other instead."""
+    from decimal import Decimal
+
+    from tests.domain.game.test_start import start_ctx
+    from triviador.domain.game.state import ExpansionQuestion, NumericAnswer
+
+    state = fold(lobby_state(), decide(lobby_state(), StartGame(PlayerId("p1")), start_ctx()))
+    assert isinstance(state.turn, ExpansionQuestion)
+    window = state.turn.deadline.id
+
+    def answer(s, who: str, guess: int):
+        cmd = SubmitAnswer(PlayerId(who), window, NumericAnswer(Decimal(guess)), 100)
+        return fold(s, decide(s, cmd, CTX))
+
+    state = answer(state, "p1", 100)
+    state = fold(state, decide(state, Surrender(PlayerId("p1")), CTX))
+    state = answer(state, "p2", 110)
+
+    assert isinstance(state.turn, ExpansionQuestion), (
+        "p3 has neither answered nor timed out — the window must still be open"
+    )
 ```
 
-Add whatever of `StartGame`, `PlayerId`, `RegionId`, `ev`, `fold`, `decide`, `lobby_state` the file does not already import — check the existing import block at the top of `test_surrender.py` first and extend it rather than duplicating.
+Add whatever of `StartGame`, `SubmitAnswer`, `PlayerId`, `RegionId`, `ev`, `fold`, `decide`, `lobby_state`, `CTX` the file does not already import or define — check the existing import block at the top of `test_surrender.py` first and extend it rather than duplicating. Annotate the local `answer` helper's parameter and return as `GameState`.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_surrender.py -v`
-Expected: FAIL — no `GameFinished` is emitted, and `after.phase` is still `Phase.EXPANSION`.
+Run: `cd backend && uv run pytest tests/domain/game/test_surrender.py -v --no-cov`
+Expected: both new tests FAIL — the first because no `GameFinished` is emitted and `after.phase` is still `Phase.EXPANSION`; the second because the turn has already advanced past `ExpansionQuestion`.
 
-Note: at this point in the plan `StartGame` still opens an `ExpansionQuestion` directly. Task 5 changes it to open a `MediaWarmup`; this test's assertions hold either way, because neither turn shape makes the surrendering player "involved".
+Note: at this point in the plan `StartGame` still opens an `ExpansionQuestion` directly. Task 5 changes it to open a `MediaWarmup`, which is why Task 5 Step 11b renames the first test and Step 11c re-routes the second through the warmup expiry. Their assertions do not change.
 
 - [ ] **Step 3: Add the endgame check**
 
@@ -458,6 +497,20 @@ In `backend/src/triviador/domain/game/reducer.py`, replace the tail of `_decide_
 ```
 
 `TurnAborted` is emitted first so the open window is closed before the game finishes; its `_apply` arm sets `turn=None`, which keeps the "terminal phase ⟹ turn is None" property in `test_properties.py` true.
+
+- [ ] **Step 3b: Count only active players' answers**
+
+In the same file, in `_decide_expansion_answer`, replace the completion check (`reducer.py:250`):
+
+```python
+    active = set(after.active_players())
+    if len(active & set(after.turn.answers)) < len(active):
+        return (recorded,)
+```
+
+Intersecting rather than comparing raw lengths is the whole fix: an answer from a player who has since surrendered is no longer counted on either side, so the window closes exactly when every player still in the game has answered.
+
+`_close_expansion_question` and `_rank_numeric` need no change — the ranking already iterates `state.active_players()`.
 
 - [ ] **Step 4: Run the full suite and the linters**
 
@@ -499,7 +552,6 @@ Create `backend/tests/domain/game/test_warmup.py`:
 ```python
 """The media warmup window between the pool draw and the first question."""
 
-from dataclasses import replace
 from datetime import timedelta
 
 from tests.conftest import NOW, lobby_state
@@ -520,6 +572,7 @@ from triviador.domain.game.state import (
     MediaWarmup,
     Phase,
 )
+from triviador.domain.ids import DeadlineId
 
 LATE = DecisionContext(now=NOW + timedelta(minutes=1))
 
@@ -595,11 +648,11 @@ def test_surrender_during_warmup_eliminates_without_ending_a_three_player_game()
     assert isinstance(after.turn, MediaWarmup), "the warmup window keeps running"
 ```
 
-`replace` is imported for the other tests in this file; `DeadlineId` comes from `triviador.domain.ids`. `mypy --strict` needs the `isinstance(state.turn, MediaWarmup)` narrowing before any `state.turn.deadline` access, which is why those assertions appear even where they look redundant.
+`mypy --strict` needs the `isinstance(state.turn, MediaWarmup)` narrowing before any `state.turn.deadline` access, which is why those assertions appear even where they look redundant. `window()` narrows via `current_deadline()` instead, which is why the tests that use it need no `isinstance`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_warmup.py -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_warmup.py -v --no-cov`
 Expected: FAIL at import — `ImportError: cannot import name 'MediaWarmup' from 'triviador.domain.game.state'`.
 
 - [ ] **Step 3: Add the deadline kind and the turn variant**
@@ -658,7 +711,7 @@ Add `| MediaWarmupStarted` to the `GameEvent` union, immediately after `Question
 
 - [ ] **Step 5: Run to confirm the matrix test now fails loudly**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_matrix.py::test_the_matrix_is_complete -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_matrix.py::test_the_matrix_is_complete -v --no-cov`
 Expected: FAIL with `Turn union and TURN_ROWS disagree: missing from TURN_ROWS={<class '...MediaWarmup'>}`.
 
 This is the guard working as designed — `test_matrix.py` cross-references the live `Turn` union, so a new variant cannot be added without extending the matrix.
@@ -723,7 +776,7 @@ The `next_deadline_id` bump mirrors `_present_question`: `allocate_deadline` ret
 
 - [ ] **Step 7: Run the warmup tests**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_warmup.py -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_warmup.py -v --no-cov`
 Expected: all PASS.
 
 - [ ] **Step 8: Update the matrix to 88 cells**
@@ -819,17 +872,48 @@ In `backend/tests/domain/game/test_start.py`, `test_start_emits_the_full_opening
 
 Read the rest of that test and the assertions after this block: any that reach into the resulting state expecting an `ExpansionQuestion` turn must now either step through the warmup (as `_expansion_question` does) or assert `MediaWarmup`. Import `ExpansionQuestion` may become unused — remove it if `ruff` flags it.
 
+- [ ] **Step 10b: Fix the round number after start**
+
+`test_after_start_bases_are_owned_and_scored` (`test_start.py:130`) asserts `state.round_no == 1`. Round one now begins when the warmup expires, not when the game starts, so replace that line with:
+
+```python
+    assert state.round_no == 0, "round one begins when the warmup expires"
+```
+
+Every other assertion in that test — phase, base ownership, base hp, score, `base_region` — is unaffected: `BasesAssigned` and the base `ScoreChanged` events still fire at start.
+
+- [ ] **Step 10c: Route `picking_state()` through the warmup**
+
+`picking_state()` (`test_expansion_picking.py:35`) folds `StartGame` and immediately asserts `isinstance(state.turn, ExpansionQuestion)` in its answer loop, so it breaks at the first iteration. Replace its `state = fold(...)` line with:
+
+```python
+    state = fold(base, decide(base, StartGame(P1), start_ctx()))
+    assert state.turn is not None
+    state = fold(
+        state,
+        decide(
+            state,
+            ExpireDeadline(state.turn.deadline.id),
+            DecisionContext(now=NOW + timedelta(minutes=1)),
+        ),
+    )
+```
+
+Add `ExpireDeadline` to the imports from `triviador.domain.game.actions` and `timedelta` from `datetime` if the file does not have them.
+
+Note the knock-on: the expansion question's own deadline is now computed from `NOW + 1 minute`, not `NOW`. `CTX` in that file is `DecisionContext(now=NOW)`, which is *before* the new deadline — fine for `SubmitAnswer` (no clock check) but it makes any `ExpireDeadline` in that file an early-expire that guard 4 silently ignores. If a test there expires a pick window, give it a context later than the pick deadline.
+
 - [ ] **Step 11: Run the full suite and fix the remaining fallout**
 
 Run: `cd backend && uv run pytest -q`
 
-Expected failures to work through, all with the same cause — `StartGame` no longer opens a question directly:
+Steps 9, 10, 10b, and 10c already cover the failures that could be identified by reading the code. The remainder, all with the same cause — `StartGame` no longer opens a question directly:
 
-- `tests/domain/game/test_expansion_question.py` — any helper that folds `StartGame` and expects an `ExpansionQuestion`. Route it through one `ExpireDeadline` on the warmup window, using a context past the warmup deadline.
-- `tests/domain/game/test_properties.py` — the `RuleBasedStateMachine`. Its `start` rule must now be followed by a warmup expiry before any answer rule is legal; the machine's own guards should express that via the current turn type rather than assuming a question is open.
+- `tests/domain/game/test_expansion_question.py` — any helper that folds `StartGame` and expects an `ExpansionQuestion`. Route it through one `ExpireDeadline` on the warmup window, using a context past the warmup deadline, exactly as Step 10c does.
+- `tests/domain/game/test_properties.py` — the `RuleBasedStateMachine`. Its `start` rule must now be followed by a warmup expiry before any answer rule is legal; express that through the machine's guards on the current turn type rather than assuming a question is open.
 - `tests/domain/game/test_matrix.py::test_cell[expire-media_warmup]` — should pass once Step 9 registers the state.
 
-Do not weaken an assertion to make it pass. If a test asserted that a question opens at start, the correct edit is to assert that a warmup opens at start and a question opens one expiry later.
+Anything else that surfaces here has the same shape and the same fix. Do not weaken an assertion to make it pass: if a test asserted that a question opens at start, the correct edit is to assert that a warmup opens at start and a question opens one expiry later.
 
 - [ ] **Step 11b: Rename the surrender test Task 4 added**
 
@@ -842,12 +926,32 @@ Task 4's `test_surrender_during_expansion_finishes_a_two_player_game` folds `Sta
 
 This is the two-player half of §3.4's requirement; `test_warmup.py`'s three-player test is the other half, asserting the window keeps running when elimination leaves more than one player.
 
+- [ ] **Step 11c: Re-route Task 4's window test through the warmup**
+
+Task 4's `test_a_surrendered_players_answer_does_not_close_the_window` folds `StartGame` and then asserts `isinstance(state.turn, ExpansionQuestion)` before answering — which is now a warmup turn. Insert the expiry between the fold and that assertion:
+
+```python
+    state = fold(lobby_state(), decide(lobby_state(), StartGame(PlayerId("p1")), start_ctx()))
+    assert state.turn is not None
+    state = fold(
+        state,
+        decide(
+            state,
+            ExpireDeadline(state.turn.deadline.id),
+            DecisionContext(now=NOW + timedelta(minutes=1)),
+        ),
+    )
+    assert isinstance(state.turn, ExpansionQuestion)
+    window = state.turn.deadline.id
+```
+
+Add `ExpireDeadline`, `DecisionContext`, `NOW`, and `timedelta` to that file's imports as needed. The test's meaning is unchanged — it still asserts that P3 gets their window.
+
 - [ ] **Step 12: Run the linters and the coverage gate**
 
 Run:
 ```bash
 cd backend && uv run pytest -q \
-  --cov=src/triviador/domain/game/reducer.py --cov-branch --cov-fail-under=100 \
   && uv run ruff check . && uv run ruff format --check . && uv run mypy
 ```
 Expected: PASS. If a branch in `_close_media_warmup` or the new `_apply` arm is uncovered, add the missing case to `test_warmup.py` rather than lowering the gate.
@@ -922,7 +1026,7 @@ def test_non_ascii_names_are_stable() -> None:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd backend && uv run pytest tests/domain/maps/test_digest.py -v`
+Run: `cd backend && uv run pytest tests/domain/maps/test_digest.py -v --no-cov`
 Expected: FAIL with `ModuleNotFoundError: No module named 'triviador.domain.maps.digest'`.
 
 - [ ] **Step 3: Write the digest**
@@ -953,7 +1057,7 @@ def canonical_digest(raw: object) -> str:
 
 - [ ] **Step 4: Run the digest tests**
 
-Run: `cd backend && uv run pytest tests/domain/maps/test_digest.py -v`
+Run: `cd backend && uv run pytest tests/domain/maps/test_digest.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 5: Write the failing genesis test**
@@ -1035,7 +1139,7 @@ def test_recovery_is_genesis_then_fold() -> None:
 
 - [ ] **Step 6: Run test to verify it fails**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_genesis.py -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_genesis.py -v --no-cov`
 Expected: FAIL with `ModuleNotFoundError: No module named 'triviador.domain.game.genesis'`.
 
 - [ ] **Step 7: Add `map_sha256` to `GameCreated`**
@@ -1151,7 +1255,7 @@ Then replace the long comment above the final `raise NotImplementedError` (the b
 
 - [ ] **Step 10: Run the genesis tests**
 
-Run: `cd backend && uv run pytest tests/domain/game/test_genesis.py -v`
+Run: `cd backend && uv run pytest tests/domain/game/test_genesis.py -v --no-cov`
 Expected: PASS.
 
 - [ ] **Step 11: Expose the digest from the registry**
@@ -1242,7 +1346,6 @@ Replace the `_R` alias in the first test with the already-imported `MapRegistry`
 Run:
 ```bash
 cd backend && uv run pytest -q \
-  --cov=src/triviador/domain/game/reducer.py --cov-branch --cov-fail-under=100 \
   && uv run ruff check . && uv run ruff format --check . && uv run mypy
 ```
 Expected: PASS. Any construction of `ev.GameCreated` that predates this task now fails type checking for the missing `map_sha256` — there should be none outside `test_genesis.py`; confirm with `grep -rn "GameCreated(" backend/`.
@@ -1259,12 +1362,12 @@ git commit -m "feat(domain): add genesis state construction and map content dige
 ## Done criteria
 
 ```
-uv run pytest -q                                        all green
-uv run pytest --cov=src/triviador/domain/game/reducer.py \
-              --cov-branch --cov-fail-under=100         100 % branch
+uv run pytest -q                                        all green, 100 % branch
 uv run ruff check . && uv run ruff format --check .     clean
 uv run mypy                                             Success
 ```
+
+`pyproject.toml`'s `addopts` already adds `--cov`, and `[tool.coverage.report] fail_under = 100` scopes the gate to `reducer.py`, so a plain full-suite run enforces it — there is no separate coverage command to remember. The same wiring is why every **targeted** run in this plan passes `--no-cov`: without it, a subset run measures near-zero coverage and fails the gate even when every test in it passed.
 
 And, specifically:
 
@@ -1273,9 +1376,15 @@ And, specifically:
 - `StartGame` opens a `MediaWarmup` window and presents no question
 - expiring that window starts round one and opens the first answer deadline
 - a surrender leaving one active player finishes the game, in any turn shape
+- a surrendered player's answer no longer closes an expansion window early
 - `create_initial_state` builds a `seq=1` empty lobby, and `evolve` refuses `GameCreated`
 - `MapRegistry.load_with_digest` returns a digest stable across reformatting
 
 ## What this plan does not do
 
-`GameCreated.map_sha256` is **produced** here but nothing **verifies** it yet — recovery refusing to load a game on digest mismatch is Plan 4's `GameManager`, which is where map loading happens. Likewise `AbortGame()` gains its system form here but acquires its caller (the reaper) in Plan 4.
+`GameCreated.map_sha256` is **produced** here but neither **populated** nor **verified** yet:
+
+- Plan 5's `POST /api/games` calls `load_with_digest()` and writes the resulting `sha256` into the genesis event it commits (spec §6.2).
+- Plan 4's `GameManager` recomputes it on recovery and refuses to load the game on mismatch (spec §3.2), which is where map loading happens.
+
+Likewise `AbortGame()` gains its system form here but acquires its caller — the reaper's abandoned-lobby sweep — in Plan 4.
