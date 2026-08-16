@@ -10,9 +10,10 @@ Two things matter more than any individual test here:
   selected row must genuinely block until the first transaction commits, but
   a second concurrent *reader* (another `select_pool` call, the shape two
   concurrent `StartGame` commands on different games would take) must not
-  block at all. Both lock tests use the `pg_stat_activity` polling barrier
-  from `test_event_store.py` rather than a plain `asyncio.Event`, for the
-  same reason documented there: an event only orders when each side *starts*,
+  block at all. Both lock tests use `wait_until_a_backend_is_blocked_on`, the
+  `pg_locks` polling barrier shared with `test_event_store.py` via
+  `conftest.py`, rather than a plain `asyncio.Event`, for the same reason
+  documented on that helper: an event only orders when each side *starts*,
   not whether a conflicting statement has actually reached Postgres and
   begun blocking — Task 6 measured that gap directly (see the task report).
 """
@@ -24,7 +25,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from triviador.db.errors import InsufficientQuestions
+from tests.db.conftest import wait_until_a_backend_is_blocked_on
+from triviador.db.errors import InsufficientQuestions, MalformedQuestion
 from triviador.db.models.auth import User
 from triviador.db.models.content import (
     Category,
@@ -141,7 +143,12 @@ async def _seed_numeric_question(
     version: int = 1,
     correct_value: Decimal = Decimal("42.5"),
     unit: str | None = "km",
+    with_numeric_row: bool = True,
 ) -> None:
+    """`with_numeric_row=False` seeds the bare `questions` row with
+    `kind='numeric'` but no matching `question_numeric` row — the malformed
+    shape `_materialize` must catch (F4): a row that passes `_select_kind`'s
+    count check but has no child row for `_materialize` to read."""
     async with sessionmaker() as session:
         session.add(
             Question(
@@ -155,35 +162,18 @@ async def _seed_numeric_question(
                 prompt_hash=f"hash-{question_id}",
             )
         )
-        session.add(
-            QuestionNumeric(question_id=question_id, correct_value=correct_value, unit=unit)
-        )
+        if with_numeric_row:
+            session.add(
+                QuestionNumeric(question_id=question_id, correct_value=correct_value, unit=unit)
+            )
         await session.commit()
 
 
-async def _wait_until_a_backend_is_blocked_on_a_lock(
-    sessionmaker: async_sessionmaker[AsyncSession], *, timeout_s: float = 5.0
-) -> None:
-    """Identical in spirit to `test_event_store.py`'s helper of the same name
-    (see that module's docstring for why polling `pg_stat_activity` from a
-    third connection is necessary and a plain `asyncio.Event` barrier is
-    not): every iteration is a real round trip to the database, not a
-    timing-based wait, and the deadline is a safety bound against a stuck
-    test hanging forever on a real bug, not the synchronization mechanism
-    itself."""
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout_s
-    async with sessionmaker() as session:
-        while True:
-            count = (
-                await session.execute(
-                    text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
-                )
-            ).scalar_one()
-            if count > 0:
-                return
-            if loop.time() > deadline:
-                raise AssertionError("timed out waiting for the second attempt to block on a lock")
+# `wait_until_a_backend_is_blocked_on` lives in `tests/db/conftest.py`, shared
+# with `test_event_store.py` — see its docstring for why polling `pg_locks`
+# (scoped to a relation, not cluster-wide `pg_stat_activity`) is necessary and
+# a plain `asyncio.Event` barrier is not. This module previously carried its
+# own byte-identical copy of this helper despite already claiming to reuse it.
 
 
 # --------------------------------------------------------------------------
@@ -333,6 +323,45 @@ async def test_numeric_snapshot_carries_the_answer_and_unit(
 
 
 # --------------------------------------------------------------------------
+# MalformedQuestion — a bank-data problem must fail before the game starts,
+# not resurface mid-game out of a committed QuestionPoolDrawn event.
+# --------------------------------------------------------------------------
+
+
+async def test_a_multiple_choice_row_with_no_choices_raises_malformed_question(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """`_select_kind`'s only check counts `questions` rows, not their
+    `question_choices` children, so a `multiple_choice` row with zero
+    choices passes it silently. `_materialize` must catch this itself."""
+    await _seed_category(sessions)
+    await _seed_mc_question(sessions, "mc-empty", choices=())
+
+    async with sessions() as session, session.begin():
+        with pytest.raises(MalformedQuestion) as exc_info:
+            await QuestionBank(session).select_pool(QuestionBudget(numeric=0, multiple_choice=1))
+
+    assert exc_info.value.question_id == "mc-empty"
+    assert exc_info.value.kind == QuestionKind.MULTIPLE_CHOICE
+
+
+async def test_a_numeric_row_with_no_numeric_data_raises_malformed_question(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """The numeric analogue: a `numeric`-kind `questions` row with no
+    matching `question_numeric` row."""
+    await _seed_category(sessions)
+    await _seed_numeric_question(sessions, "num-empty", with_numeric_row=False)
+
+    async with sessions() as session, session.begin():
+        with pytest.raises(MalformedQuestion) as exc_info:
+            await QuestionBank(session).select_pool(QuestionBudget(numeric=1, multiple_choice=0))
+
+    assert exc_info.value.question_id == "num-empty"
+    assert exc_info.value.kind == QuestionKind.NUMERIC
+
+
+# --------------------------------------------------------------------------
 # InsufficientQuestions
 # --------------------------------------------------------------------------
 
@@ -375,11 +404,11 @@ async def test_selection_holds_a_share_lock_for_the_transaction(
     """A second connection's `SELECT ... FOR UPDATE` on the row `select_pool`
     just selected must block until the first transaction commits. The first
     attempt holds its transaction open until a third connection observes,
-    via `pg_stat_activity`, that some backend is genuinely waiting on a lock
-    — at which point the second attempt's conflicting `FOR UPDATE` is
-    provably in flight and blocked, not merely scheduled to run. `SET LOCAL
-    lock_timeout` bounds that block instead of letting a stuck test hang
-    forever; nothing here waits on wall-clock time."""
+    via `pg_locks`, that some backend is genuinely waiting on a lock against
+    `questions` — at which point the second attempt's conflicting `FOR
+    UPDATE` is provably in flight and blocked, not merely scheduled to run.
+    `SET LOCAL lock_timeout` bounds that block instead of letting a stuck
+    test hang forever; nothing here waits on wall-clock time."""
     await _seed_category(sessions)
     await _seed_mc_question(sessions, "mc-1")
     budget = QuestionBudget(numeric=0, multiple_choice=1)
@@ -391,7 +420,7 @@ async def test_selection_holds_a_share_lock_for_the_transaction(
             await session.execute(text("SET LOCAL lock_timeout = '2s'"))
             await QuestionBank(session).select_pool(budget)
             first_locked.set()
-            await _wait_until_a_backend_is_blocked_on_a_lock(sessions)
+            await wait_until_a_backend_is_blocked_on(sessions, "questions")
             # exiting the `async with` commits, releasing the FOR SHARE lock
 
     async def second() -> None:

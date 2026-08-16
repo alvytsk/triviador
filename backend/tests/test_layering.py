@@ -39,12 +39,24 @@ FORBIDDEN = (
 # pulls in a database. What must stay out is anything that talks to
 # PostgreSQL, or anything a level up the stack that would make the codec's
 # purity a one-way trip to import it from `services/` or `api/`.
+#
+# `triviador.db.*` is handled as an allowlist, not a denylist: a denylist
+# enumerating known-bad submodules (`db.models`, `db.repositories`, ...) has
+# a gap for every submodule nobody thought to add, which is exactly how
+# `db.engine`, `db.base`, and `db.unit_of_work` — all of which import
+# SQLAlchemy — slipped past an earlier version of this gate. Only the
+# codec's own exception types (`triviador.db.errors`) and its own package
+# (`triviador.db.codec`, for its sibling registry/upcasters modules) may be
+# imported; every other `triviador.db.*` submodule is forbidden.
+CODEC_DB_ALLOWED = (
+    "triviador.db.errors",
+    "triviador.db.codec",
+)
+
 CODEC_FORBIDDEN = (
     "sqlalchemy",
     "asyncpg",
     "alembic",
-    "triviador.db.models",
-    "triviador.db.repositories",
     "triviador.services",
     "triviador.api",
 )
@@ -55,6 +67,14 @@ def _is_forbidden(module: str, forbidden: tuple[str, ...] = FORBIDDEN) -> bool:
     # flag a hypothetical `triviador.mapsomething`, and a gate that reports
     # phantom violations is a gate people learn to edit around.
     return any(module == f or module.startswith(f + ".") for f in forbidden)
+
+
+def _is_forbidden_for_codec(module: str) -> bool:
+    if module == "triviador.db" or module.startswith("triviador.db."):
+        return not any(
+            module == allowed or module.startswith(allowed + ".") for allowed in CODEC_DB_ALLOWED
+        )
+    return _is_forbidden(module, CODEC_FORBIDDEN)
 
 
 def _package_of(path: Path) -> list[str]:
@@ -105,7 +125,7 @@ def test_codec_stays_free_of_the_database_and_the_layers_above_it() -> None:
         f"{path.relative_to(SRC)}: {module}"
         for path in sorted(CODEC.rglob("*.py"))
         for module in sorted(_imported_modules(path))
-        if _is_forbidden(module, CODEC_FORBIDDEN)
+        if _is_forbidden_for_codec(module)
     ]
     assert violations == [], "db/codec/ must stay pure:\n" + "\n".join(violations)
 
@@ -118,6 +138,8 @@ def test_codec_stays_free_of_the_database_and_the_layers_above_it() -> None:
         "import alembic",
         "from triviador.db.models import games",
         "from triviador.db import models",
+        "from triviador.db.engine import create_engine",
+        "from triviador.db.base import Base",
         "from ...db.repositories import events",  # relative — same bypass as the domain gate
         "from triviador import services",
         "from triviador import api",
@@ -125,12 +147,17 @@ def test_codec_stays_free_of_the_database_and_the_layers_above_it() -> None:
 )
 def test_the_codec_gate_sees_each_form_of_violation(source: str) -> None:
     """Mirrors `test_the_gate_sees_each_form_of_violation` for the narrower
-    `CODEC_FORBIDDEN` list: a guard nobody has watched fail is a guard nobody
-    can trust."""
-    module = CODEC / "_probe.py"
+    codec gate: a guard nobody has watched fail is a guard nobody can trust.
+
+    A filename unique to this test (not shared with
+    `test_a_legitimate_codec_import_is_not_flagged`): both write and delete a
+    probe file in `src/`, and sharing one filename would make the two race
+    under parallel execution and leave the wrong test's residue behind if
+    either is killed mid-run."""
+    module = CODEC / "_probe_violation.py"
     module.write_text(source, encoding="utf-8")
     try:
-        assert any(_is_forbidden(m, CODEC_FORBIDDEN) for m in _imported_modules(module)), source
+        assert any(_is_forbidden_for_codec(m) for m in _imported_modules(module)), source
     finally:
         module.unlink()
 
@@ -138,7 +165,7 @@ def test_the_codec_gate_sees_each_form_of_violation(source: str) -> None:
 def test_a_legitimate_codec_import_is_not_flagged() -> None:
     """The codec's own real imports — its sibling registry/upcasters modules,
     `db.errors` for its exception types, and `pydantic` — must all pass."""
-    module = CODEC / "_probe.py"
+    module = CODEC / "_probe_legitimate.py"
     module.write_text(
         "from triviador.db.errors import NaiveDatetime\n"
         "from triviador.db.codec.registry import WIRE_NAMES\n"
@@ -146,7 +173,7 @@ def test_a_legitimate_codec_import_is_not_flagged() -> None:
         encoding="utf-8",
     )
     try:
-        assert not any(_is_forbidden(m, CODEC_FORBIDDEN) for m in _imported_modules(module))
+        assert not any(_is_forbidden_for_codec(m) for m in _imported_modules(module))
     finally:
         module.unlink()
 
@@ -164,8 +191,14 @@ def test_a_legitimate_codec_import_is_not_flagged() -> None:
 )
 def test_the_gate_sees_each_form_of_violation(source: str) -> None:
     """A guard nobody has watched fail is a guard nobody can trust — and each
-    import form is a separate code path through `_imported_modules`."""
-    module = DOMAIN / "game" / "_probe.py"
+    import form is a separate code path through `_imported_modules`.
+
+    A filename unique to this test (not shared with
+    `test_a_legitimate_domain_import_is_not_flagged`): both write and delete
+    a probe file in `src/`, and sharing one filename would make the two race
+    under parallel execution and leave the wrong test's residue behind if
+    either is killed mid-run."""
+    module = DOMAIN / "game" / "_probe_violation.py"
     module.write_text(source, encoding="utf-8")
     try:
         assert any(_is_forbidden(m) for m in _imported_modules(module)), source
@@ -187,7 +220,7 @@ def test_the_gate_sees_each_form_of_violation(source: str) -> None:
 )
 def test_a_legitimate_domain_import_is_not_flagged(source: str) -> None:
     """The gate must also be capable of passing, or it is just an assert False."""
-    module = DOMAIN / "game" / "_probe.py"
+    module = DOMAIN / "game" / "_probe_legitimate.py"
     module.write_text(source, encoding="utf-8")
     try:
         assert not any(_is_forbidden(m) for m in _imported_modules(module))

@@ -7,6 +7,7 @@ both belong in this module rather than a new file so the exception surface
 stays in one place.
 """
 
+from triviador.domain.ids import QuestionId
 from triviador.domain.questions.types import QuestionKind
 
 
@@ -61,3 +62,26 @@ class InsufficientQuestions(Exception):
         self.kind = kind
         self.required = required
         self.available = available
+
+
+class MalformedQuestion(Exception):
+    """`QuestionBank._materialize` found a `Question` row missing the child
+    data its `kind` requires: a `multiple_choice` row with zero
+    `question_choices` rows, or a `numeric` row with no `question_numeric`
+    row.
+
+    Raised while a `StartGame` pool draw is still inside its transaction —
+    the same place `InsufficientQuestions` is raised — so a malformed row is
+    a pre-game failure while the game is still in `LOBBY`. Without this
+    check, the same bad row would instead be baked into a committed
+    `QuestionPoolDrawn` event and only surface later, mid-game, as a
+    `ValueError` out of `QuestionSnapshot.correct_choice_index()` — a
+    failure that reproduces identically on every recovery replay, since the
+    bad snapshot is now part of the durable log. `question_id` and `kind`
+    are set as attributes so the operator can locate and fix the source row.
+    """
+
+    def __init__(self, *, question_id: QuestionId, kind: QuestionKind) -> None:
+        super().__init__(question_id, kind)
+        self.question_id = question_id
+        self.kind = kind

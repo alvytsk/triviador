@@ -25,9 +25,13 @@ if config.config_file_name is not None:
 
 # alembic.ini deliberately carries no `sqlalchemy.url` (a committed URL is a
 # footgun that eventually points a migration at the wrong database). The
-# default here is `Settings().database_url`; a caller (tests, or any other
-# script building a Config programmatically) can still override it by calling
-# `config.set_main_option("sqlalchemy.url", ...)` before invoking a command.
+# fallback here is `Settings().database_url`, which has no default of its
+# own: `TRIVIADOR_DATABASE_URL` unset raises `ValidationError` instead of
+# silently resolving to some other database, which is the loud failure we
+# want for `alembic upgrade head` run without it. A caller (tests, or any
+# other script building a Config programmatically) can still override this
+# by calling `config.set_main_option("sqlalchemy.url", ...)` before invoking
+# a command, bypassing `Settings` entirely.
 if config.get_main_option("sqlalchemy.url") is None:
     config.set_main_option("sqlalchemy.url", get_settings().database_url)
 

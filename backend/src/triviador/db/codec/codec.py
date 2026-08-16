@@ -50,12 +50,20 @@ def _adapter_for(cls: type[Any]) -> TypeAdapter[Any]:
 
 
 def _walk(value: Any, path: str) -> Any:
-    """Every datetime reachable from `value` must be aware and UTC.
+    """Every datetime reachable from `value`'s leaves or dataclass fields must
+    be aware and UTC.
 
     The walk is structural — driven by `isinstance` on the actual value
     tree, not by a registry of "the fields known to carry a datetime" — so
     a new datetime field on any future event inherits the invariant without
     anyone needing to remember to add it here.
+
+    Mapping *values* are walked; mapping *keys* are not. No current event
+    field is affected — every mapping key in the event tree is a `str`
+    NewType, and JSON requires string keys anyway — so a key-walking branch
+    would be unreachable and the 100%-branch-coverage gate could never
+    satisfy it. If a non-`str`-keyed mapping ever appears, this needs
+    revisiting alongside a test that actually exercises it.
 
     A naive value has no correct instant to recover, so it is rejected
     outright (`NaiveDatetime`). An aware-but-not-UTC value (a `+02:00`

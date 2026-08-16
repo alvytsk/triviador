@@ -39,8 +39,14 @@ from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from triviador.config import TEST_DATABASE_URL
 from triviador.db.engine import create_engine, sessionmaker_for
+
+# Owned here, not by `Settings` (see `triviador.config`): `Settings.database_url`
+# has no default precisely so that an unset `TRIVIADOR_DATABASE_URL` fails loudly
+# instead of silently targeting a database — including this one. The test suite's
+# own default database is a test-suite concern, not something the production
+# config type should carry.
+TEST_DATABASE_URL = "postgresql+asyncpg://triviador:triviador@127.0.0.1:5433/triviador_test"
 
 DATABASE_URL = os.environ.get("TRIVIADOR_TEST_DATABASE_URL", TEST_DATABASE_URL)
 
@@ -119,6 +125,92 @@ UNREACHABLE = (
     "These tests fail rather than skip: a silently skipped integration suite "
     "reports green while proving nothing."
 )
+
+
+async def wait_until_a_backend_is_blocked_on(
+    sessionmaker: async_sessionmaker[AsyncSession], relation: str, *, timeout_s: float = 5.0
+) -> None:
+    """Poll `pg_locks` from a third connection until Postgres itself reports
+    some backend genuinely blocked on a lock while running a statement that
+    mentions `relation` by name (e.g. `"games"`, `"questions"`).
+
+    Shared by `tests/db/test_event_store.py` and `tests/db/test_question_bank.py`
+    — both previously carried byte-identical copies of this helper.
+
+    A plain `asyncio.Event` signalled right before a conflicting statement is
+    issued is *not* sufficient on its own to guarantee that statement has
+    actually reached the database and started blocking by the time the first
+    side resumes and commits: `session.begin()` and `SET LOCAL` each cross
+    an await boundary of their own, and empirically (see Task 6's report)
+    the first side's commit can land before the second side's conflicting
+    statement is even dispatched, let alone blocked. Asking Postgres
+    directly — rather than inferring "the second side must be blocked by
+    now" from Python-side event ordering — is what makes the contention
+    itself deterministic.
+
+    Scoped to `relation`, not cluster-wide `pg_stat_activity` filtered only
+    on `wait_event_type = 'Lock'`: the latter is satisfied by *any* backend
+    blocked on *any* lock anywhere in the cluster — including an autovacuum
+    worker, or (were this suite ever run under `pytest-xdist`) a completely
+    unrelated test in another worker process — which could return early
+    without the specific contention this test is trying to observe having
+    happened at all.
+
+    This does **not** filter on `pg_locks.relation` directly (verified: it
+    doesn't work). Both contention shapes these tests produce — a second
+    `UPDATE games SET last_seq = ...` racing the row `append` already
+    updated, and a second `SELECT ... FOR UPDATE` racing a row already
+    locked `FOR SHARE` — block on a *tuple*/`transactionid` wait, not a
+    relation-level lock: the relation-level intent lock (`RowShareLock` /
+    `RowExclusiveLock`) is granted to both sides immediately, since it does
+    not itself conflict, and only the specific-row wait is left ungranted,
+    recorded with `locktype = 'transactionid'` and `relation` NULL.
+    Confirmed against a live contended pair before shipping this — see the
+    task report. So this joins `pg_locks` (`NOT granted`) to
+    `pg_stat_activity` on `pid` and matches the blocked backend's own
+    in-flight `query` text against `relation` instead: scoped to "a backend
+    blocked while operating on this table," which is what the `relation`
+    parameter is actually trying to express, achieved by a route that
+    empirically fires.
+
+    The genuinely load-bearing property is not "this never returns early" —
+    it is that **a premature return here cannot produce a false green.** If
+    it does fire early, the caller's contention degenerates back toward the
+    pre-barrier ~1-in-4 rate at which the two sides happen to interleave
+    without the barrier's help (see Task 6's report). But the contended and
+    uncontended paths converge on the same observable outcome — `UPDATE ...
+    WHERE last_seq = :expected` matching zero rows and raising
+    `ConcurrentModification`, or a `FOR UPDATE` probe blocking until the
+    holder's transaction ends — so a genuinely broken `append` or a broken
+    `FOR SHARE` still fails the calling test either way. This barrier
+    sharpens *which mechanism* a passing run demonstrates; it is not what
+    the test's assertions depend on to catch a real bug.
+
+    Every iteration here is a real round trip to the database, not a
+    timing-based wait, and `timeout_s` is a safety bound against a stuck
+    test hanging forever on a real bug, not the synchronization mechanism
+    itself.
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_s
+    async with sessionmaker() as session:
+        while True:
+            count = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM pg_locks l "
+                        "JOIN pg_stat_activity a ON a.pid = l.pid "
+                        "WHERE NOT l.granted AND a.query ILIKE '%' || :relation || '%'"
+                    ),
+                    {"relation": relation},
+                )
+            ).scalar_one()
+            if count > 0:
+                return
+            if loop.time() > deadline:
+                raise AssertionError(
+                    f"timed out waiting for a backend to block on a lock against {relation!r}"
+                )
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")

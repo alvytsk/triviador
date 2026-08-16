@@ -1,12 +1,14 @@
 """Committed event rows must keep decoding and folding to the same state.
 
 This is the one test that can catch a semantic change to how the reducer
-*applies* an event (`evolve`/`_apply`), not to what `decide()` computes when
-producing one — `_apply` never calls `decide()`, `expected_score`, or
-`holding_value`, it only interprets event data already recorded, so a
-decide-side bug is invisible to it by construction. The domain's
-`decide()`-calling unit tests under `tests/domain/game/` remain the primary
-guard for game logic; this is a second, narrower layer on top of them.
+*applies* an event (`evolve`/`_apply`). It does not catch a bug in what
+`decide()` computes, because `_apply` only interprets recorded event data —
+with one exception: `_apply` delegates to `_next_picker`, a helper it shares
+with the decide side (see `reducer.py`'s `PicksGranted` branch), so a change
+there is visible to this corpus even though it originates on the decide
+side. The domain's `decide()`-calling unit tests under `tests/domain/game/`
+remain the primary guard for game logic; this is a second, narrower layer on
+top of them.
 
 Read only: nothing here calls `encode`. A test that encodes and then decodes
 its own output would only prove the codec agrees with itself, which is true

@@ -33,6 +33,17 @@ So every `QuestionSnapshot` here is built from explicit, eagerly-executed
 from an ORM relationship traversed lazily after the fact — an admin editing
 or deactivating a source row after the draw must not be able to change a
 game already in flight or corrupt a later replay.
+
+**Why `_materialize` checks shape, not just count.** A `multiple_choice` row
+with zero `question_choices` rows, or a `numeric` row with no
+`question_numeric` row, passes `_select_kind`'s only check (`len(rows) <
+required` counts `questions` rows, not their children) and would otherwise
+be baked into a `QuestionPoolDrawn` event as a structurally invalid
+snapshot — a bank-data problem that only surfaces later as a `ValueError`
+when that question is resolved mid-game, on a durable log that reproduces
+the same failure on every recovery replay. `_materialize` raises
+`MalformedQuestion` for both shapes instead, while the draw is still inside
+its transaction and the game is still in `LOBBY`.
 """
 
 from collections import defaultdict
@@ -41,7 +52,7 @@ from collections.abc import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from triviador.db.errors import InsufficientQuestions
+from triviador.db.errors import InsufficientQuestions, MalformedQuestion
 from triviador.db.models.content import Category, Question, QuestionChoice, QuestionNumeric
 from triviador.domain.ids import CategoryId, MediaAssetId, QuestionId
 from triviador.domain.questions.types import (
@@ -54,7 +65,7 @@ from triviador.domain.questions.types import (
     QuestionSnapshot,
 )
 
-__all__ = ["InsufficientQuestions", "QuestionBank"]
+__all__ = ["InsufficientQuestions", "MalformedQuestion", "QuestionBank"]
 
 
 class QuestionBank:
@@ -131,13 +142,18 @@ class QuestionBank:
         snapshots = []
         for question in questions:
             category = categories[question.category_id]
+            kind = QuestionKind(question.kind)
             choices = choices_by_question.get(question.id)
             numeric = numeric_by_question.get(question.id)
+            if kind is QuestionKind.MULTIPLE_CHOICE and choices is None:
+                raise MalformedQuestion(question_id=QuestionId(question.id), kind=kind)
+            if kind is QuestionKind.NUMERIC and numeric is None:
+                raise MalformedQuestion(question_id=QuestionId(question.id), kind=kind)
             snapshots.append(
                 QuestionSnapshot(
                     question_id=QuestionId(question.id),
                     version=question.version,
-                    kind=QuestionKind(question.kind),
+                    kind=kind,
                     prompt=question.prompt,
                     category=CategorySnapshot(
                         category_id=CategoryId(category.id),

@@ -961,7 +961,7 @@ git commit -m "feat(db): event codec with a frozen wire-name registry and upcast
 - Produces: committed corpus files and the test that reads them.
 - Consumes: `decode` from Task 4, `create_initial_state` and `fold` from the domain.
 
-§4.3: "The guard is a golden corpus." Its value depends entirely on one property — **the test must never re-encode**. It reads committed JSON, decodes, folds, and compares to a committed expected summary. A test that encodes and then decodes its own output asserts that the codec agrees with itself, which is true of every broken codec too. What it actually guards is how `evolve`/`_apply` interprets an event, not what `decide()` computes when producing one — `_apply` never recomputes `decide()`'s logic, so a decide-side bug is invisible to it by construction. The domain's `decide()`-calling unit tests remain the primary guard for game logic; this corpus is a second, narrower layer on top of them.
+§4.3: "The guard is a golden corpus." Its value depends entirely on one property — **the test must never re-encode**. It reads committed JSON, decodes, folds, and compares to a committed expected summary. A test that encodes and then decodes its own output asserts that the codec agrees with itself, which is true of every broken codec too. What it actually guards is how `evolve`/`_apply` interprets an event. It does not catch a bug in what `decide()` computes, because `_apply` only interprets recorded event data — with one exception: `_apply` delegates to `_next_picker`, a helper it shares with the decide side, so changes there are visible to the corpus. The domain's `decide()`-calling unit tests remain the primary guard for game logic; this corpus is a second, narrower layer on top of them.
 
 - [ ] **Step 1: Write the generator**
 
@@ -1001,10 +1001,13 @@ Run it **by hand**, once. It is under `tests/tools/`, not `tests/`, and its file
 """Committed event rows must keep decoding and folding to the same state.
 
 This is the one test that can catch a semantic change to how the reducer
-*applies* an event, not to what `decide()` computes when producing one —
-a JSON shape check cannot, but neither can this test substitute for the
-domain's `decide()`-calling unit tests. Read only: nothing here calls
-`encode`."""
+*applies* an event. It does not catch a bug in what `decide()` computes,
+because `_apply` only interprets recorded event data — with one exception:
+`_apply` delegates to `_next_picker`, a helper it shares with the decide
+side, so changes there are visible to the corpus. A JSON shape check
+cannot catch an *apply*-side change either way, but neither can this test
+substitute for the domain's `decide()`-calling unit tests. Read only:
+nothing here calls `encode`."""
 
 CORPUS = sorted((Path(__file__).parent / "golden").glob("*.json"))
 
@@ -1032,7 +1035,7 @@ def test_the_corpus_is_not_empty() -> None:
 
 - [ ] **Step 4: Verify the guard actually bites**
 
-Temporarily change something semantic in the reducer — e.g. make expansion claims award a different score — and run the corpus test. It must fail. Revert. Then temporarily rename a field in an event dataclass without an upcaster: the corpus must fail to decode. Revert. Record both observations in the commit message; a golden corpus nobody has watched fail is decoration.
+Temporarily change something semantic in the *apply* side of the reducer — e.g. the `ScoreChanged` apply branch, or the `_next_picker` helper `_apply` shares with `decide()` — and run the corpus test. It must fail. (A decide-side-only mutation, such as making expansion claims award a different score in `decide()`, does **not** fail the corpus — `_apply` never recomputes that logic — so it is not a valid check here.) Revert. Then temporarily rename a field in an event dataclass without an upcaster: the corpus must fail to decode. Revert. Record both observations in the commit message; a golden corpus nobody has watched fail is decoration.
 
 - [ ] **Step 5: Full verification**
 

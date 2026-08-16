@@ -15,9 +15,11 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from tests.db.conftest import wait_until_a_backend_is_blocked_on
 from triviador.db.errors import ConcurrentModification
 from triviador.db.models.auth import User
 from triviador.db.models.games import Game, GameEventRow, GamePlayer
+from triviador.db.repositories.games import GameRepository
 from triviador.db.unit_of_work import PersistedEventRef, UnitOfWork
 from triviador.domain.game.events import (
     BattleRoundStarted,
@@ -29,7 +31,8 @@ from triviador.domain.game.events import (
     PlayerJoined,
     PlayerLeft,
 )
-from triviador.domain.ids import GameId, PlayerId
+from triviador.domain.game.rules import DEFAULT_RULES
+from triviador.domain.ids import GameId, MapId, PlayerId
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -103,39 +106,53 @@ async def _game_players(
         return result.scalars().all()
 
 
-async def _wait_until_a_backend_is_blocked_on_a_lock(
-    sessionmaker: async_sessionmaker[AsyncSession], *, timeout_s: float = 5.0
-) -> None:
-    """Poll `pg_stat_activity` from a third connection until Postgres itself
-    reports some backend waiting on a lock.
+# The `pg_locks`-polling contention barrier (`wait_until_a_backend_is_blocked_on`)
+# now lives in `tests/db/conftest.py`, shared with `test_question_bank.py` — see
+# its docstring for why polling is necessary and why scoping to a specific
+# relation (`"games"` here) matters. `test_event_store.py` previously carried
+# its own byte-identical, cluster-wide copy of this helper.
 
-    A plain `asyncio.Event` signalled right before the second attempt's
-    conflicting `UPDATE` is *not* sufficient on its own to guarantee that
-    `UPDATE` has actually reached the database and started blocking by the
-    time the first attempt resumes and commits: `session.begin()` and `SET
-    LOCAL` each cross an await boundary of their own, and empirically (see
-    the task report) the first attempt's commit can still land first often
-    enough that the second attempt finds the row already free instead of
-    genuinely blocking on it. Asking Postgres directly — rather than
-    inferring "second must be blocked by now" from Python-side event
-    ordering — is what makes the contention itself deterministic. Every
-    iteration here is a real round trip to the database, not a timing-based
-    wait, and the deadline is a safety bound against a stuck test hanging
-    forever on a real bug, not the synchronization mechanism itself.
-    """
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout_s
-    async with sessionmaker() as session:
-        while True:
-            count = (
-                await session.execute(
-                    text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
-                )
-            ).scalar_one()
-            if count > 0:
-                return
-            if loop.time() > deadline:
-                raise AssertionError("timed out waiting for the second attempt to block on a lock")
+
+# --------------------------------------------------------------------------
+# create -> append seam
+# --------------------------------------------------------------------------
+
+
+async def test_create_then_append_reads_back_as_a_two_event_stream(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """§6.2's flow, verbatim: `GameRepository.create` (tx1, seq 1) followed by
+    `JoinGame(host)` through `TransactionContext.append` (tx2, seq 2) is the
+    first thing that happens to every real game. Every `append` test below
+    this one seeds `last_seq` directly via `_seed_game`, bypassing `create`
+    entirely, so none of them ever call `append` with `expected_last_seq=1`
+    — the only baseline value the running system actually produces. This
+    test crosses that seam instead of assuming it works."""
+    await _seed_user(sessions, "host")
+    repo = GameRepository(sessions)
+    await repo.create(
+        game_id=GameId("g1"),
+        map_id=MapId("m1"),
+        rules=DEFAULT_RULES,
+        host_id=PlayerId("host"),
+        map_sha256="1" * 64,
+        preset_id=None,
+        operation_id="op-create",
+    )
+
+    uow = UnitOfWork(sessions)
+    events: tuple[GameEvent, ...] = (PlayerJoined(PlayerId("host"), "Host", 0),)
+    async with uow.begin() as tx:
+        await tx.append(GameId("g1"), expected_last_seq=1, events=events, operation_id="op-join")
+
+    game = await _get_game(sessions, "g1")
+    assert game.last_seq == 2
+
+    rows = await _event_rows(sessions, "g1")
+    assert [(row.seq, row.type) for row in rows] == [
+        (1, "game.created"),
+        (2, "game.player_joined"),
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -198,7 +215,7 @@ async def test_stale_expected_last_seq_raises_concurrent_modification(
     returned — meaning it already holds the `games` row lock inside its
     still-open transaction — and `second` doesn't even open its own
     transaction until that fires. `first` then holds its transaction open
-    until `_wait_until_a_backend_is_blocked_on_a_lock` observes, via a
+    until `wait_until_a_backend_is_blocked_on` observes, via a
     third connection, that some backend is genuinely waiting on a lock — at
     which point `second`'s conflicting `UPDATE` is provably in flight and
     blocked, not merely scheduled to run. `SET LOCAL lock_timeout` bounds
@@ -224,7 +241,7 @@ async def test_stale_expected_last_seq_raises_concurrent_modification(
                 operation_id="op-p1",
             )
             first_updated.set()
-            await _wait_until_a_backend_is_blocked_on_a_lock(sessions)
+            await wait_until_a_backend_is_blocked_on(sessions, "games")
 
     async def second() -> None:
         await first_updated.wait()
@@ -283,7 +300,7 @@ async def test_concurrent_modification_leaves_no_partial_events(
                 operation_id="op-winner",
             )
             first_updated.set()
-            await _wait_until_a_backend_is_blocked_on_a_lock(sessions)
+            await wait_until_a_backend_is_blocked_on(sessions, "games")
 
     async def second() -> None:
         await first_updated.wait()

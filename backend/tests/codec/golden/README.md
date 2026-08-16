@@ -9,12 +9,14 @@ that encodes its own output and decodes it back only proves the codec agrees
 with itself, which is true of every broken codec too.
 
 This catches a semantic change to how the reducer *applies* an event
-(`evolve`/`_apply`) — not to what `decide()` computes when producing one.
-`_apply` never calls `decide()`, `expected_score`, or `holding_value`; it
-only interprets event data already recorded, so a decide-side bug is
-invisible to it by construction. The domain's `decide()`-calling unit tests
-under `tests/domain/game/` remain the primary guard for game logic; this
-corpus is a second, narrower layer on top of them, not a superset.
+(`evolve`/`_apply`). It does not catch a bug in what `decide()` computes,
+because `_apply` only interprets recorded event data — with one exception:
+`_apply` delegates to `_next_picker`, a helper it shares with the decide
+side (`reducer.py`'s `PicksGranted` branch), so changes there are visible to
+the corpus even though they originate on the decide side. The domain's
+`decide()`-calling unit tests under `tests/domain/game/` remain the primary
+guard for game logic; this corpus is a second, narrower layer on top of
+them, not a superset.
 
 ## Trajectories
 
