@@ -29,3 +29,14 @@ class NaiveDatetime(Exception):
     refuses it outright rather than guessing a zone. Raised with a dotted
     path to the offending field as the argument.
     """
+
+
+class ConcurrentModification(Exception):
+    """`TransactionContext.append`'s optimistic `UPDATE games ... WHERE
+    last_seq = :expected` matched zero rows.
+
+    Raised with `(game_id, expected_last_seq)`. Someone else already
+    advanced this game's `last_seq` past what this attempt's `decide()` call
+    saw, so the runtime quarantines on this and never retries — retrying
+    would append events decided against state that is no longer current.
+    """
