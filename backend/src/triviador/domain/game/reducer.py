@@ -157,7 +157,12 @@ def _decide_join(state: GameState, command: JoinGame) -> tuple[ev.GameEvent, ...
         raise RejectedCommand(RejectCode.ALREADY_JOINED, f"{command.actor_id!r} already joined")
     if len(state.players) >= state.rules.player_count:
         raise RejectedCommand(RejectCode.GAME_FULL, "lobby is full")
-    return (ev.PlayerJoined(command.actor_id, command.display_name, seat=len(state.players)),)
+    # Lowest unused seat, not a counter: a lobby departure frees its seat, and
+    # `seat=len(players)` would re-mint a number a remaining player still holds.
+    # The full-lobby guard above means the range is never exhausted.
+    used = {p.seat for p in state.players.values()}
+    seat = min(i for i in range(state.rules.player_count) if i not in used)
+    return (ev.PlayerJoined(command.actor_id, command.display_name, seat=seat),)
 
 
 def _decide_start(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
@@ -894,11 +899,10 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
             # `Phase.LOBBY` branch) — the player never got far enough to hold
             # a base, a score, or a seat in an open turn, so undoing
             # `PlayerJoined` is exactly its inverse: drop them from both
-            # `players` and `turn_order`. NOTE: seats are not renumbered, so
-            # a later `JoinGame` (`seat=len(players)`) can re-mint a seat
-            # number still held by a remaining player — a pre-existing gap
-            # in seat allocation, not introduced or fixed here; out of scope
-            # for this arm.
+            # `players` and `turn_order`.
+            # Seats are deliberately not renumbered: a seat is an identity, not
+            # a position. `_decide_join` allocates the lowest unused seat, so a
+            # departure frees exactly that number for the next joiner.
             return replace(
                 state,
                 players={p: s for p, s in state.players.items() if p != pid},
