@@ -27,12 +27,15 @@ collection for that too, the same way it does for a missing `integration`
 mark.
 """
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -42,6 +45,24 @@ from triviador.db.engine import create_engine, sessionmaker_for
 DATABASE_URL = os.environ.get("TRIVIADOR_TEST_DATABASE_URL", TEST_DATABASE_URL)
 
 THIS_DIR = Path(__file__).parent
+BACKEND_DIR = THIS_DIR.parent.parent
+ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
+
+
+def alembic_config(url: str) -> Config:
+    """Build a `Config` pointed at this repo's `alembic.ini`, with `sqlalchemy.url`
+    overridden to `url`. `alembic.ini` deliberately carries no URL of its own (see
+    Task 3's report), so every caller — the CLI via `env.py`'s `Settings()` fallback,
+    or a test here — has to supply one explicitly."""
+    cfg = Config(str(ALEMBIC_INI))
+    cfg.set_main_option("sqlalchemy.url", url)
+    return cfg
+
+
+async def _run_upgrade_head(url: str) -> None:
+    """`command.upgrade` ends up calling `env.py`'s `asyncio.run(...)`, which cannot
+    be invoked from within a running event loop — so it runs on its own thread."""
+    await asyncio.to_thread(command.upgrade, alembic_config(url), "head")
 
 
 def _lacks_session_loop_scope(item: pytest.Item) -> bool:
@@ -114,14 +135,20 @@ async def engine() -> AsyncIterator[AsyncEngine]:
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def migrated_schema() -> None:
-    """Task 3 replaces this with a real Alembic run against `engine`.
-
-    A no-op for now: the dependency edge below (`clean_db` and `sessions`
-    depend on this fixture) needs to exist from the start rather than being
-    retrofitted once the schema arrives.
+async def migrated_schema(engine: AsyncEngine) -> None:
+    """Build the schema exactly once per session, by running `alembic upgrade
+    head` — never `Base.metadata.create_all`. Using the migration is what
+    keeps `alembic check` (models vs. migrations) meaningful: if tests built
+    the schema some other way, that check and the tests would be exercising
+    two different schemas, and a migration bug could only be found in
+    production.
     """
-    return None
+    # Two statements, not one: asyncpg's prepared-statement protocol rejects
+    # multiple commands in a single `execute()` call.
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await _run_upgrade_head(DATABASE_URL)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
