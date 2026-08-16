@@ -1,9 +1,16 @@
 """Committed event rows must keep decoding and folding to the same state.
 
-This is the one test that can catch a semantic change to the reducer — a
-JSON shape check cannot. Read only: nothing here calls `encode`. A test that
-encodes and then decodes its own output would only prove the codec agrees
-with itself, which is true of every broken codec too.
+This is the one test that can catch a semantic change to how the reducer
+*applies* an event (`evolve`/`_apply`), not to what `decide()` computes when
+producing one — `_apply` never calls `decide()`, `expected_score`, or
+`holding_value`, it only interprets event data already recorded, so a
+decide-side bug is invisible to it by construction. The domain's
+`decide()`-calling unit tests under `tests/domain/game/` remain the primary
+guard for game logic; this is a second, narrower layer on top of them.
+
+Read only: nothing here calls `encode`. A test that encodes and then decodes
+its own output would only prove the codec agrees with itself, which is true
+of every broken codec too.
 
 Pure and PostgreSQL-free: no `integration` marker, no asyncio marks.
 """

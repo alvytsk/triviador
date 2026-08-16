@@ -232,9 +232,19 @@ def build_expansion_to_battle() -> Trajectory:
 
 def build_surrender_ends_game() -> Trajectory:
     """Two consecutive EXPANSION-phase surrenders drop active players to
-    one. This is the trajectory pinning Plan 2's fix for Spec 1 §3.6
-    Defect A — the game must finish immediately, with a non-null winner,
-    rather than the stale-window path this used to rely on."""
+    one. This exercises the *event sequence* Plan 2's fix for Spec 1 §3.6
+    Defect A produces (`_decide_surrender` finishing the game itself the
+    instant `active_players() <= 1`, rather than relying on a stale window
+    later expiring), and pins how `fold` replays that sequence.
+
+    It does not guard the fix itself: `_apply` only replays the
+    `GameFinished` event already baked into the committed rows, so this
+    corpus would still pass unchanged even if the fix in
+    `_decide_surrender` were reverted. The decide-side guarantee lives in
+    `tests/domain/game/test_surrender.py::
+    test_surrender_leaving_one_active_player_finishes_the_game`, which
+    calls `decide()` directly.
+    """
     ctx = DecisionContext(now=NOW)
     traj = _new_trajectory("surrender_ends_game", GameId("g-surrender-ends-game"), P1)
 

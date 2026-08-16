@@ -6,9 +6,15 @@ Three complete game trajectories, played once through the real
 `db.codec.codec.decode`, folds them through the reducer, and compares the
 result to a committed expected summary. It never calls `encode` — a test
 that encodes its own output and decodes it back only proves the codec agrees
-with itself, which is true of every broken codec too. This is the one test
-in the suite that can catch a *semantic* change to the reducer, not just a
-shape change to its wire format.
+with itself, which is true of every broken codec too.
+
+This catches a semantic change to how the reducer *applies* an event
+(`evolve`/`_apply`) — not to what `decide()` computes when producing one.
+`_apply` never calls `decide()`, `expected_score`, or `holding_value`; it
+only interprets event data already recorded, so a decide-side bug is
+invisible to it by construction. The domain's `decide()`-calling unit tests
+under `tests/domain/game/` remain the primary guard for game logic; this
+corpus is a second, narrower layer on top of them, not a superset.
 
 ## Trajectories
 
@@ -20,10 +26,17 @@ shape change to its wire format.
   question, expansion, and battle events.
 - **`surrender_ends_game.json`** — two consecutive surrenders during
   EXPANSION drop active players to one, which finishes the game immediately.
-  This pins Plan 2's fix for Spec 1 §3.6 Defect A (`_decide_surrender`
-  checking `active_players() <= 1` itself, rather than relying on a stale
-  window later expiring). Its `winner_id` is deliberately **not** null —
-  that's what the fix is for.
+  This exercises the *event sequence* Plan 2's fix for Spec 1 §3.6 Defect A
+  produces (`_decide_surrender` checking `active_players() <= 1` itself,
+  rather than relying on a stale window later expiring), and pins how
+  `fold` replays that sequence. It does **not** guard the fix itself:
+  `_apply` only replays the `GameFinished` event already baked into these
+  committed rows, so reverting the fix in `_decide_surrender` and rerunning
+  this corpus still passes unchanged. The decide-side guarantee lives in
+  `tests/domain/game/test_surrender.py::test_surrender_leaving_one_active_player_finishes_the_game`
+  (and its EXPANSION-phase sibling in `test_expansion_picking.py`), which
+  call `decide()` directly. `winner_id` is deliberately **not** null —
+  that's what makes the replay worth pinning.
 - **`abort_from_lobby.json`** — genesis, one join, a system-authorized
   `AbortGame(actor_id=None)`. Short, and the only corpus entry covering that
   path.

@@ -961,7 +961,7 @@ git commit -m "feat(db): event codec with a frozen wire-name registry and upcast
 - Produces: committed corpus files and the test that reads them.
 - Consumes: `decode` from Task 4, `create_initial_state` and `fold` from the domain.
 
-§4.3: "The guard is a golden corpus." Its value depends entirely on one property — **the test must never re-encode**. It reads committed JSON, decodes, folds, and compares to a committed expected summary. A test that encodes and then decodes its own output asserts that the codec agrees with itself, which is true of every broken codec too.
+§4.3: "The guard is a golden corpus." Its value depends entirely on one property — **the test must never re-encode**. It reads committed JSON, decodes, folds, and compares to a committed expected summary. A test that encodes and then decodes its own output asserts that the codec agrees with itself, which is true of every broken codec too. What it actually guards is how `evolve`/`_apply` interprets an event, not what `decide()` computes when producing one — `_apply` never recomputes `decide()`'s logic, so a decide-side bug is invisible to it by construction. The domain's `decide()`-calling unit tests remain the primary guard for game logic; this corpus is a second, narrower layer on top of them.
 
 - [ ] **Step 1: Write the generator**
 
@@ -1000,8 +1000,11 @@ Run it **by hand**, once. It is under `tests/tools/`, not `tests/`, and its file
 ```python
 """Committed event rows must keep decoding and folding to the same state.
 
-This is the one test that can catch a semantic change to the reducer — a JSON
-shape check cannot. Read only: nothing here calls `encode`."""
+This is the one test that can catch a semantic change to how the reducer
+*applies* an event, not to what `decide()` computes when producing one —
+a JSON shape check cannot, but neither can this test substitute for the
+domain's `decide()`-calling unit tests. Read only: nothing here calls
+`encode`."""
 
 CORPUS = sorted((Path(__file__).parent / "golden").glob("*.json"))
 
