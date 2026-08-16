@@ -4,11 +4,18 @@ from pathlib import Path
 
 from triviador.domain.ids import MapId, RegionId
 from triviador.domain.maps.definition import MapDefinition, Region
+from triviador.domain.maps.digest import canonical_digest
 from triviador.domain.maps.validation import validate_map
 
 
 class InvalidMapError(Exception):
     """A map directory is missing, malformed, or structurally invalid."""
+
+
+@dataclass(frozen=True)
+class LoadedMap:
+    definition: MapDefinition
+    sha256: str
 
 
 @dataclass(frozen=True)
@@ -25,6 +32,9 @@ class MapRegistry:
         )
 
     def load(self, map_id: MapId) -> MapDefinition:
+        return self.load_with_digest(map_id).definition
+
+    def load_with_digest(self, map_id: MapId) -> LoadedMap:
         path = self.root / map_id / "map.json"
         if not path.is_file():
             raise InvalidMapError(f"map {map_id!r}: no map.json at {path}")
@@ -49,4 +59,4 @@ class MapRegistry:
         problems = validate_map(defn)
         if problems:
             raise InvalidMapError(f"map {map_id!r} is invalid: " + "; ".join(problems))
-        return defn
+        return LoadedMap(defn, canonical_digest(raw))

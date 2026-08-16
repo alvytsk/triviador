@@ -28,6 +28,7 @@ from triviador.domain.game.actions import (
     SubmitAnswer,
     Surrender,
 )
+from triviador.domain.game.genesis import GenesisEventNotFoldable
 from triviador.domain.game.rules import required_question_budget
 from triviador.domain.game.scoring import expected_score, holding_value
 from triviador.domain.game.state import (
@@ -909,6 +910,11 @@ def evolve(state: GameState, event: ev.GameEvent) -> GameState:
 
 def _apply(state: GameState, event: ev.GameEvent) -> GameState:
     match event:
+        case ev.GameCreated():
+            raise GenesisEventNotFoldable(
+                "GameCreated is a genesis event — use create_initial_state()"
+            )
+
         case ev.PlayerJoined(player_id=pid, display_name=name, seat=seat):
             player = PlayerState(
                 pid, name, seat, score=0, bonus_score=0, base_region=None, is_eliminated=False
@@ -1135,18 +1141,10 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
         case ev.GameAborted():
             return replace(state, phase=Phase.ABORTED, turn=None, winner_id=None)
 
-    # Every `ev.X(...)` construction site in this module (i.e. every event
-    # `decide()` can actually emit) has a `case` above — cross-checked by
-    # grepping every emission site against this match's arms; `PlayerLeft`
-    # was missing that arm until a review caught `fold()` crashing on a real
-    # lobby-surrender trajectory (`decide()` emits it, `_apply` had no case).
-    # The one `GameEvent` member with no arm, `GameCreated`, is never
-    # constructed anywhere in `decide()`/`_dispatch` — the initial `GameState`
-    # is materialised directly by whatever constructs it (`lobby_state()`
-    # here; presumably a runtime-level "create game" step in Plan 2), never
-    # folded from a `GameCreated` event. So this fallthrough is unreachable
-    # for any event sequence `decide()` could have produced; it only fires if
-    # `evolve`/`fold` is handed a fabricated or foreign event directly.
+    # Every event `decide()` can emit has a `case` above; `GameCreated` has an
+    # explicit refusing arm because it is genesis, not a transition. This
+    # fallthrough is therefore unreachable for any sequence `decide()` produced
+    # — it fires only if `evolve`/`fold` is handed a fabricated or foreign event.
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")  # pragma: no cover
 
 
