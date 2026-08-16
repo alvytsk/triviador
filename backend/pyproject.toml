@@ -2,11 +2,18 @@
 name = "triviador"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.6",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "hypothesis>=6.115",
     "mypy>=1.13",
@@ -31,30 +38,47 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 python_version = "3.13"
 strict = true
 files = ["src/triviador", "tests"]
+# `env.py` stays inside the strict check — it is hand-written code with real
+# logic. Only the generated migration bodies are excluded: mypy cannot
+# usefully type `op.create_table(...)` call sequences.
+exclude = ["src/triviador/db/migrations/versions/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # `--cov` (source/branch config below) runs on every plain `uv run pytest`,
 # and `--cov-fail-under` is deliberately omitted here so pytest-cov falls
 # back to `[tool.coverage.report] fail_under`, which is scoped by `include`
-# to reducer.py alone — see that section for why. A partial run (e.g.
+# to reducer.py and codec/ — see that section for why. A partial run (e.g.
 # `uv run pytest tests/domain/game/test_start.py`) will not exercise every
 # reducer.py branch and can therefore fail this gate on its own; pass
 # `--no-cov` for a quick iterative run of a subset.
 addopts = "-q --cov --cov-report=term-missing"
+asyncio_mode = "auto"
+# The `engine` fixture in tests/db/conftest.py is session-scoped so the
+# connection pool is built once, not per test. asyncpg binds its connections
+# to the event loop they were created on, so the loop itself must also be
+# session-scoped — otherwise the engine's connections outlive the per-test
+# loop that created them and teardown fails with "attached to a different
+# loop".
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+markers = ["integration: requires a live PostgreSQL (see docker-compose.test.yml)"]
 
 [tool.coverage.report]
 show_missing = true
-# The 100% branch-coverage gate applies to reducer.py only: it is the one
-# module this plan requires provably exhaustive (every branch is a reachable
-# game state). The rest of `src/triviador` is measured (via `[tool.coverage.
-# run] source` below, visible in the term-missing report) but not gated —
-# rules.py, scoring.py, maps/validation.py and questions/types.py are
-# currently below 100% and a repo-wide `fail_under` would make every `pytest`
-# run red today. Raise this to cover more once those are closed out, or add
-# a second `coverage report --include=... --fail-under=...` invocation
-# rather than loosening this one.
-include = ["*/domain/game/reducer.py"]
+# The 100% branch-coverage gate applies to reducer.py and codec/ only: these
+# are the modules this plan requires provably exhaustive — every branch in
+# reducer.py is a reachable game state, and every branch in codec/ is an
+# event that must be readable back after being written. The rest of
+# `src/triviador` is measured (via `[tool.coverage.run] source` below,
+# visible in the term-missing report) but not gated — rules.py, scoring.py,
+# maps/validation.py and questions/types.py are currently below 100% and a
+# repo-wide `fail_under` would make every `pytest` run red today. Raise this
+# to cover more once those are closed out, or add a second `coverage
+# report --include=... --fail-under=...` invocation rather than loosening
+# this one. `db/codec/*.py` does not exist yet (added in Task 4 of Plan 3);
+# a pattern matching no files reports nothing rather than failing.
+include = ["*/domain/game/reducer.py", "*/db/codec/*.py"]
 fail_under = 100
 
 [tool.coverage.run]
