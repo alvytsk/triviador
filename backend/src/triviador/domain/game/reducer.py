@@ -252,7 +252,8 @@ def _decide_expansion_answer(
         return ()
     after = evolve(state, recorded)
     assert isinstance(after.turn, ExpansionQuestion)
-    if len(after.turn.answers) < len(after.active_players()):
+    active = set(after.active_players())
+    if len(active & set(after.turn.answers)) < len(active):
         return (recorded,)
     return (recorded, *_close_expansion_question(after, after.turn, ctx))
 
@@ -414,18 +415,19 @@ def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameE
         after = evolve(after, started)
         question, _ = _open_expansion_question(after, ctx)
         return (done, started, *question)
-    # Mirrors `_next_battle_turn`'s own "one active player left ends the
-    # game" check (there, "before anything about turn shape or rotation is
-    # even looked at"). EXPANSION-phase elimination via surrender never
-    # revisits the open turn the way BATTLE's rotation does, so it is only
-    # here — the one place EXPANSION hands control to BATTLE — that a
-    # trajectory eliminating everyone (or all but one) during EXPANSION
-    # would otherwise crash on `active_players()[0]` instead of ending the
-    # game. Skip opening a battle round altogether rather than start one
-    # with no legal first attacker.
+    # EXPANSION-phase elimination only ever happens through `Surrender` —
+    # battle captures are the only other source of `PlayerEliminated`, and
+    # those fire exclusively in BATTLE. `_decide_surrender` now finishes the
+    # game itself the instant such a surrender would drop active players to
+    # one (see the `active_players() <= 1` check there), so by the time
+    # control reaches here — the one place EXPANSION hands control to
+    # BATTLE — at least two players are guaranteed still active. This used
+    # to carry its own "one active player left" guard mirroring
+    # `_next_battle_turn`'s; that guard is now unreachable, so it was
+    # replaced with the assertion below rather than left as dead code the
+    # reducer's 100%-branch-coverage gate could never satisfy.
     active = after.active_players()
-    if len(active) <= 1:
-        return (done, *_finish(after, ctx))
+    assert len(active) > 1
     battle = ev.BattleRoundStarted(1)
     after = evolve(after, battle)
     return (done, battle, *_open_battle_turn(after, active[0], ctx))
@@ -753,6 +755,15 @@ def _decide_surrender(
     if _is_involved_in_turn(state.turn, command.actor_id):
         out.emit(ev.TurnAborted(f"{command.actor_id} surrendered"))
         return (*out.events, *_next_battle_turn(out.state, ctx))
+
+    # Not involved in the open turn — but the elimination may still have left a
+    # single player standing (Spec 1 §3.6). `_next_battle_turn` performs this
+    # check on the involved path; the uninvolved path had none, so a two-player
+    # game silently continued with one active player through every non-battle
+    # turn shape.
+    if len(out.state.active_players()) <= 1:
+        out.emit(ev.TurnAborted(f"{command.actor_id} surrendered"))
+        return (*out.events, *_finish(out.state, ctx))
     return tuple(out.events)
 
 

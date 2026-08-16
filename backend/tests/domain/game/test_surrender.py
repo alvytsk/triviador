@@ -1,19 +1,25 @@
 from dataclasses import replace
+from decimal import Decimal
 
-from tests.conftest import lobby_state
+from tests.conftest import full_pool, lobby_state
 from tests.domain.game.test_duel import dueling
+from tests.domain.game.test_start import start_ctx
 from tests.domain.game.test_target_select import CTX, P1, P2, P3, battle_state, open_turn
 from triviador.domain.game import events as ev
-from triviador.domain.game.actions import AbortGame, Surrender
+from triviador.domain.game.actions import AbortGame, StartGame, SubmitAnswer, Surrender
 from triviador.domain.game.reducer import _next_battle_turn, decide, fold
+from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.game.state import (
     AcquisitionKind,
     BattleTargetSelect,
+    ExpansionQuestion,
     FinalTiebreak,
+    GameState,
+    NumericAnswer,
     Phase,
     TerritoryKind,
 )
-from triviador.domain.ids import RegionId
+from triviador.domain.ids import PlayerId, RegionId
 
 
 def with_p1_base() -> object:
@@ -161,6 +167,50 @@ def test_surrender_during_a_final_tiebreak_is_ignored() -> None:
     assert isinstance(state.turn, FinalTiebreak)
     assert decide(state, Surrender(P1), CTX) == ()
     assert fold(state, decide(state, Surrender(P1), CTX)) == state
+
+
+def test_surrender_during_expansion_finishes_a_two_player_game() -> None:
+    """Spec 1 §3.6: one active player remaining ends the game. The surrendering
+    player was not "involved in the turn" (an expansion question involves
+    everyone equally), which used to mean no endgame check ran at all."""
+    two = replace(DEFAULT_RULES, player_count=2, claims_by_rank=(2, 1))
+    state = lobby_state(players={"p1": 0, "p2": 1}, rules=two)
+    ctx = replace(
+        start_ctx(),
+        shuffled_player_ids=(P1, P2),
+        base_regions=(RegionId("r0"), RegionId("r2")),
+        drawn_pool=full_pool(),
+    )
+    state = fold(state, decide(state, StartGame(P1), ctx))
+
+    events = decide(state, Surrender(P2), ctx)
+
+    assert any(isinstance(e, ev.GameFinished) for e in events)
+    after = fold(state, events)
+    assert after.phase is Phase.FINISHED
+    assert after.winner_id == P1
+
+
+def test_a_surrendered_players_answer_does_not_close_the_window() -> None:
+    """Spec 1 §3.3: every *active* player answers or times out. The window used
+    to close as soon as `len(answers) >= len(active_players())`, and a
+    surrendered player's answer stays in `answers` while they leave `active` —
+    so two counts that should both shrink moved toward each other instead."""
+    state = fold(lobby_state(), decide(lobby_state(), StartGame(P1), start_ctx()))
+    assert isinstance(state.turn, ExpansionQuestion)
+    window = state.turn.deadline.id
+
+    def answer(s: GameState, who: str, guess: int) -> GameState:
+        cmd = SubmitAnswer(PlayerId(who), window, NumericAnswer(Decimal(guess)), 100)
+        return fold(s, decide(s, cmd, CTX))
+
+    state = answer(state, "p1", 100)
+    state = fold(state, decide(state, Surrender(P1), CTX))
+    state = answer(state, "p2", 110)
+
+    assert isinstance(state.turn, ExpansionQuestion), (
+        "p3 has neither answered nor timed out — the window must still be open"
+    )
 
 
 def test_abort_works_from_any_non_terminal_phase() -> None:

@@ -148,25 +148,60 @@ def test_picking_skips_a_stale_grant_left_by_a_non_current_eliminated_picker() -
     assert after.turn.current_picker == P3
 
 
-def test_auto_pick_finishes_the_game_when_every_remaining_picker_is_eliminated() -> None:
-    """Same regression, other branch: if forfeiting the stale picker leaves
-    no eligible picker at all (everyone else with a grant is also
-    eliminated) and this is the last expansion round, `_advance_expansion`
-    used to crash on `active_players()[0]` while trying to open the first
-    battle turn for nobody. It must finish the game instead."""
+def test_surrender_finishes_the_game_when_it_leaves_the_last_active_picker() -> None:
+    """Regression (Task 4, domain amendments): this used to be
+    "test_auto_pick_finishes_the_game_when_every_remaining_picker_is_eliminated",
+    which drove the very same two-surrender trajectory but then relied on the
+    *stale window later expiring* — `_advance_expansion`'s own "one active
+    player left" guard was the only thing that caught it, because
+    `_decide_surrender` never checked for an endgame condition on the
+    EXPANSION path at all (Spec 1 §3.6, Defect A). That guard is gone now:
+    `_decide_surrender` finishes the game the instant the second surrender
+    drops active players to one, before the open window ever gets a chance
+    to expire. See `test_auto_pick_forfeits_a_surrendered_pickers_grant_...`
+    below for the sibling trajectory that still reaches `_advance_expansion`
+    via a stale-window forfeit, because it leaves two players active."""
     state = picking_state({"expansion_rounds": 1})
     assert isinstance(state.turn, ExpansionPicking)
-    window = state.turn.deadline.id
     state = fold(state, decide(state, Surrender(P1), CTX))
-    state = fold(state, decide(state, Surrender(P2), CTX))
-    assert state.active_players() == (P3,)
+    assert isinstance(state.turn, ExpansionPicking), "two players still active: window stays open"
+    assert state.active_players() == (P2, P3)
 
-    late = DecisionContext(now=NOW + timedelta(seconds=60))
-    events = decide(state, ExpireDeadline(window), late)
+    events = decide(state, Surrender(P2), CTX)
     assert any(isinstance(e, ev.GameFinished) for e in events)
     after = fold(state, events)
     assert after.phase is Phase.FINISHED
     assert after.winner_id == P3
+    assert after.turn is None
+
+
+def test_auto_pick_forfeits_a_surrendered_pickers_grant_with_two_players_left() -> None:
+    """`_decide_auto_pick`'s forfeit branch (a picker's window outlives their
+    surrender, so `ExpireDeadline` finds `current_picker` already eliminated)
+    can find zero eligible pickers left *without* ending the game: unlike
+    `test_surrender_finishes_the_game_when_it_leaves_the_last_active_picker`,
+    this leaves two players active, so `_advance_expansion` must fall
+    through to its normal round-advance path (here, straight to BATTLE,
+    since this is the last expansion round) instead of the "one active
+    player left" case `_decide_surrender` now claims exclusively for itself."""
+    state = picking_state({"claims_by_rank": (1, 1, 0), "expansion_rounds": 1})
+    assert isinstance(state.turn, ExpansionPicking)
+    assert state.turn.pick_order == (P1, P2)
+    state = fold(state, decide(state, PickRegion(P1, state.turn.deadline.id, RegionId("r1")), CTX))
+    assert isinstance(state.turn, ExpansionPicking)
+    assert state.turn.current_picker == P2
+    window = state.turn.deadline.id
+
+    state = fold(state, decide(state, Surrender(P2), CTX))
+    assert state.active_players() == (P1, P3)
+
+    late = DecisionContext(now=NOW + timedelta(seconds=60))
+    events = decide(state, ExpireDeadline(window), late)
+    kinds = [type(e) for e in events]
+    assert ev.ExpansionRoundCompleted in kinds
+    assert ev.GameFinished not in kinds
+    after = fold(state, events)
+    assert after.phase is Phase.BATTLE
 
 
 def test_auto_pick_with_a_stale_shuffle_advances_instead_of_claiming() -> None:
