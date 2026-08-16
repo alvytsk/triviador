@@ -2,9 +2,12 @@
 
 Everything here is a shared home for `db/`-level errors, not just the
 codec's: Task 6 appends `ConcurrentModification` for the optimistic-append
-guard, and that belongs in this module rather than a new file so the
-exception surface stays in one place.
+guard, and Task 8 appends `InsufficientQuestions` for `QuestionBank`, and
+both belong in this module rather than a new file so the exception surface
+stays in one place.
 """
+
+from triviador.domain.questions.types import QuestionKind
 
 
 class UnknownEventType(Exception):
@@ -40,3 +43,21 @@ class ConcurrentModification(Exception):
     saw, so the runtime quarantines on this and never retries — retrying
     would append events decided against state that is no longer current.
     """
+
+
+class InsufficientQuestions(Exception):
+    """`QuestionBank.select_pool` found fewer than `required` active
+    questions of `kind` to draw from.
+
+    `kind`, `required`, and `available` are all set as attributes (not just
+    positional `args`) — the operator needs to know which bank is short and
+    by how much. Plan 4 maps this directly to
+    `RejectedCommand(QUESTION_POOL_INSUFFICIENT)`, after which the
+    transaction rolls back and the game stays in `LOBBY`.
+    """
+
+    def __init__(self, *, kind: QuestionKind, required: int, available: int) -> None:
+        super().__init__(kind, required, available)
+        self.kind = kind
+        self.required = required
+        self.available = available

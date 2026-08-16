@@ -220,6 +220,36 @@ async def test_column_is_jsonb(
 
 
 # --------------------------------------------------------------------------
+# NUMERIC columns
+# --------------------------------------------------------------------------
+
+# A deferred finding from Task 3: this file's mandate is to verify the schema
+# against live PostgreSQL rather than the models, the same way
+# `test_column_is_jsonb` does above — but `question_numeric.correct_value`'s
+# NOT NULL was checked (see NOT_NULL_COLUMNS) without ever checking that the
+# column is actually `numeric` in the database. A `float`/`double precision`
+# column would satisfy every check above while silently corrupting every
+# numeric answer it stores.
+NUMERIC_COLUMNS: list[tuple[str, str]] = [
+    ("question_numeric", "correct_value"),
+]
+
+
+@pytest.mark.parametrize(
+    "table,column", NUMERIC_COLUMNS, ids=[f"{t}.{c}" for t, c in NUMERIC_COLUMNS]
+)
+async def test_column_is_numeric(
+    migrated_schema: None, engine: AsyncEngine, table: str, column: str
+) -> None:
+    async with engine.connect() as conn:
+        col = await _column(conn, table, column)
+    assert col is not None, f"{table}.{column} does not exist"
+    assert col["data_type"] == "numeric", (
+        f"{table}.{column} expected numeric, got {col['data_type']}"
+    )
+
+
+# --------------------------------------------------------------------------
 # UNIQUE constraints (plain, not partial)
 # --------------------------------------------------------------------------
 
