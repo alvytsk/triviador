@@ -757,7 +757,8 @@ def _decide_surrender(
 
 
 def _decide_abort(state: GameState, command: AbortGame) -> tuple[ev.GameEvent, ...]:
-    return (ev.GameAborted(f"aborted by {command.actor_id}"),)
+    who = "system" if command.actor_id is None else command.actor_id
+    return (ev.GameAborted(f"aborted by {who}"),)
 
 
 def _is_involved_in_turn(turn: Turn | None, player_id: PlayerId) -> bool:

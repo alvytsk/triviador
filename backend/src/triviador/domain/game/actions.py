@@ -52,7 +52,14 @@ class Surrender:
 
 @dataclass(frozen=True)
 class AbortGame:
-    actor_id: PlayerId
+    """`actor_id is None` means a system-issued abort.
+
+    Guard 3 validates the actor only when one is present, so a system abort is
+    legal even in a lobby with no participants — which is exactly the reaper's
+    case (an abandoned, empty lobby has no actor that could pass guard 3).
+    """
+
+    actor_id: PlayerId | None = None
 
 
 Command = (
