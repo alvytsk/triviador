@@ -9,7 +9,7 @@ from decimal import Decimal
 
 import pytest
 
-from tests.conftest import NOW, full_pool, lobby_state
+from tests.conftest import NOW, expire_warmup, full_pool, lobby_state
 from tests.domain.game.test_duel import dueling, mc
 from tests.domain.game.test_expansion_picking import picking_state
 from tests.domain.game.test_neutral import challenging
@@ -57,9 +57,15 @@ class States(dict[str, GameState]):
     ctx: DecisionContext = DecisionContext(now=NOW)
 
 
-def _expansion_question() -> GameState:
+def _media_warmup() -> GameState:
     base = lobby_state()
     return fold(base, decide(base, StartGame(P1), start_ctx()))
+
+
+def _expansion_question() -> GameState:
+    """StartGame now opens a warmup window; the first question is one expiry
+    later."""
+    return expire_warmup(_media_warmup())
 
 
 def _battle_tiebreak() -> GameState:
@@ -84,6 +90,7 @@ def _final_tiebreak() -> GameState:
 def states() -> States:
     out = States()
     out["lobby"] = lobby_state()
+    out["media_warmup"] = _media_warmup()
     out["expansion_question"] = _expansion_question()
     out["expansion_picking"] = picking_state()
     out["battle_target"] = open_turn(battle_state())

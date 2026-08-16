@@ -43,6 +43,7 @@ from triviador.domain.game.state import (
     ExpansionQuestion,
     FinalTiebreak,
     GameState,
+    MediaWarmup,
     NeutralChallenge,
     NumericAnswer,
     Phase,
@@ -59,6 +60,7 @@ from triviador.domain.questions.types import QuestionKind, QuestionSnapshot
 # which in a non-terminal phase can only be LOBBY.
 LEGAL_COMMANDS: Mapping[type[Turn] | None, frozenset[type[Command]]] = {
     None: frozenset({JoinGame, StartGame, Surrender, AbortGame}),
+    MediaWarmup: frozenset({ExpireDeadline, Surrender, AbortGame}),
     ExpansionQuestion: frozenset({SubmitAnswer, ExpireDeadline, Surrender, AbortGame}),
     ExpansionPicking: frozenset({PickRegion, ExpireDeadline, Surrender, AbortGame}),
     BattleTargetSelect: frozenset({SelectAttackTarget, ExpireDeadline, Surrender, AbortGame}),
@@ -121,6 +123,8 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_surrender(state, command, ctx)
         case AbortGame():
             return _decide_abort(state, command)
+        case ExpireDeadline() if isinstance(state.turn, MediaWarmup):
+            return _close_media_warmup(state, ctx)
         case SubmitAnswer() if isinstance(state.turn, ExpansionQuestion):
             return _decide_expansion_answer(state, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, ExpansionQuestion):
@@ -200,13 +204,22 @@ def _decide_start(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent,
         )
     events.append(ev.QuestionPoolDrawn(pool))
 
-    # Fold what we have so the question window is opened against real state.
+    # Fold what we have so the warmup window is opened against real state.
     seeded = fold(state, events)
-    events.append(ev.ExpansionRoundStarted(1))
-    seeded = evolve(seeded, events[-1])
-    question_events, _ = _open_expansion_question(seeded, ctx)
-    events.extend(question_events)
+    deadline, _ = seeded.allocate_deadline(
+        DeadlineKind.WARMUP, ctx.now + timedelta(milliseconds=seeded.rules.warmup_ms)
+    )
+    events.append(ev.MediaWarmupStarted(deadline))
     return tuple(events)
+
+
+def _close_media_warmup(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
+    """Warmup expired: open round one. The pool was already drawn at start, so
+    nothing is read here — this only starts the first answer window."""
+    started = ev.ExpansionRoundStarted(1)
+    seeded = evolve(state, started)
+    question_events, _ = _open_expansion_question(seeded, ctx)
+    return (started, *question_events)
 
 
 def _open_expansion_question(
@@ -951,6 +964,13 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
 
         case ev.QuestionPoolDrawn(pool=pool):
             return replace(state, pool=pool)
+
+        case ev.MediaWarmupStarted(deadline=deadline):
+            return replace(
+                state,
+                turn=MediaWarmup(deadline),
+                next_deadline_id=max(state.next_deadline_id, deadline.id + 1),
+            )
 
         case ev.ExpansionRoundStarted(round_no=round_no):
             return replace(state, phase=Phase.EXPANSION, round_no=round_no, turn=None)

@@ -57,6 +57,11 @@ class QuestionPoolDrawn:
 
 
 @dataclass(frozen=True)
+class MediaWarmupStarted:
+    deadline: Deadline
+
+
+@dataclass(frozen=True)
 class GameFinished:
     winner_id: PlayerId | None
     final_scores: Mapping[PlayerId, int]
@@ -247,6 +252,7 @@ GameEvent = (
     | GameStarted
     | BasesAssigned
     | QuestionPoolDrawn
+    | MediaWarmupStarted
     | GameFinished
     | GameAborted
     | QuestionPresented

@@ -1,7 +1,7 @@
 from dataclasses import replace
 from decimal import Decimal
 
-from tests.conftest import full_pool, lobby_state
+from tests.conftest import expire_warmup, full_pool, lobby_state
 from tests.domain.game.test_duel import dueling
 from tests.domain.game.test_start import start_ctx
 from tests.domain.game.test_target_select import CTX, P1, P2, P3, battle_state, open_turn
@@ -169,10 +169,9 @@ def test_surrender_during_a_final_tiebreak_is_ignored() -> None:
     assert fold(state, decide(state, Surrender(P1), CTX)) == state
 
 
-def test_surrender_during_expansion_finishes_a_two_player_game() -> None:
-    """Spec 1 §3.6: one active player remaining ends the game. The surrendering
-    player was not "involved in the turn" (an expansion question involves
-    everyone equally), which used to mean no endgame check ran at all."""
+def test_surrender_during_warmup_finishes_a_two_player_game() -> None:
+    """Spec 1 §3.6: one active player remaining ends the game — including
+    before the first question has ever been presented (spec §3.4)."""
     two = replace(DEFAULT_RULES, player_count=2, claims_by_rank=(2, 1))
     state = lobby_state(players={"p1": 0, "p2": 1}, rules=two)
     ctx = replace(
@@ -197,6 +196,7 @@ def test_a_surrendered_players_answer_does_not_close_the_window() -> None:
     surrendered player's answer stays in `answers` while they leave `active` —
     so two counts that should both shrink moved toward each other instead."""
     state = fold(lobby_state(), decide(lobby_state(), StartGame(P1), start_ctx()))
+    state = expire_warmup(state)
     assert isinstance(state.turn, ExpansionQuestion)
     window = state.turn.deadline.id
 

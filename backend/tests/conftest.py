@@ -2,11 +2,13 @@
 
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+from triviador.domain.game.actions import DecisionContext, ExpireDeadline
+from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.rules import DEFAULT_RULES, GameRules
 from triviador.domain.game.state import (
     AcquisitionKind,
@@ -163,6 +165,19 @@ def own(
                 player_state, score=expected_score(updated, PlayerId(player))
             ),
         },
+    )
+
+
+def expire_warmup(state: GameState) -> GameState:
+    """Step past the MediaWarmup window opened by StartGame."""
+    assert state.turn is not None
+    return fold(
+        state,
+        decide(
+            state,
+            ExpireDeadline(state.turn.deadline.id),
+            DecisionContext(now=NOW + timedelta(minutes=1)),
+        ),
     )
 
 

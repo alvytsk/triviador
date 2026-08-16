@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from tests.conftest import NOW, lobby_state
+from tests.conftest import NOW, expire_warmup, lobby_state
 from tests.domain.game.test_start import P1, P2, P3, start_ctx
 from triviador.domain.game import events as ev
 from triviador.domain.game.actions import (
@@ -37,6 +37,7 @@ def picking_state(rules_override: dict[str, object] | None = None) -> GameState:
     if rules_override:
         base = replace(base, rules=replace(base.rules, **rules_override))  # type: ignore[arg-type]
     state = fold(base, decide(base, StartGame(P1), start_ctx()))
+    state = expire_warmup(state)
     for player, guess in ((P1, 100), (P2, 110), (P3, 120)):
         assert isinstance(state.turn, ExpansionQuestion)
         cmd = SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(guess)), 100)

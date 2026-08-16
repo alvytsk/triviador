@@ -1,4 +1,4 @@
-"""Spec §6.3 as an executable artifact. 10 turn states x 8 commands = 80 cells.
+"""Spec §6.3 as an executable artifact. 11 turn states x 8 commands = 88 cells.
 
 `test_the_matrix_is_complete` doesn't just check MATRIX's own shape — it
 cross-references MATRIX's row and column labels against the live `Turn` and
@@ -37,6 +37,7 @@ from triviador.domain.game.state import (
     ExpansionPicking,
     ExpansionQuestion,
     FinalTiebreak,
+    MediaWarmup,
     NeutralChallenge,
     Turn,
 )
@@ -53,6 +54,16 @@ MATRIX: dict[str, dict[str, str]] = {
         "pick": IGNORE,
         "target": IGNORE,
         "expire": IGNORE,
+        "surrender": ACCEPT,
+        "abort": ACCEPT,
+    },
+    "media_warmup": {
+        "join": REJECT,
+        "start": REJECT,
+        "answer": REJECT,
+        "pick": REJECT,
+        "target": REJECT,
+        "expire": ACCEPT,
         "surrender": ACCEPT,
         "abort": ACCEPT,
     },
@@ -155,6 +166,7 @@ MATRIX: dict[str, dict[str, str]] = {
 # moment `Turn` gains a member this dict doesn't know about yet.
 TURN_ROWS: dict[type[Turn] | None, str] = {
     None: "lobby",
+    MediaWarmup: "media_warmup",
     ExpansionQuestion: "expansion_question",
     ExpansionPicking: "expansion_picking",
     BattleTargetSelect: "battle_target",
@@ -184,9 +196,9 @@ COMMAND_COLUMNS: dict[type[Command], str] = {
 
 
 def test_the_matrix_is_complete() -> None:
-    assert len(MATRIX) == 10
+    assert len(MATRIX) == 11
     assert all(len(row) == 8 for row in MATRIX.values())
-    assert sum(len(row) for row in MATRIX.values()) == 80
+    assert sum(len(row) for row in MATRIX.values()) == 88
 
     # Cross-reference against the live domain types, not just MATRIX's own
     # internal shape: this is what makes a new `Turn` variant or `Command`

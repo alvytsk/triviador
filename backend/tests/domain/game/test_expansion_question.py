@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from tests.conftest import NOW, lobby_state
+from tests.conftest import NOW, expire_warmup, lobby_state
 from tests.domain.game.test_start import P1, P2, P3, start_ctx
 from triviador.domain.game import events as ev
 from triviador.domain.game.actions import (
@@ -30,7 +30,8 @@ from triviador.domain.ids import PlayerId
 
 def started() -> GameState:
     base = lobby_state()
-    return fold(base, decide(base, StartGame(P1), start_ctx()))
+    state = fold(base, decide(base, StartGame(P1), start_ctx()))
+    return expire_warmup(state)
 
 
 def answer(state: GameState, player: PlayerId, value: int, elapsed: int) -> SubmitAnswer:
@@ -96,7 +97,7 @@ def test_non_answerers_rank_last_by_seat() -> None:
     state = started()
     state = fold(state, decide(state, answer(state, P3, 100, 100), DecisionContext(now=NOW)))
     expired = ExpireDeadline(state.turn.deadline.id)  # type: ignore[union-attr]
-    late = DecisionContext(now=NOW + timedelta(seconds=30))
+    late = DecisionContext(now=state.turn.deadline.deadline_at + timedelta(seconds=1))  # type: ignore[union-attr]
     events = decide(state, expired, late)
     resolved = next(e for e in events if isinstance(e, ev.QuestionResolved))
     assert resolved.ranking == (P3, P1, P2)
@@ -123,6 +124,7 @@ def test_when_every_ranked_player_has_a_zero_claim_no_picking_window_opens() -> 
     base = lobby_state(rules=rules)
     state = fold(base, decide(base, StartGame(P1), start_ctx()))
     state = fold(state, decide(state, Surrender(P3), DecisionContext(now=NOW)))
+    state = expire_warmup(state)
     assert isinstance(state.turn, ExpansionQuestion)
     assert state.active_players() == (P1, P2)
 
