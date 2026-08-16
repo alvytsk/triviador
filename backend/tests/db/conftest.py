@@ -12,6 +12,19 @@ own `pytestmark = pytest.mark.integration`, and `pytest_collection_modifyitems`
 below fails collection if one forgets. Without that, `-m "not integration"`
 would deselect the tests but still build the session-scoped engine, and the
 "fast lane" would quietly require PostgreSQL.
+
+`engine` is session-scoped (built once, not per test) and asyncpg binds its
+connections to the event loop they were created on. So every async test in
+this directory, and every async fixture built from `engine` (`clean_db`,
+`sessions`, `migrated_schema`), must run on that same session-scoped loop —
+declared per-fixture with `loop_scope="session"` and per-module with
+`pytest.mark.asyncio(loop_scope="session")` in `pytestmark`, deliberately
+narrow rather than a project-wide default so async tests outside this
+directory keep pytest-asyncio's normal per-test loop isolation. Forgetting
+the module-level mark reproduces the exact "attached to a different loop"
+error this suite exists to prevent, so `pytest_collection_modifyitems` fails
+collection for that too, the same way it does for a missing `integration`
+mark.
 """
 
 import os
@@ -31,27 +44,51 @@ DATABASE_URL = os.environ.get("TRIVIADOR_TEST_DATABASE_URL", TEST_DATABASE_URL)
 THIS_DIR = Path(__file__).parent
 
 
+def _lacks_session_loop_scope(item: pytest.Item) -> bool:
+    """True for an async test item that hasn't opted into the session loop.
+
+    `asyncio_mode = "auto"` implicitly attaches an `asyncio` marker to every
+    async test with empty kwargs; a module that adds
+    `pytest.mark.asyncio(loop_scope="session")` to its `pytestmark` overrides
+    that with `kwargs={"loop_scope": "session"}`. A sync test item carries no
+    `asyncio` marker at all and has no loop to be scoped, so it is exempt.
+    """
+    marker = item.get_closest_marker("asyncio")
+    return marker is not None and marker.kwargs.get("loop_scope") != "session"
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Every test module under tests/db must be marked `integration`.
+    """Every test module under tests/db must be marked `integration`, and
+    every async test here must run on the session-scoped loop `engine`
+    (and everything built from it) requires.
 
     A conftest.py hook is registered for the whole pytest session once it is
     loaded, not scoped to its own directory — `items` here is every item
-    collected anywhere under `testpaths`, not just this directory's. So the
-    check below filters to items whose file lives under `tests/db` itself;
+    collected anywhere under `testpaths`, not just this directory's. So both
+    checks below filter to items whose file lives under `tests/db` itself;
     without that filter, this hook would reject the entire fast lane the
     moment collection touches this directory.
     """
+    db_items = [item for item in items if item.path.is_relative_to(THIS_DIR)]
+
     unmarked = sorted(
-        {
-            item.nodeid.split("::")[0]
-            for item in items
-            if item.path.is_relative_to(THIS_DIR) and "integration" not in item.keywords
-        }
+        {item.nodeid.split("::")[0] for item in db_items if "integration" not in item.keywords}
     )
     if unmarked:
         raise pytest.UsageError(
             "tests/db modules must declare `pytestmark = pytest.mark.integration`; "
             "missing in: " + ", ".join(unmarked)
+        )
+
+    missing_loop_scope = sorted(
+        {item.nodeid.split("::")[0] for item in db_items if _lacks_session_loop_scope(item)}
+    )
+    if missing_loop_scope:
+        raise pytest.UsageError(
+            "tests/db modules use fixtures built from the session-scoped `engine` "
+            "and must declare `pytestmark = [pytest.mark.integration, "
+            'pytest.mark.asyncio(loop_scope="session")]`; missing in: '
+            + ", ".join(missing_loop_scope)
         )
 
 
@@ -63,7 +100,7 @@ UNREACHABLE = (
 )
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def engine() -> AsyncIterator[AsyncEngine]:
     eng = create_engine(DATABASE_URL)
     try:
@@ -76,7 +113,7 @@ async def engine() -> AsyncIterator[AsyncEngine]:
     await eng.dispose()
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
 async def migrated_schema() -> None:
     """Task 3 replaces this with a real Alembic run against `engine`.
 
@@ -87,7 +124,7 @@ async def migrated_schema() -> None:
     return None
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def clean_db(migrated_schema: None, engine: AsyncEngine) -> AsyncIterator[None]:
     # Truncate BEFORE the test runs, not after: truncating on the way out
     # leaves the database dirty for any test that does not itself request
@@ -105,6 +142,6 @@ async def clean_db(migrated_schema: None, engine: AsyncEngine) -> AsyncIterator[
     yield
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture(loop_scope="session")
 async def sessions(migrated_schema: None, engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return sessionmaker_for(engine)

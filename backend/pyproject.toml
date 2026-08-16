@@ -54,14 +54,6 @@ testpaths = ["tests"]
 # `--no-cov` for a quick iterative run of a subset.
 addopts = "-q --cov --cov-report=term-missing"
 asyncio_mode = "auto"
-# The `engine` fixture in tests/db/conftest.py is session-scoped so the
-# connection pool is built once, not per test. asyncpg binds its connections
-# to the event loop they were created on, so the loop itself must also be
-# session-scoped — otherwise the engine's connections outlive the per-test
-# loop that created them and teardown fails with "attached to a different
-# loop".
-asyncio_default_fixture_loop_scope = "session"
-asyncio_default_test_loop_scope = "session"
 markers = ["integration: requires a live PostgreSQL (see docker-compose.test.yml)"]
 
 [tool.coverage.report]
