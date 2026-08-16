@@ -22,7 +22,7 @@ Every task's requirements implicitly include this section.
 - **Every timestamp column is `TIMESTAMP WITH TIME ZONE`** and every Python `datetime` is timezone-aware UTC. A naive datetime reaching the database is a bug, not a formatting detail — absolute deadlines (ADR-001) are compared across a process restart.
 - **Money-like and answer-like numbers are `NUMERIC`, never `float`.** In JSON they are strings. A numeric answer that round-trips through an IEEE double is a wrong answer.
 - **The codec targets current dataclasses only.** Decoding runs upcasters forward until the payload matches today's shape; no code path anywhere constructs an old version of an event.
-- **Wire names are permanent.** Renaming one is a data migration over `game_events.type`, not an edit. The frozen list in `tests/db/test_wire_names.py` is what makes that a deliberate act.
+- **Wire names are permanent.** Renaming one is a data migration over `game_events.type`, not an edit. The frozen list in `tests/codec/test_wire_names.py` is what makes that a deliberate act.
 - **Integration tests run against real PostgreSQL, never SQLite.** `JSONB`, partial unique indexes, `FOR SHARE`, `FOR UPDATE`, and `TIMESTAMPTZ` semantics are the things under test; a substitute engine would test nothing.
 - **Integration tests fail loudly when the database is absent.** They must never silently skip — a green suite that quietly ran zero integration tests is the failure mode this rule exists to prevent.
 - Python `>=3.13`. Line length 100. `ruff check`, `ruff format --check`, and `mypy --strict` must pass on every commit.
@@ -65,26 +65,29 @@ backend/
                 └── 0001_initial.py CREATE  the whole schema, one revision
 
 backend/tests/
-├── conftest.py                            MODIFY  nothing domain-facing; see Task 1
 ├── test_layering.py                       CREATE  domain purity, mechanized
-├── db/
-│   ├── conftest.py                        CREATE  engine, migrated schema, truncation
-│   ├── test_schema.py                     CREATE  constraints that must exist
-│   ├── test_migrations.py                 CREATE  upgrade from empty, alembic check
+├── codec/                                 ← PURE. No database, no marker, fast lane.
 │   ├── test_wire_names.py                 CREATE  the frozen registry
 │   ├── test_codec.py                      CREATE  round-trip, Decimal, unions, upcasters
 │   ├── test_golden_corpus.py              CREATE  committed rows decode and fold
-│   ├── test_event_store.py                CREATE  append, optimistic check, projection
-│   ├── test_game_repository.py            CREATE  genesis commit, listing, abandoned
-│   ├── test_question_bank.py              CREATE  selection, insufficiency, FOR SHARE
 │   └── golden/
 │       ├── README.md                      CREATE  how these were made and when to regenerate
 │       ├── expansion_to_battle.json       CREATE
 │       ├── surrender_ends_game.json       CREATE
 │       └── abort_from_lobby.json          CREATE
+├── db/                                    ← INTEGRATION ONLY. Every module marked.
+│   ├── conftest.py                        CREATE  engine, migrated schema, truncation, marker guard
+│   ├── test_connection.py                 CREATE
+│   ├── test_schema.py                     CREATE  constraints that must exist
+│   ├── test_migrations.py                 CREATE  upgrade from empty, alembic check
+│   ├── test_event_store.py                CREATE  append, optimistic check, projection
+│   ├── test_game_repository.py            CREATE  genesis commit, listing, reaper queries
+│   └── test_question_bank.py              CREATE  selection, insufficiency, FOR SHARE
 └── tools/
     └── generate_golden.py                 CREATE  run by hand; never by the test suite
 ```
+
+**`tests/codec/` and `tests/db/` are separate directories on purpose.** The codec and the golden corpus are pure — they must run with no PostgreSQL anywhere — and a session-scoped database fixture in a shared `conftest.py` would be pulled in by any test in the same tree. Keeping them apart is what makes "no database" structurally true rather than a promise; the explicit markers and the collection guard in Task 1 are what keep it true.
 
 **Why the codec lives in `db/` and not `domain/`:** serialization is a persistence concern and pulls in Pydantic. `domain/` stays importable with zero third-party packages, which is what makes the 277 existing tests run in milliseconds.
 
@@ -125,9 +128,10 @@ no event loop, and no third-party package. One stray import ends that quietly.
 import ast
 from pathlib import Path
 
-DOMAIN = Path(__file__).parent.parent / "src" / "triviador" / "domain"
+SRC = Path(__file__).parent.parent / "src"
+DOMAIN = SRC / "triviador" / "domain"
 
-FORBIDDEN_PREFIXES = (
+FORBIDDEN = (
     "triviador.db",
     "triviador.services",
     "triviador.api",
@@ -136,39 +140,97 @@ FORBIDDEN_PREFIXES = (
     "asyncpg",
     "alembic",
     "pydantic",
+    "pydantic_settings",
     "fastapi",
 )
 
 
+def _is_forbidden(module: str) -> bool:
+    # Exact match or a real dotted descendant. A bare `startswith` would also
+    # flag a hypothetical `triviador.mapsomething`, and a gate that reports
+    # phantom violations is a gate people learn to edit around.
+    return any(module == f or module.startswith(f + ".") for f in FORBIDDEN)
+
+
+def _package_of(path: Path) -> list[str]:
+    """`.../src/triviador/domain/game/reducer.py` -> ['triviador','domain','game']."""
+    return list(path.relative_to(SRC).parts[:-1])
+
+
 def _imported_modules(path: Path) -> set[str]:
+    """Every module this file imports, as an absolute dotted name.
+
+    Relative imports are resolved against the file's own package: `from ...db
+    import models` inside `triviador/domain/game/` means `triviador.db`, and a
+    gate that skipped it would be trivially bypassable by writing dots.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    package = _package_of(path)
     names: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            names.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                base = node.module or ""
+            else:
+                # level 1 is the current package; each extra level strips one.
+                prefix = package[: len(package) - (node.level - 1)]
+                base = ".".join([*prefix, node.module] if node.module else prefix)
+            if not base:
+                continue
+            names.add(base)
+            # `from triviador import db` imports a module, not a name.
+            names.update(f"{base}.{alias.name}" for alias in node.names)
     return names
 
 
 def test_domain_imports_nothing_below_it() -> None:
-    violations: list[str] = []
-    for path in sorted(DOMAIN.rglob("*.py")):
-        for module in sorted(_imported_modules(path)):
-            if module.startswith(FORBIDDEN_PREFIXES):
-                violations.append(f"{path.relative_to(DOMAIN.parent.parent.parent)}: {module}")
+    violations = [
+        f"{path.relative_to(SRC)}: {module}"
+        for path in sorted(DOMAIN.rglob("*.py"))
+        for module in sorted(_imported_modules(path))
+        if _is_forbidden(module)
+    ]
     assert violations == [], "domain/ must stay pure:\n" + "\n".join(violations)
 
 
-def test_the_gate_can_actually_see_a_violation() -> None:
-    """A guard nobody has watched fail is a guard nobody can trust."""
-    tree = ast.parse("import sqlalchemy\nfrom triviador.db.models import games\n")
-    found = {
-        alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    assert any(m.startswith(FORBIDDEN_PREFIXES) for m in found)
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import sqlalchemy",
+        "import sqlalchemy.orm",
+        "from triviador.db.models import games",
+        "from triviador import db",
+        "from ...db import models",          # relative — the bypass this gate closes
+        "from ...db.repositories import events",
+        "from ..maps.registry import MapRegistry",  # domain/maps -> triviador.maps? no:
+    ],
+)
+def test_the_gate_sees_each_form_of_violation(tmp_path: Path, source: str) -> None:
+    """A guard nobody has watched fail is a guard nobody can trust — and each
+    import form is a separate code path through `_imported_modules`."""
+    module = DOMAIN / "game" / "_probe.py"
+    module.write_text(source, encoding="utf-8")
+    try:
+        assert any(_is_forbidden(m) for m in _imported_modules(module)), source
+    finally:
+        module.unlink()
+
+
+def test_a_legitimate_domain_import_is_not_flagged() -> None:
+    """The gate must also be capable of passing, or it is just an assert False."""
+    module = DOMAIN / "game" / "_probe.py"
+    module.write_text("from ..maps.definition import MapDefinition\n", encoding="utf-8")
+    try:
+        assert not any(_is_forbidden(m) for m in _imported_modules(module))
+    finally:
+        module.unlink()
 ```
+
+The last parametrize case needs care when writing it: from `triviador/domain/game/`, `from ..maps.registry import ...` resolves to `triviador.domain.maps.registry`, which is the **pure** half and legitimately allowed. Drop that case from the violation list — it belongs in `test_a_legitimate_domain_import_is_not_flagged`, and getting it wrong in the other direction would make the gate reject correct code. Verify each parametrize case resolves to what you expect by running the resolver on it before asserting.
+
+Writing a probe file into `src/` and deleting it is deliberate: the resolver's behaviour depends on the file's real location under `src/`, so a `tmp_path` fixture would exercise a different code path than production. Use `try/finally` so a failure never leaves `_probe.py` behind.
 
 - [ ] **Step 2: Run it and confirm it passes today**
 
@@ -340,6 +402,13 @@ Several tests here need two connections to observe each other's committed
 work — the optimistic append check and `FOR SHARE` selection are precisely
 about cross-transaction visibility — and a wrapping transaction would make
 those tests silently meaningless.
+
+Nothing here is `autouse`, and `pytestmark` in a conftest does NOT propagate
+to test modules. Both facts matter: every module in this directory carries its
+own `pytestmark = pytest.mark.integration`, and `pytest_collection_modifyitems`
+below fails collection if one forgets. Without that, `-m "not integration"`
+would deselect the tests but still build the session-scoped engine, and the
+"fast lane" would quietly require PostgreSQL.
 """
 
 import os
@@ -353,9 +422,19 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from triviador.config import TEST_DATABASE_URL
 from triviador.db.engine import create_engine, sessionmaker_for
 
-pytestmark = pytest.mark.integration
-
 DATABASE_URL = os.environ.get("TRIVIADOR_TEST_DATABASE_URL", TEST_DATABASE_URL)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Every test under tests/db must be marked `integration`."""
+    unmarked = sorted(
+        {item.nodeid.split("::")[0] for item in items if "integration" not in item.keywords}
+    )
+    if unmarked:
+        raise pytest.UsageError(
+            "tests/db modules must declare `pytestmark = pytest.mark.integration`; "
+            "missing in: " + ", ".join(unmarked)
+        )
 
 UNREACHABLE = (
     f"Cannot reach the test database at {DATABASE_URL}.\n"
@@ -379,7 +458,7 @@ async def engine() -> AsyncIterator[AsyncEngine]:
 
 
 @pytest_asyncio.fixture
-async def clean_db(engine: AsyncEngine) -> AsyncIterator[None]:
+async def clean_db(migrated_schema: None, engine: AsyncEngine) -> AsyncIterator[None]:
     yield
     async with engine.begin() as conn:
         await conn.execute(
@@ -393,9 +472,11 @@ async def clean_db(engine: AsyncEngine) -> AsyncIterator[None]:
 
 
 @pytest_asyncio.fixture
-async def sessions(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+async def sessions(migrated_schema: None, engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return sessionmaker_for(engine)
 ```
+
+`migrated_schema` is defined in Task 3 and is an ordinary session-scoped fixture, **not** `autouse` — it runs because `clean_db` and `sessions` ask for it. Until Task 3 exists, declare it here as a no-op session fixture so the dependency edge is in place from the start rather than retrofitted.
 
 The schema itself arrives in Task 3, which is where `TRUNCATE` first has tables to name; until then the fixture is exercised only by the connection smoke test below.
 
@@ -424,16 +505,22 @@ Also create the empty `backend/tests/db/__init__.py`.
 ```bash
 cd backend
 docker compose -f docker-compose.test.yml up -d
-uv run pytest -m "not integration" -q          # fast lane, no database
-uv run pytest tests/db -q --no-cov            # integration lane
+uv run pytest -m "not integration" -q          # fast lane
+uv run pytest tests/db -q --no-cov             # integration lane
 uv run ruff check . && uv run ruff format --check . && uv run mypy
 ```
-Expected: fast lane PASSES with the existing 277 tests plus the two layering tests; integration lane PASSES the version check. Then stop the database and confirm the failure is loud:
+Expected: fast lane PASSES with the existing 277 tests plus the layering tests; integration lane PASSES the version check.
+
+Then **stop the database** — this is the step that proves both halves of the split, and neither claim is credible without it:
+
 ```bash
 docker compose -f docker-compose.test.yml down
-uv run pytest tests/db -q --no-cov            # must FAIL with the UNREACHABLE message, not skip
+uv run pytest -m "not integration" -q          # must PASS — no connection attempted
+uv run pytest tests/db -q --no-cov             # must FAIL loudly, never skip
 docker compose -f docker-compose.test.yml up -d
 ```
+
+If the fast lane hangs or errors here, a session fixture is being built for deselected tests — find it and break the dependency rather than raising a timeout. Finally, delete the `pytestmark` line from one module under `tests/db` and confirm collection fails with the `UsageError`; restore it.
 
 - [ ] **Step 8: Commit**
 
@@ -609,15 +696,17 @@ Then **read it line by line against Task 2's models**. Autogenerate reliably mis
 
 - [ ] **Step 5: Apply migrations in the test fixture**
 
-In `backend/tests/db/conftest.py`, add a session-scoped autouse fixture that, once per session before any test runs, drops the `public` schema and re-runs `upgrade head`:
+In `backend/tests/db/conftest.py`, replace the Task 1 placeholder with the real session-scoped fixture. **Not `autouse`** — it runs because `clean_db` and `sessions` depend on it, which is what keeps it from firing for tests that were deselected:
 
 ```python
-@pytest_asyncio.fixture(scope="session", autouse=True)
+@pytest_asyncio.fixture(scope="session")
 async def migrated_schema(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
         await conn.execute(text("DROP SCHEMA public CASCADE; CREATE SCHEMA public"))
     await _run_upgrade_head(DATABASE_URL)
 ```
+
+A test that needs the schema but no cleanup (`test_schema.py`, `test_migrations.py`) requests `migrated_schema` directly.
 
 - [ ] **Step 6: Verify**
 
@@ -642,7 +731,7 @@ git commit -m "feat(db): Alembic and the initial schema migration"
 
 **Files:**
 - Create: `backend/src/triviador/db/codec/{registry,upcasters,codec}.py`, `backend/src/triviador/db/errors.py`
-- Create: `backend/tests/db/test_wire_names.py`, `backend/tests/db/test_codec.py`
+- Create: `backend/tests/codec/test_wire_names.py`, `backend/tests/codec/test_codec.py`
 
 **Interfaces:**
 - Produces:
@@ -653,14 +742,15 @@ git commit -m "feat(db): Alembic and the initial schema migration"
   CURRENT_VERSION: Mapping[str, int]
   class UnknownEventType(Exception)
   class UnknownSchemaVersion(Exception)
+  class NaiveDatetime(Exception)
   ```
-- Consumes: `triviador.domain.game.events` only. No database, no session — the codec is pure and unit-testable without PostgreSQL, so **these tests are not marked `integration`**.
+- Consumes: `triviador.domain.game.events` only. No database, no session — the codec is pure and unit-testable without PostgreSQL, which is why its tests live in `tests/codec/` rather than `tests/db/` and carry no `integration` marker.
 
 **Serialization is Pydantic's `TypeAdapter` per event class, not hand-rolled reflection.** Thirty-six dataclasses nesting `GameRules`, `Deadline`, `SubmittedAnswer`, `QuestionPool` and `Decimal` is exactly where a hand-written walker accumulates quiet bugs; Pydantic already handles frozen stdlib dataclasses, `NewType`, `StrEnum`, `tuple[X, ...]`, `Mapping`, and unions. What Pydantic cannot do is notice that a *new* field appeared, so the golden corpus (Task 5) and the exhaustiveness test below are what keep the reflection honest.
 
 - [ ] **Step 1: Write the frozen wire-name registry test**
 
-Create `backend/tests/db/test_wire_names.py` containing the full expected mapping as a literal, and assert three things: every union member is registered, the literal matches the registry exactly, and no two classes share a name.
+Create `backend/tests/codec/test_wire_names.py` containing the full expected mapping as a literal, and assert three things: every union member is registered, the literal matches the registry exactly, and no two classes share a name.
 
 ```python
 EXPECTED = {
@@ -724,7 +814,7 @@ def test_wire_names_are_unique() -> None:
 
 - [ ] **Step 2: Write the codec tests**
 
-Create `backend/tests/db/test_codec.py`:
+Create `backend/tests/codec/test_codec.py`:
 
 ```python
 def test_every_event_type_round_trips() -> None:
@@ -741,6 +831,25 @@ def test_decimal_survives_as_a_string() -> None:
 
 def test_datetime_is_iso_8601_utc_and_aware() -> None:
     """Deadlines are absolute (ADR-001) and compared across a restart."""
+
+
+def test_encoding_a_naive_datetime_raises() -> None:
+    """`Deadline(deadline_at=datetime(2026, 8, 16, 12, 0))` — no tzinfo. Pydantic
+    accepts it happily, which is the problem: a naive deadline persisted here
+    is compared against an aware `now` after a restart and either crashes or
+    silently means the wrong instant."""
+
+
+def test_decoding_a_payload_without_an_offset_raises() -> None:
+    """`"2026-08-16T12:00:00"` decodes to a naive datetime under Pydantic. This
+    is the read-side half, and it is the one that matters for rows written by
+    an older or buggier version."""
+
+
+def test_a_non_utc_offset_is_normalized_to_utc() -> None:
+    """`+02:00` in, UTC out, same instant. Assert `tzinfo is UTC` on the decoded
+    value, not merely that the two datetimes compare equal — an aware
+    comparison would pass while leaving a non-UTC value in memory."""
 
 
 def test_answer_value_union_decodes_to_the_right_variant() -> None:
@@ -763,7 +872,7 @@ Plus a Hypothesis round-trip property over generated events if the strategies ar
 
 - [ ] **Step 3: Run and watch them fail**
 
-Run: `cd backend && uv run pytest tests/db/test_wire_names.py tests/db/test_codec.py -q --no-cov`
+Run: `cd backend && uv run pytest tests/codec/test_wire_names.py tests/codec/test_codec.py -q --no-cov`
 Expected: collection error — no `triviador.db.codec` module.
 
 - [ ] **Step 4: Implement the registry**
@@ -791,6 +900,20 @@ Cache `TypeAdapter` instances per class (`functools.lru_cache`) — building one
 
 If `dump_python(mode="json")` does not produce a string for `Decimal`, add an explicit annotation or serializer rather than accepting a float. Step 2's `test_decimal_survives_as_a_string` decides this, in that direction only.
 
+**The UTC invariant is enforced by the codec, not assumed.** Pydantic accepts a naive `datetime` on both sides — a Python `Deadline` built without `tzinfo`, and a payload string with no offset — so a positive round-trip test proves nothing. Add a small recursive walker used on both paths:
+
+```python
+def _require_utc(value: object, path: str = "") -> None:
+    """Every datetime reachable from an event must be aware and UTC.
+
+    Only `Deadline.deadline_at` carries one today, but the check is structural
+    so a new datetime field on any event inherits it rather than needing to be
+    remembered.
+    """
+```
+
+`encode` calls it on the event before dumping and raises `NaiveDatetime(path)`; `decode` calls it on the validated result. Aware-but-not-UTC values are **normalized** by `astimezone(UTC)` rather than rejected — a `+02:00` offset denotes the correct instant, and rejecting it would turn a harmless producer difference into a game that cannot load — while naive values are **rejected**, because there is no correct instant to recover. Say which of the two happened in the error, and keep both branches covered: the codec is under the 100 % branch gate.
+
 - [ ] **Step 6: Implement the upcaster chain — and test it against a real chain**
 
 `upcasters.py`:
@@ -812,7 +935,7 @@ The mechanism has no production users at v1, and a test that runs an empty chain
 - [ ] **Step 7: Verify, including the coverage gate**
 
 ```bash
-cd backend && uv run pytest tests/db/test_codec.py tests/db/test_wire_names.py -q --no-cov
+cd backend && uv run pytest tests/codec/test_codec.py tests/codec/test_wire_names.py -q --no-cov
 uv run pytest -m "not integration" -q          # the codec tests run in the fast lane
 uv run ruff check . && uv run ruff format --check . && uv run mypy
 ```
@@ -822,7 +945,7 @@ Expected: all PASS, and the coverage report shows `db/codec/*` at 100 % branch (
 
 ```bash
 git add backend/src/triviador/db/codec backend/src/triviador/db/errors.py \
-        backend/tests/db/test_codec.py backend/tests/db/test_wire_names.py
+        backend/tests/codec/test_codec.py backend/tests/codec/test_wire_names.py
 git commit -m "feat(db): event codec with a frozen wire-name registry and upcaster chain"
 ```
 
@@ -831,8 +954,8 @@ git commit -m "feat(db): event codec with a frozen wire-name registry and upcast
 ### Task 5: The golden corpus
 
 **Files:**
-- Create: `backend/tests/tools/generate_golden.py`, `backend/tests/db/golden/README.md`, three `golden/*.json` files
-- Create: `backend/tests/db/test_golden_corpus.py`
+- Create: `backend/tests/tools/generate_golden.py`, `backend/tests/codec/golden/README.md`, three `golden/*.json` files
+- Create: `backend/tests/codec/test_golden_corpus.py`
 
 **Interfaces:**
 - Produces: committed corpus files and the test that reads them.
@@ -918,7 +1041,7 @@ uv run ruff check . && uv run ruff format --check . && uv run mypy
 - [ ] **Step 6: Commit**
 
 ```bash
-git add backend/tests/tools backend/tests/db/golden backend/tests/db/test_golden_corpus.py
+git add backend/tests/tools backend/tests/codec/golden backend/tests/codec/test_golden_corpus.py
 git commit -m "test(db): golden corpus for codec and reducer semantics"
 ```
 
@@ -936,13 +1059,19 @@ git commit -m "test(db): golden corpus for codec and reducer semantics"
   class UnitOfWork:
       def begin(self) -> AsyncContextManager[TransactionContext]: ...
 
+  @dataclass(frozen=True)
+  class PersistedEventRef:
+      seq: int
+      type: str          # the wire name, not the Python class
+
   class TransactionContext:
       session: AsyncSession
       async def append(self, game_id: GameId, *, expected_last_seq: int,
                        events: Sequence[GameEvent], operation_id: str) -> None: ...
       async def load_stream(self, game_id: GameId) -> tuple[GameEvent, ...]: ...
-      async def events_for_operation(self, game_id: GameId,
-                                     operation_id: str) -> tuple[int, ...]: ...
+      async def events_for_operation(
+          self, game_id: GameId, operation_id: str
+      ) -> tuple[PersistedEventRef, ...]: ...
 
   class ConcurrentModification(Exception): ...
   ```
@@ -994,9 +1123,22 @@ async def test_player_left_deletes_the_row_so_the_seat_can_be_reused(...):
 
 async def test_final_scores_are_projected_on_game_finished(...): ...
 
-async def test_events_for_operation_returns_the_exact_seq_range(...):
-    """§5.5 reconciliation compares an exact expected range. Assert the seqs,
-    not merely the count."""
+async def test_events_for_operation_returns_seqs_and_ordered_types(...):
+    """§5.5 reconciliation verifies three things against the batch held in
+    memory: the exact seq range `state.seq + 1 … state.seq + len(events)`, the
+    row count, and the *ordered types*. Assert all three — a count-only or
+    seq-only return value cannot detect a batch that committed the right number
+    of events of the wrong kinds, and §5.5 says any mismatch is quarantine,
+    never 'close enough'."""
+
+async def test_events_for_operation_distinguishes_a_same_length_different_batch(...):
+    """Two operations of equal length on one game: the refs for each must carry
+    that operation's own types, in order. This is the test that fails if
+    `events_for_operation` returns bare seqs."""
+
+async def test_events_for_operation_is_empty_for_an_uncommitted_operation(...):
+    """The ambiguous-commit case where the transaction did not land. Empty is
+    the signal to re-run, not an error."""
 
 async def test_append_is_rejected_when_events_is_empty(...):
     """§5.2 resolves a no-op before reaching append; an empty append that
@@ -1041,7 +1183,16 @@ async def append(self, game_id, *, expected_last_seq, events, operation_id) -> N
 
 - [ ] **Step 5: Implement `load_stream` and `events_for_operation`**
 
-`load_stream` orders by `seq` and decodes every row. `events_for_operation` returns the `seq` values for one `operation_id`, ordered — Plan 4's reconciliation compares an exact expected range, so returning a count would not be enough.
+`load_stream` orders by `seq` and decodes every row.
+
+`events_for_operation` runs §5.5's query verbatim and returns `PersistedEventRef` rows:
+
+```sql
+SELECT seq, type FROM game_events
+ WHERE game_id = :g AND operation_id = :op ORDER BY seq;
+```
+
+It returns `seq` **and** `type` because Plan 4 verifies the exact seq range, the row count, *and* the ordered types against the batch it still holds in memory. It deliberately does not decode the payloads: reconciliation is asking "did my batch commit?", and decoding rows that may have been written by a different code path is both slower and a second chance to fail.
 
 - [ ] **Step 6: Verify**
 
@@ -1075,14 +1226,26 @@ git commit -m "feat(db): optimistic event append with the read model in one tran
                        preset_id, operation_id) -> None:       # §6.2 tx1
       async def get_summary(self, game_id) -> GameSummary | None
       async def list_joinable(self) -> tuple[GameSummary, ...]
-      async def find_abandoned_lobbies(self, *, older_than: datetime) -> tuple[GameId, ...]
+      async def find_empty_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]
+      async def find_stale_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]
       async def find_unfinished(self) -> tuple[GameId, ...]
   ```
 - Consumes: Task 6's transaction context and codec.
 
 `create` implements §6.2's `tx1` exactly: `INSERT games (status='lobby', last_seq=1)` and `INSERT game_events (seq=1, 'game.created')` in one transaction, and **nothing else**. The host does not join here — `PlayerJoined` goes through the runtime queue (§6.2), because putting seat allocation on a second mutation path is what §8.2 forbids and what Plan 2 just finished repairing.
 
-`find_abandoned_lobbies` is what Plan 4's reaper calls, and it must find lobbies **that no runtime has loaded** — the failure mode is a crash between `tx1` and the host's join, leaving a player-less lobby that only the database knows about. Query `games` directly, joined against `game_players`, not any in-memory registry.
+**The reaper has two distinct lobby policies (§5.6), so this repository offers two queries.** Collapsing them into one would make the second unimplementable:
+
+```
+LOBBY, zero players, older than 5 min              → find_empty_lobbies
+LOBBY, older than LOBBY_MAX_AGE_HOURS (default 6)  → find_stale_lobbies   ← populated too
+```
+
+`find_empty_lobbies` catches §6.2's crash window — a crash between `tx1` and the host's join leaves a player-less lobby that only the database knows about. `find_stale_lobbies` catches a lobby that filled up and was then simply never started; it must **not** filter on player count, which is exactly the mistake the two-method split prevents.
+
+Both query `games` directly, joined against `game_players`, and never an in-memory registry: the §5.6 no-connections rule may already have unloaded the runtime, and a resident scan would leave those rows in the database forever.
+
+The cutoff is a parameter, not a constant read here. The 5-minute and 6-hour policy values belong to the reaper in Plan 4; a repository that hardcoded them would put policy in the data layer and make both tests depend on wall-clock durations.
 
 `find_unfinished` returns games in `expansion` or `battle` for startup recovery. Per the §1.1 clarification, there is no `final` status to query — `FinalTiebreak` is a `Turn` inside `BATTLE`.
 
@@ -1093,19 +1256,34 @@ async def test_create_writes_exactly_one_event_and_one_game_row(...):
     """seq=1, type='game.created', status='lobby', last_seq=1 — and zero
     game_players rows. The host joins through the runtime."""
 
-async def test_created_game_decodes_to_a_genesis_state(...):
-    """load_stream → create_initial_state produces a GameState at seq=1 with
-    the map_sha256 the caller supplied."""
+async def test_the_persisted_genesis_event_carries_the_map_digest(...):
+    """Asserted on the decoded `GameCreated`, because that is where the digest
+    lives. `create_initial_state` does not copy it onto `GameState` — Plan 4's
+    recovery compares `event.map_sha256` against the registry's digest *before*
+    building the state, and there is no field on GameState to assert."""
+
+async def test_created_game_folds_to_an_empty_lobby(...):
+    """load_stream → create_initial_state gives seq=1, phase=LOBBY, no players,
+    every region unowned, and the rules the caller supplied."""
 
 async def test_list_joinable_hides_a_player_less_lobby(...):
     """§6.2's crash window: GET /api/games must not advertise a lobby nobody
     can be in."""
 
-async def test_find_abandoned_lobbies_finds_a_lobby_only_the_database_knows(...):
-    """The reaper's target: created, never joined, older than the cutoff."""
+async def test_find_empty_lobbies_finds_a_lobby_only_the_database_knows(...):
+    """The reaper's first policy: created, never joined, older than the cutoff."""
 
-async def test_find_abandoned_lobbies_ignores_a_populated_lobby(...): ...
-async def test_find_abandoned_lobbies_ignores_a_recent_one(...): ...
+async def test_find_empty_lobbies_ignores_a_populated_lobby(...): ...
+async def test_find_empty_lobbies_ignores_a_recent_one(...): ...
+
+async def test_find_stale_lobbies_includes_a_populated_lobby(...):
+    """The reaper's second policy, and the reason this is not one query: a
+    lobby that filled up and was never started must still be reaped."""
+
+async def test_find_stale_lobbies_ignores_a_lobby_inside_the_cutoff(...): ...
+async def test_find_stale_lobbies_ignores_a_started_game(...):
+    """Status LOBBY only. EXPANSION and BATTLE are never unloaded (§5.6)."""
+
 async def test_find_unfinished_returns_expansion_and_battle_only(...):
     """Not lobby, not finished, not aborted."""
 ```
@@ -1208,14 +1386,18 @@ git commit -m "feat(db): question bank pool selection under a share lock"
 
 ## Done criteria
 
-- [ ] `uv run pytest -m "not integration" -q` passes, including the existing 277 domain tests unchanged.
+- [ ] `uv run pytest -m "not integration" -q` passes **with the test database stopped**, including the existing 277 domain tests unchanged and all of `tests/codec/`.
 - [ ] `uv run pytest tests/db -q --no-cov` passes against a live PostgreSQL 17, and **fails loudly** — never skips — when the database is down.
+- [ ] Removing a `pytestmark` from a module under `tests/db` fails collection.
 - [ ] `db/codec/*` is at 100 % branch coverage; `reducer.py` still is.
 - [ ] `alembic check` is clean and `upgrade head` succeeds from an empty database.
-- [ ] The layering test proves `domain/` imports no persistence code, and its own negative case is exercised.
+- [ ] The layering test proves `domain/` imports no persistence code, catches the relative-import form, and does not flag a legitimate `domain/maps` import.
 - [ ] All 36 events in the `GameEvent` union are registered, and the frozen wire-name list matches.
+- [ ] The codec rejects a naive datetime on encode and on decode, and normalizes a non-UTC offset.
 - [ ] The golden corpus has been *watched to fail* on both a semantic reducer change and an unmigrated field rename.
 - [ ] `ConcurrentModification` has been observed leaving zero rows behind.
+- [ ] `events_for_operation` returns ordered `(seq, type)` refs, and a same-length different batch is distinguishable.
+- [ ] Both reaper queries exist: `find_empty_lobbies` skips populated lobbies, `find_stale_lobbies` includes them.
 - [ ] A `PlayerLeft` frees its seat in `game_players`, and a subsequent join reuses it without violating `UNIQUE(game_id, seat)`.
 - [ ] `ruff check`, `ruff format --check`, and `mypy --strict` are clean.
 
@@ -1224,7 +1406,7 @@ git commit -m "feat(db): question bank pool selection under a share lock"
 ## What this plan does not do
 
 - **No runtime.** `GameManager`, `GameRuntime`, the consumer loop, deadlines, quarantine, the watchdog, the reaper, and recovery are Plan 4. This plan builds only what they call.
-- **No `map_sha256` verification.** Plan 2 produces the digest and this plan stores it; comparing it against the map on disk and refusing to load on mismatch belongs to recovery, in Plan 4. Until then that invariant lives only in prose — this is a known, deliberate gap carried forward from Plan 2.
+- **No `map_sha256` verification.** Plan 2 produces the digest and this plan stores and reads it back on the `GameCreated` event. Comparing it against `MapRegistry.load_with_digest()` and refusing to load on mismatch belongs to recovery, in Plan 4 — and it must happen *before* `create_initial_state`, which does not carry the digest onto `GameState` and gives recovery nothing to check afterwards. Until then the invariant lives only in prose: a known, deliberate gap carried forward from Plan 2.
 - **No recovery orchestration.** `load_stream` returns decoded events and the golden corpus proves they fold correctly, but nothing yet rebuilds a live game from them.
 - **No auth logic.** `users`, `sessions`, and `invite_codes` get tables and models; password hashing, session issuance, and revocation are Plan 5.
 - **No admin write paths.** `questions`, `media_assets`, `question_imports`, and `rule_presets` get tables; the import pipeline, media processing, and the `questions.version` bump enforcement are Plan 7.
