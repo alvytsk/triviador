@@ -9,7 +9,17 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, Numeric, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,6 +43,14 @@ class Question(Base):
     answer, category, difficulty, media, unit); toggling `is_active` does
     not, or Spec 2 would silently merge the statistics of two materially
     different questions sharing an id.
+
+    `kind` and `difficulty` are `TEXT` + `CheckConstraint`, mirroring the
+    domain's closed `QuestionKind`/`Difficulty` `StrEnum`s the same way
+    `games.status` mirrors `Phase` — the pattern applies wherever a closed
+    domain enum already exists. Without it, `select_pool`'s
+    `WHERE q.kind = :kind` would not error on a bad value written by an
+    admin path; the row would just never be selected, surfacing much later
+    as an unexplained `InsufficientQuestions`.
     """
 
     __tablename__ = "questions"
@@ -49,6 +67,11 @@ class Question(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('multiple_choice', 'numeric')", name="kind_valid"),
+        CheckConstraint("difficulty IN ('easy', 'medium', 'hard')", name="difficulty_valid"),
     )
 
 
