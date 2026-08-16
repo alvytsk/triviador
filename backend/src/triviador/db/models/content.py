@@ -65,6 +65,7 @@ class QuestionChoice(Base):
     idx: Mapped[int] = mapped_column(Integer, primary_key=True)
     text: Mapped[str] = mapped_column(Text)
     is_correct: Mapped[bool] = mapped_column(Boolean)
+    media_asset_id: Mapped[str | None] = mapped_column(ForeignKey("media_assets.id"))
 
 
 class QuestionNumeric(Base):
