@@ -28,6 +28,7 @@ from triviador.domain.game.actions import (
     SubmitAnswer,
     Surrender,
 )
+from triviador.domain.game.genesis import GenesisEventNotFoldable
 from triviador.domain.game.rules import required_question_budget
 from triviador.domain.game.scoring import expected_score, holding_value
 from triviador.domain.game.state import (
@@ -43,6 +44,7 @@ from triviador.domain.game.state import (
     ExpansionQuestion,
     FinalTiebreak,
     GameState,
+    MediaWarmup,
     NeutralChallenge,
     NumericAnswer,
     Phase,
@@ -59,6 +61,7 @@ from triviador.domain.questions.types import QuestionKind, QuestionSnapshot
 # which in a non-terminal phase can only be LOBBY.
 LEGAL_COMMANDS: Mapping[type[Turn] | None, frozenset[type[Command]]] = {
     None: frozenset({JoinGame, StartGame, Surrender, AbortGame}),
+    MediaWarmup: frozenset({ExpireDeadline, Surrender, AbortGame}),
     ExpansionQuestion: frozenset({SubmitAnswer, ExpireDeadline, Surrender, AbortGame}),
     ExpansionPicking: frozenset({PickRegion, ExpireDeadline, Surrender, AbortGame}),
     BattleTargetSelect: frozenset({SelectAttackTarget, ExpireDeadline, Surrender, AbortGame}),
@@ -121,6 +124,8 @@ def _dispatch(state: GameState, command: Command, ctx: DecisionContext) -> tuple
             return _decide_surrender(state, command, ctx)
         case AbortGame():
             return _decide_abort(state, command)
+        case ExpireDeadline() if isinstance(state.turn, MediaWarmup):
+            return _close_media_warmup(state, ctx)
         case SubmitAnswer() if isinstance(state.turn, ExpansionQuestion):
             return _decide_expansion_answer(state, command, ctx)
         case ExpireDeadline() if isinstance(state.turn, ExpansionQuestion):
@@ -157,7 +162,12 @@ def _decide_join(state: GameState, command: JoinGame) -> tuple[ev.GameEvent, ...
         raise RejectedCommand(RejectCode.ALREADY_JOINED, f"{command.actor_id!r} already joined")
     if len(state.players) >= state.rules.player_count:
         raise RejectedCommand(RejectCode.GAME_FULL, "lobby is full")
-    return (ev.PlayerJoined(command.actor_id, command.display_name, seat=len(state.players)),)
+    # Lowest unused seat, not a counter: a lobby departure frees its seat, and
+    # `seat=len(players)` would re-mint a number a remaining player still holds.
+    # The full-lobby guard above means the range is never exhausted.
+    used = {p.seat for p in state.players.values()}
+    seat = min(i for i in range(state.rules.player_count) if i not in used)
+    return (ev.PlayerJoined(command.actor_id, command.display_name, seat=seat),)
 
 
 def _decide_start(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
@@ -195,13 +205,22 @@ def _decide_start(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent,
         )
     events.append(ev.QuestionPoolDrawn(pool))
 
-    # Fold what we have so the question window is opened against real state.
+    # Fold what we have so the warmup window is opened against real state.
     seeded = fold(state, events)
-    events.append(ev.ExpansionRoundStarted(1))
-    seeded = evolve(seeded, events[-1])
-    question_events, _ = _open_expansion_question(seeded, ctx)
-    events.extend(question_events)
+    deadline, _ = seeded.allocate_deadline(
+        DeadlineKind.WARMUP, ctx.now + timedelta(milliseconds=seeded.rules.warmup_ms)
+    )
+    events.append(ev.MediaWarmupStarted(deadline))
     return tuple(events)
+
+
+def _close_media_warmup(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
+    """Warmup expired: open round one. The pool was already drawn at start, so
+    nothing is read here — this only starts the first answer window."""
+    started = ev.ExpansionRoundStarted(1)
+    seeded = evolve(state, started)
+    question_events, _ = _open_expansion_question(seeded, ctx)
+    return (started, *question_events)
 
 
 def _open_expansion_question(
@@ -247,7 +266,8 @@ def _decide_expansion_answer(
         return ()
     after = evolve(state, recorded)
     assert isinstance(after.turn, ExpansionQuestion)
-    if len(after.turn.answers) < len(after.active_players()):
+    active = set(after.active_players())
+    if len(active & set(after.turn.answers)) < len(active):
         return (recorded,)
     return (recorded, *_close_expansion_question(after, after.turn, ctx))
 
@@ -409,18 +429,23 @@ def _advance_expansion(state: GameState, ctx: DecisionContext) -> tuple[ev.GameE
         after = evolve(after, started)
         question, _ = _open_expansion_question(after, ctx)
         return (done, started, *question)
-    # Mirrors `_next_battle_turn`'s own "one active player left ends the
-    # game" check (there, "before anything about turn shape or rotation is
-    # even looked at"). EXPANSION-phase elimination via surrender never
-    # revisits the open turn the way BATTLE's rotation does, so it is only
-    # here — the one place EXPANSION hands control to BATTLE — that a
-    # trajectory eliminating everyone (or all but one) during EXPANSION
-    # would otherwise crash on `active_players()[0]` instead of ending the
-    # game. Skip opening a battle round altogether rather than start one
-    # with no legal first attacker.
+    # EXPANSION-phase elimination only ever happens through `Surrender` —
+    # battle captures are the only other source of `PlayerEliminated`, and
+    # those fire exclusively in BATTLE. `_decide_surrender` now finishes the
+    # game itself the instant such a surrender would drop active players to
+    # one (see the `active_players() <= 1` check there), so by the time
+    # control reaches here — the one place EXPANSION hands control to
+    # BATTLE — at least two players are guaranteed still active. This used
+    # to carry its own "one active player left" guard mirroring
+    # `_next_battle_turn`'s; that guard is now unreachable, so it was
+    # replaced with the assertion below rather than left as dead code the
+    # reducer's 100%-branch-coverage gate could never satisfy.
     active = after.active_players()
-    if len(active) <= 1:
-        return (done, *_finish(after, ctx))
+    assert len(active) > 1, (
+        "during EXPANSION only Surrender eliminates players, and "
+        "_decide_surrender finishes the game before this point when that "
+        "would drop active players to one"
+    )
     battle = ev.BattleRoundStarted(1)
     after = evolve(after, battle)
     return (done, battle, *_open_battle_turn(after, active[0], ctx))
@@ -748,11 +773,21 @@ def _decide_surrender(
     if _is_involved_in_turn(state.turn, command.actor_id):
         out.emit(ev.TurnAborted(f"{command.actor_id} surrendered"))
         return (*out.events, *_next_battle_turn(out.state, ctx))
+
+    # Not involved in the open turn — but the elimination may still have left a
+    # single player standing (Spec 1 §3.6). `_next_battle_turn` performs this
+    # check on the involved path; the uninvolved path had none, so a two-player
+    # game silently continued with one active player through every non-battle
+    # turn shape.
+    if len(out.state.active_players()) <= 1:
+        out.emit(ev.TurnAborted(f"{command.actor_id} surrendered"))
+        return (*out.events, *_finish(out.state, ctx))
     return tuple(out.events)
 
 
 def _decide_abort(state: GameState, command: AbortGame) -> tuple[ev.GameEvent, ...]:
-    return (ev.GameAborted(f"aborted by {command.actor_id}"),)
+    who = "system" if command.actor_id is None else command.actor_id
+    return (ev.GameAborted(f"aborted by {who}"),)
 
 
 def _is_involved_in_turn(turn: Turn | None, player_id: PlayerId) -> bool:
@@ -821,6 +856,15 @@ def _finish(state: GameState, ctx: DecisionContext) -> tuple[ev.GameEvent, ...]:
     Deliberately keyed off `state.players` (filtered by `is_eliminated`)
     rather than `state.active_players()`: winner determination is a property
     of who is still in the game, not of `turn_order`'s rotation bookkeeping.
+
+    Callable from either phase, but a tied-leaders call in EXPANSION would
+    mishandle the tiebreak: `_present_question` checks `state.phase is
+    Phase.EXPANSION` first, so it would build an `ExpansionQuestion` turn
+    instead of a `FinalTiebreak` one and strand `pending_final_contenders`,
+    with no error raised. This is unreachable today — `_decide_surrender` is
+    the sole EXPANSION-phase caller, and it only finishes the game when at
+    most one non-eliminated player remains, so there is never more than one
+    leader to tie on that path.
     """
     final_scores = {p: s.score for p, s in state.players.items()}
     scores = {p: s.score for p, s in state.players.items() if not s.is_eliminated}
@@ -879,6 +923,11 @@ def evolve(state: GameState, event: ev.GameEvent) -> GameState:
 
 def _apply(state: GameState, event: ev.GameEvent) -> GameState:
     match event:
+        case ev.GameCreated():
+            raise GenesisEventNotFoldable(
+                "GameCreated is a genesis event — use create_initial_state()"
+            )
+
         case ev.PlayerJoined(player_id=pid, display_name=name, seat=seat):
             player = PlayerState(
                 pid, name, seat, score=0, bonus_score=0, base_region=None, is_eliminated=False
@@ -894,11 +943,10 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
             # `Phase.LOBBY` branch) — the player never got far enough to hold
             # a base, a score, or a seat in an open turn, so undoing
             # `PlayerJoined` is exactly its inverse: drop them from both
-            # `players` and `turn_order`. NOTE: seats are not renumbered, so
-            # a later `JoinGame` (`seat=len(players)`) can re-mint a seat
-            # number still held by a remaining player — a pre-existing gap
-            # in seat allocation, not introduced or fixed here; out of scope
-            # for this arm.
+            # `players` and `turn_order`.
+            # Seats are deliberately not renumbered: a seat is an identity, not
+            # a position. `_decide_join` allocates the lowest unused seat, so a
+            # departure frees exactly that number for the next joiner.
             return replace(
                 state,
                 players={p: s for p, s in state.players.items() if p != pid},
@@ -935,6 +983,13 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
 
         case ev.QuestionPoolDrawn(pool=pool):
             return replace(state, pool=pool)
+
+        case ev.MediaWarmupStarted(deadline=deadline):
+            return replace(
+                state,
+                turn=MediaWarmup(deadline),
+                next_deadline_id=max(state.next_deadline_id, deadline.id + 1),
+            )
 
         case ev.ExpansionRoundStarted(round_no=round_no):
             return replace(state, phase=Phase.EXPANSION, round_no=round_no, turn=None)
@@ -1099,18 +1154,10 @@ def _apply(state: GameState, event: ev.GameEvent) -> GameState:
         case ev.GameAborted():
             return replace(state, phase=Phase.ABORTED, turn=None, winner_id=None)
 
-    # Every `ev.X(...)` construction site in this module (i.e. every event
-    # `decide()` can actually emit) has a `case` above — cross-checked by
-    # grepping every emission site against this match's arms; `PlayerLeft`
-    # was missing that arm until a review caught `fold()` crashing on a real
-    # lobby-surrender trajectory (`decide()` emits it, `_apply` had no case).
-    # The one `GameEvent` member with no arm, `GameCreated`, is never
-    # constructed anywhere in `decide()`/`_dispatch` — the initial `GameState`
-    # is materialised directly by whatever constructs it (`lobby_state()`
-    # here; presumably a runtime-level "create game" step in Plan 2), never
-    # folded from a `GameCreated` event. So this fallthrough is unreachable
-    # for any event sequence `decide()` could have produced; it only fires if
-    # `evolve`/`fold` is handed a fabricated or foreign event directly.
+    # Every event `decide()` can emit has a `case` above; `GameCreated` has an
+    # explicit refusing arm because it is genesis, not a transition. This
+    # fallthrough is therefore unreachable for any sequence `decide()` produced
+    # — it fires only if `evolve`/`fold` is handed a fabricated or foreign event.
     raise NotImplementedError(f"no evolve branch for {type(event).__name__}")  # pragma: no cover
 
 

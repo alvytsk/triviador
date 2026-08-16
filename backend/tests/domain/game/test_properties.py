@@ -14,7 +14,7 @@ from triviador.domain.game.rules import (
     validate_rules,
 )
 from triviador.domain.game.scoring import expected_score
-from triviador.domain.game.state import TERMINAL_PHASES, Phase
+from triviador.domain.game.state import TERMINAL_PHASES, MediaWarmup, Phase
 from triviador.domain.ids import RegionId
 
 
@@ -150,7 +150,21 @@ class GameMachine(RuleBasedStateMachine):
         candidates = self.state.active_players() or tuple(self.state.players)
         self._apply(AbortGame(candidates[player_index % len(candidates)]))
 
-    @precondition(lambda self: self.state.current_deadline() is not None)
+    # `MediaWarmup`'s deadline satisfies `current_deadline() is not None` just
+    # like every other turn's, but `answer`/`pick_or_target` can never do
+    # anything with it (no `.question`, no `ExpansionPicking`/
+    # `BattleTargetSelect` shape to act on) — every draw during warmup was a
+    # pure no-op that still consumed a step from the budget, competing with
+    # `expire` (the only rule that actually leaves warmup) for a pick.
+    # Excluding `MediaWarmup` here removes that dead weight — deliberately
+    # not touching `surrender`, which *is* a meaningful, tested action during
+    # warmup (see test_warmup.py) and must stay reachable there.
+    @precondition(
+        lambda self: (
+            self.state.current_deadline() is not None
+            and not isinstance(self.state.turn, MediaWarmup)
+        )
+    )
     @rule(
         player_index=st.integers(0, 3),
         choice=st.integers(0, 3),
@@ -178,7 +192,12 @@ class GameMachine(RuleBasedStateMachine):
         assert window is not None
         self._apply(SubmitAnswer(player, window.id, value, elapsed))
 
-    @precondition(lambda self: self.state.current_deadline() is not None)
+    @precondition(
+        lambda self: (
+            self.state.current_deadline() is not None
+            and not isinstance(self.state.turn, MediaWarmup)
+        )
+    )
     @rule(region_index=st.integers(0, 8))
     def pick_or_target(self, region_index: int) -> None:
         from triviador.domain.game.actions import PickRegion, SelectAttackTarget

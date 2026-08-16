@@ -61,3 +61,21 @@ def test_rules_are_frozen() -> None:
     except Exception:
         return
     raise AssertionError("GameRules must be frozen")
+
+
+def test_default_warmup_is_five_seconds() -> None:
+    assert DEFAULT_RULES.warmup_ms == 5_000
+
+
+def test_warmup_bounds_are_enforced() -> None:
+    assert any("warmup_ms" in p for p in validate_rules(replace(DEFAULT_RULES, warmup_ms=999)))
+    assert any("warmup_ms" in p for p in validate_rules(replace(DEFAULT_RULES, warmup_ms=60_001)))
+    assert validate_rules(replace(DEFAULT_RULES, warmup_ms=1_000)) == ()
+    assert validate_rules(replace(DEFAULT_RULES, warmup_ms=60_000)) == ()
+
+
+def test_warmup_does_not_change_the_question_budget() -> None:
+    """A warmup window presents no question, so it must not move the budget —
+    otherwise every preset's coverage check shifts for no reason."""
+    baseline = required_question_budget(DEFAULT_RULES)
+    assert required_question_budget(replace(DEFAULT_RULES, warmup_ms=30_000)) == baseline

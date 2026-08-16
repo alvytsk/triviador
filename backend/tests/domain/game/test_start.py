@@ -12,7 +12,7 @@ from triviador.domain.game.actions import (
     StartGame,
 )
 from triviador.domain.game.reducer import decide, fold
-from triviador.domain.game.state import ExpansionQuestion, Phase, TerritoryKind
+from triviador.domain.game.state import MediaWarmup, Phase, TerritoryKind
 from triviador.domain.ids import PlayerId, RegionId
 from triviador.domain.questions.types import QuestionPool
 
@@ -116,8 +116,7 @@ def test_start_emits_the_full_opening_sequence() -> None:
         ev.ScoreChanged,
         ev.ScoreChanged,
         ev.QuestionPoolDrawn,
-        ev.ExpansionRoundStarted,
-        ev.QuestionPresented,
+        ev.MediaWarmupStarted,
     ]
 
 
@@ -130,7 +129,7 @@ def test_start_records_the_pool_as_snapshots_not_ids() -> None:
 def test_after_start_bases_are_owned_and_scored() -> None:
     state = fold(lobby_state(), decide(lobby_state(), StartGame(P1), start_ctx()))
     assert state.phase is Phase.EXPANSION
-    assert state.round_no == 1
+    assert state.round_no == 0, "round one begins when the warmup expires"
     for player, region in zip((P1, P2, P3), BASES, strict=True):
         territory = state.territories[region]
         assert territory.owner_id == player
@@ -140,9 +139,11 @@ def test_after_start_bases_are_owned_and_scored() -> None:
         assert state.players[player].base_region == region
 
 
-def test_after_start_an_expansion_question_window_is_open() -> None:
+def test_after_start_a_warmup_window_is_open() -> None:
+    """The pool is drawn at start, but no question is presented until the
+    warmup window expires — see test_warmup.py for the rest of that
+    trajectory."""
     state = fold(lobby_state(), decide(lobby_state(), StartGame(P1), start_ctx()))
-    assert isinstance(state.turn, ExpansionQuestion)
-    assert state.turn.question.prompt == "numeric 0?"
+    assert isinstance(state.turn, MediaWarmup)
     assert state.turn.deadline.deadline_at > NOW
-    assert state.pool.numeric_used == 1
+    assert state.pool.numeric_used == 0

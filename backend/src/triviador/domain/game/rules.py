@@ -6,6 +6,8 @@ MIN_PLAYERS = 2
 MAX_PLAYERS = 4
 MIN_TIMEOUT_MS = 3_000
 MAX_TIMEOUT_MS = 120_000
+MIN_WARMUP_MS = 1_000
+MAX_WARMUP_MS = 60_000
 
 
 @dataclass(frozen=True)
@@ -16,6 +18,10 @@ class GameRules:
     base_hp: int
     answer_timeout_ms: int
     pick_timeout_ms: int
+    # Fixed window after the pool is drawn, during which the client prefetches
+    # every question image before any answer timer starts. Never derived from
+    # client readiness — ADR-003 forbids a rule depending on presence.
+    warmup_ms: int
     claims_by_rank: tuple[int, ...]
     pts_base: int
     pts_territory: int
@@ -30,6 +36,7 @@ DEFAULT_RULES = GameRules(
     base_hp=3,
     answer_timeout_ms=20_000,
     pick_timeout_ms=15_000,
+    warmup_ms=5_000,
     claims_by_rank=(2, 1, 0),
     pts_base=1000,
     pts_territory=200,
@@ -58,12 +65,13 @@ def validate_rules(rules: GameRules) -> tuple[str, ...]:
         if value < 1:
             problems.append(f"{name} must be at least 1")
 
-    for name, value in (
-        ("answer_timeout_ms", rules.answer_timeout_ms),
-        ("pick_timeout_ms", rules.pick_timeout_ms),
+    for name, value, low, high in (
+        ("answer_timeout_ms", rules.answer_timeout_ms, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
+        ("pick_timeout_ms", rules.pick_timeout_ms, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
+        ("warmup_ms", rules.warmup_ms, MIN_WARMUP_MS, MAX_WARMUP_MS),
     ):
-        if not MIN_TIMEOUT_MS <= value <= MAX_TIMEOUT_MS:
-            problems.append(f"{name} must be {MIN_TIMEOUT_MS}..{MAX_TIMEOUT_MS}")
+        if not low <= value <= high:
+            problems.append(f"{name} must be {low}..{high}")
 
     for name, value in (
         ("pts_base", rules.pts_base),

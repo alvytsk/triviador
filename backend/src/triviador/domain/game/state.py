@@ -43,6 +43,7 @@ class DeadlineKind(StrEnum):
     ANSWER = "answer"
     PICK = "pick"
     TARGET_SELECT = "target_select"
+    WARMUP = "warmup"
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,18 @@ AnswerValue = ChoiceAnswer | NumericAnswer
 class SubmittedAnswer:
     value: AnswerValue
     elapsed_ms: int
+
+
+@dataclass(frozen=True)
+class MediaWarmup:
+    """The window between the pool being drawn and the first question opening.
+
+    It exists so the client can prefetch every question image before any answer
+    timer starts (Spec 1 §9.6). Fixed duration, never client acknowledgement:
+    ADR-003 forbids a rule that depends on presence.
+    """
+
+    deadline: Deadline
 
 
 @dataclass(frozen=True)
@@ -151,7 +164,8 @@ class FinalTiebreak:
 
 
 Turn = (
-    ExpansionQuestion
+    MediaWarmup
+    | ExpansionQuestion
     | ExpansionPicking
     | BattleTargetSelect
     | BattleDuel

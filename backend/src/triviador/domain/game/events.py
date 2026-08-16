@@ -24,9 +24,18 @@ class ScoreReason(StrEnum):
 
 @dataclass(frozen=True)
 class GameCreated:
+    """The genesis event. Consumed by `create_initial_state`, never folded.
+
+    `map_sha256` pins the topology this game was created against. Maps are a
+    two-file drop with no version and no migration, so a silent edit is the
+    expected failure mode; recovery recomputes this and refuses to load the
+    game on mismatch rather than replaying against different adjacency.
+    """
+
     map_id: MapId
     rules: GameRules
     host_id: PlayerId
+    map_sha256: str
 
 
 @dataclass(frozen=True)
@@ -54,6 +63,11 @@ class BasesAssigned:
 @dataclass(frozen=True)
 class QuestionPoolDrawn:
     pool: QuestionPool
+
+
+@dataclass(frozen=True)
+class MediaWarmupStarted:
+    deadline: Deadline
 
 
 @dataclass(frozen=True)
@@ -247,6 +261,7 @@ GameEvent = (
     | GameStarted
     | BasesAssigned
     | QuestionPoolDrawn
+    | MediaWarmupStarted
     | GameFinished
     | GameAborted
     | QuestionPresented

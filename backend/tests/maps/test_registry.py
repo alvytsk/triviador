@@ -61,3 +61,29 @@ def test_shipped_map_supports_four_bases() -> None:
     defn = MapRegistry(REPO_MAPS).load(MapId("czechia"))
     # load() already validates, so reaching here proves an independent set of 4 exists.
     assert RegionId("praha") in set(defn.region_ids())
+
+
+def test_load_with_digest_returns_a_stable_sha256() -> None:
+    first = MapRegistry(REPO_MAPS).load_with_digest(MapId("czechia"))
+    second = MapRegistry(REPO_MAPS).load_with_digest(MapId("czechia"))
+    assert first.sha256 == second.sha256
+    assert len(first.sha256) == 64
+    assert first.definition == second.definition
+
+
+def test_load_still_returns_a_bare_definition() -> None:
+    registry = MapRegistry(REPO_MAPS)
+    assert registry.load(MapId("czechia")) == registry.load_with_digest(MapId("czechia")).definition
+
+
+def test_reformatting_map_json_does_not_change_the_digest(tmp_path: Path) -> None:
+    """Canonical digest, not file bytes: a whitespace-only edit must not
+    invalidate every historical game that used this map."""
+    source = json.loads((REPO_MAPS / "czechia" / "map.json").read_text(encoding="utf-8"))
+    original = MapRegistry(REPO_MAPS).load_with_digest(MapId("czechia")).sha256
+
+    reformatted = tmp_path / "czechia"
+    reformatted.mkdir()
+    (reformatted / "map.json").write_text(json.dumps(source, indent=4, sort_keys=True))
+
+    assert MapRegistry(tmp_path).load_with_digest(MapId("czechia")).sha256 == original
