@@ -2,24 +2,56 @@
 without firing — a cancelled task that lost its race, an exception nobody
 saw. It must fix that case and no other."""
 
+import random
 from dataclasses import replace
 from datetime import timedelta
 
 from tests.conftest import lobby_state
 from tests.runtime.conftest import (
     T0,
+    StubExecutor,
     drain_queue,
     manager_holding,
     queued_commands,
     stalled_runtime,
     warmup_state,
 )
-from tests.runtime.fakes import FakeClock, RecordingOrigin
+from tests.runtime.fakes import FakeBroadcaster, FakeClock, RecordingOrigin
 from triviador.domain.game.actions import DecisionContext, ExpireDeadline
 from triviador.domain.game.reducer import decide, fold
+from triviador.domain.game.state import GameState, MediaWarmup
 from triviador.domain.ids import DeadlineId, GameId
-from triviador.runtime.runtime import QueuedCommand
+from triviador.runtime.runtime import GameRuntime, QueuedCommand
 from triviador.runtime.watchdog import Watchdog
+
+
+class _BrokenRuntime(GameRuntime):
+    """A runtime whose `state` property raises — standing in for "some
+    other bug", the class of failure `submit`'s narrow
+    `except (RuntimeClosed, ServerBusy)` was never designed to catch.
+
+    Overriding `state` alone (not `game_id`, which reads `self._state`
+    directly rather than through the property) is deliberate: it lets the
+    watchdog's own exception logging, which names the game by
+    `runtime.game_id`, keep working even while this runtime is otherwise
+    broken — exactly the asymmetry a real bug might have.
+    """
+
+    @property
+    def state(self) -> GameState:
+        raise RuntimeError("boom")
+
+
+def _broken_runtime(state: GameState, clock: FakeClock) -> GameRuntime:
+    return _BrokenRuntime(
+        state=state,
+        executor=StubExecutor([]),
+        clock=clock,
+        broadcaster=FakeBroadcaster(),
+        on_fault=lambda rt, exc: None,
+        generation=1,
+        rng=random.Random(0),
+    )
 
 
 async def test_it_enqueues_an_expiry_for_a_deadline_past_its_grace() -> None:
@@ -189,4 +221,96 @@ async def test_the_loop_ticks_on_its_interval() -> None:
     await clock.advance_to(clock.now() + timedelta(seconds=5))
 
     assert [qc.command for qc in queued_commands(runtime)] == [ExpireDeadline(deadline.id)]
+    await watchdog.aclose()
+
+
+async def test_a_broken_runtime_does_not_kill_the_sweep_or_the_loop() -> None:
+    """`tick()`'s docstring claims it survives "any one runtime being
+    closed, busy, or otherwise broken" — but `submit`'s guard only ever
+    covers `RuntimeClosed`/`ServerBusy`, raised from `submit` itself.
+    Nothing originally guarded `runtime.state`/`current_deadline()`,
+    read *before* `submit` is ever reached, and an unguarded exception
+    there would propagate out of `_run()`'s task entirely — `start()`
+    never awaits it, so the watchdog would die silently, for every game
+    in the process, forever.
+
+    Two runtimes prove the two properties that matter: `early` is already
+    overdue on the very tick the broken runtime blows up on (the sweep
+    survives *within* one tick), and `late` only becomes overdue a whole
+    interval afterwards (the loop survives *across* ticks — the one the
+    review flagged as mattering most, since a test that only checked the
+    first would miss the watchdog dying silently after a single bad
+    tick).
+    """
+    state = warmup_state()
+    original = state.current_deadline()
+    assert original is not None
+    clock = FakeClock(original.deadline_at + timedelta(seconds=6))
+
+    broken = _broken_runtime(replace(state, game_id=GameId("g-broken")), clock)
+    early = stalled_runtime(replace(state, game_id=GameId("g-early")), clock)
+
+    # `late`'s deadline sits far enough past the first tick's `now` to
+    # still be inside its grace window then, but is overdue by the
+    # second tick five seconds later.
+    late_state = warmup_state()
+    assert isinstance(late_state.turn, MediaWarmup)
+    late_deadline = replace(
+        late_state.turn.deadline,
+        id=DeadlineId(555),
+        deadline_at=original.deadline_at + timedelta(seconds=8),
+    )
+    late_state = replace(
+        late_state, game_id=GameId("g-late"), turn=replace(late_state.turn, deadline=late_deadline)
+    )
+    late = stalled_runtime(late_state, clock)
+
+    watchdog = Watchdog(
+        manager=manager_holding(broken, early, late), clock=clock, interval_s=5.0, grace_s=5.0
+    )
+    watchdog.start()
+    await clock.settle()
+    assert queued_commands(early) == []  # nothing before the first tick
+
+    await clock.advance_to(clock.now() + timedelta(seconds=5))  # tick 1
+
+    assert [qc.command for qc in queued_commands(early)] == [ExpireDeadline(original.id)]
+    assert queued_commands(late) == []  # not overdue yet on tick 1
+
+    await clock.advance_to(clock.now() + timedelta(seconds=5))  # tick 2
+
+    # If `broken` had killed the loop on tick 1, this would never fire —
+    # this is the assertion that actually catches the silent-death bug.
+    assert [qc.command for qc in queued_commands(late)] == [ExpireDeadline(DeadlineId(555))]
+
+    await watchdog.aclose()
+
+
+async def test_the_loop_survives_a_tick_that_raises() -> None:
+    """The backstop for the backstop. `tick()`'s own per-runtime guard
+    already absorbs a broken runtime, so `_run()`'s wrapper around
+    `self.tick()` never actually fires in the test above — this test
+    targets that second guard directly, for a failure `tick()`'s own
+    guard does not anticipate (`live_runtimes()` itself raising, or a
+    bug in `tick()` that reaches past its per-runtime `try`)."""
+    clock = FakeClock(T0)
+    watchdog = Watchdog(manager=manager_holding(), clock=clock, interval_s=5.0, grace_s=5.0)
+
+    calls = 0
+
+    def _raising_tick() -> None:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("boom")
+
+    watchdog.tick = _raising_tick  # type: ignore[method-assign]
+    watchdog.start()
+    await clock.settle()
+
+    await clock.advance_to(clock.now() + timedelta(seconds=5))
+    assert calls == 1
+
+    await clock.advance_to(clock.now() + timedelta(seconds=5))
+    assert calls == 2  # the loop is still alive and ticking after the first raise
+
     await watchdog.aclose()
