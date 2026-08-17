@@ -1,7 +1,11 @@
 """§11.6. Two halves that pull in opposite directions: unload what nobody
 needs, and never unload what somebody is playing."""
 
+import logging
+from dataclasses import replace
 from datetime import timedelta
+
+import pytest
 
 from tests.conftest import lobby_state
 from tests.runtime.conftest import (
@@ -20,10 +24,10 @@ from tests.runtime.conftest import (
 from tests.runtime.fakes import FakeClock, FakeSubscribers, RecordingOrigin
 from triviador.domain.game.actions import AbortGame, JoinGame
 from triviador.domain.game.events import GameAborted
-from triviador.domain.game.state import Phase
+from triviador.domain.game.state import GameState, Phase
 from triviador.domain.ids import GameId, PlayerId
 from triviador.runtime.errors import PermanentReplayFailure
-from triviador.runtime.manager import Failed, Live
+from triviador.runtime.manager import Failed, GameManager, Live
 from triviador.runtime.origins import Accepted
 from triviador.runtime.runtime import QueuedCommand
 
@@ -226,3 +230,49 @@ async def test_one_failing_game_does_not_stop_the_sweep() -> None:
     entry = manager.entry_for(GameId("g-good"))
     assert isinstance(entry, Live)
     assert [qc.command for qc in queued_commands(entry.runtime)] == [AbortGame(actor_id=None)]
+
+
+class _FlipsShuttingDownMidLoad:
+    """Loads the first game normally; loading it flips the manager's
+    `_shutting_down` flag as a side effect, standing in for a SIGTERM
+    landing mid-sweep. By the time the loop reaches the next `game_id`,
+    `_load`'s own fence is already up and raises `ServerRestarting` for
+    every one of them — the same technique
+    `test_recover_active_games_aborts_if_shutdown_races_the_sweep` in
+    `test_manager.py` uses against `recover_active_games`, which is why
+    this case was invisible there too until that test existed.
+    """
+
+    def __init__(self) -> None:
+        self.manager: GameManager | None = None
+
+    async def load(self, game_id: GameId) -> GameState:
+        assert self.manager is not None
+        self.manager._shutting_down = True
+        return replace(lobby_state(), game_id=game_id)
+
+
+async def test_a_shutdown_mid_sweep_is_not_logged_as_per_game_failures(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`ServerRestarting` is a fence condition, not a per-game failure: it
+    says nothing about `g2` or `g3` in particular, only that the process
+    is exiting — and once `_shutting_down` flips, every remaining
+    `game_id` in the batch raises the identical exception. Folding it into
+    the generic per-game handler would turn one ordinary shutdown into N
+    misleading ERROR-level "could not load lobby" tracebacks, one per
+    lobby the sweep never got to look at."""
+    clock = FakeClock(T0)
+    loader = _FlipsShuttingDownMidLoad()
+    games = StubGames(empty_lobbies=(GameId("g1"), GameId("g2"), GameId("g3")))
+    manager = a_manager(loader, clock=clock, games=games)
+    loader.manager = manager
+    reaper = a_reaper(manager, games, clock)
+
+    with caplog.at_level(logging.ERROR):
+        await reaper.tick()
+
+    assert "could not load lobby" not in caplog.text
+    assert isinstance(manager.entry_for(GameId("g1")), Live)
+    assert manager.entry_for(GameId("g2")) is None
+    assert manager.entry_for(GameId("g3")) is None

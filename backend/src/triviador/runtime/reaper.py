@@ -24,7 +24,7 @@ from uuid import uuid4
 from triviador.domain.game.actions import AbortGame
 from triviador.domain.game.state import TERMINAL_PHASES, Phase
 from triviador.domain.ids import GameId
-from triviador.runtime.errors import RuntimeClosed, ServerBusy
+from triviador.runtime.errors import RuntimeClosed, ServerBusy, ServerRestarting
 from triviador.runtime.manager import GameManager
 from triviador.runtime.origins import SystemOrigin
 from triviador.runtime.runtime import GameRuntime, QueuedCommand
@@ -105,15 +105,33 @@ class Reaper:
         for game_id in dict.fromkeys((*empty, *stale)):
             try:
                 self._submit_abort(await self._manager.get(game_id), game_id)
+            except ServerRestarting:
+                # The fence, not a per-game failure: `_load` raises this
+                # unconditionally once `_shutting_down` flips, so it says
+                # nothing about `game_id` in particular — every remaining
+                # id in this batch would raise the identical exception.
+                # Falling through to the generic handler below would log
+                # each of them as its own ERROR-level "could not load
+                # lobby", turning one ordinary shutdown into N misleading
+                # entries. `GameManager.recover_active_games` special-cases
+                # this same exception for the identical reason. There is
+                # no caller here that needs to observe it — Task 16's
+                # shutdown owns tearing this reaper down — so the rest of
+                # this sweep is simply abandoned rather than re-raised.
+                return
             except (RuntimeClosed, ServerBusy) as exc:
                 # The runtime exists but would not take the command right
                 # now. The next tick tries again.
                 logger.warning("reaper: could not abort lobby %s: %s", game_id, exc)
             except Exception:
-                # A lobby that will not load is the manager's problem —
-                # it has already been recorded `Failed` or `Recovering`.
-                # The other abandoned lobbies still need aborting, so one
-                # bad game must not truncate the sweep over the rest.
+                # Genuinely per-game: `GameRecovering` (a concurrent
+                # recovery already in progress), `GameUnrecoverable` (an
+                # already-`Failed` entry), or anything else `_load` can
+                # raise. Deliberately not folded in with `ServerRestarting`
+                # above — those two say something true and specific about
+                # *this* game, so they stay logged per game. The other
+                # abandoned lobbies still need aborting, so one bad game
+                # must not truncate the sweep over the rest.
                 logger.exception("reaper: could not load lobby %s", game_id)
 
     def _submit_abort(self, runtime: GameRuntime, game_id: GameId) -> None:
