@@ -263,7 +263,12 @@ Rename, retype, and remove are permitted **with** an upcaster and a version bump
 
 **The guard is a golden corpus:** committed raw event rows for several complete
 trajectories, asserted both to decode and to fold to an expected final state. That
-catches a semantic reducer change, not merely JSON shape drift.
+catches a semantic change to how an event is *applied* (`evolve`/`_apply`). It does
+not catch a bug in what `decide()` computes, because `_apply` only interprets
+recorded event data — with one exception: `_apply` delegates to `_next_picker`, a
+helper it shares with the decide side, so changes there are visible to the corpus.
+The domain's `decide()`-calling unit tests remain the primary guard for game logic;
+the corpus is a second, narrower layer on top of them, not a superset.
 
 ### 4.4 Append
 
