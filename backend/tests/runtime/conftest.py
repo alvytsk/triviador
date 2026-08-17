@@ -8,6 +8,7 @@ import asyncio
 import random
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -134,6 +135,28 @@ async def settle(runtime: GameRuntime) -> None:
     await drain_runtime(runtime)
 
 
+class ScriptedLoader:
+    """`outcomes` is consumed one per load: a `GameState`, or an exception
+    to raise.
+
+    Shared by Tasks 12, 13 and 15 — Task 12's quarantine/recovery tests
+    and Task 13's startup recovery both need a loader that returns a
+    different, pre-scripted outcome on each call, which `CountingLoader`
+    (always the same lobby, or always the same exception) cannot do.
+    """
+
+    def __init__(self, outcomes: list[GameState | Exception]) -> None:
+        self._outcomes = outcomes
+        self.calls = 0
+
+    async def load(self, game_id: GameId) -> GameState:
+        self.calls += 1
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
 class CountingLoader:
     """Counts calls and awaits once, standing in for `runtime.loader.GameLoader`.
 
@@ -144,6 +167,14 @@ class CountingLoader:
     calls finish in one uninterrupted step each, serializing them by
     accident and passing the test even with the lock deleted. A real
     loader awaits the database, so this is the honest shape.
+
+    Returns `lobby_state()` stamped with the requested `game_id`, not the
+    hardcoded `GameId("g1")` `lobby_state()` defaults to: every prior use
+    only ever loaded one game per test, so the mismatch never showed.
+    Task 13's `recover_active_games` is the first caller to load two
+    games in the same test — without the `replace`, both runtimes would
+    carry `state.game_id == "g1"` and `live_runtimes()` would report one
+    game twice instead of two.
 
     Shared by Tasks 11, 12, 13 and 15.
     """
@@ -157,7 +188,7 @@ class CountingLoader:
         if self._raises is not None:
             raise self._raises
         await asyncio.sleep(0)  # a real load awaits the database
-        return lobby_state()
+        return replace(lobby_state(), game_id=game_id)
 
 
 class _NoUnitOfWork:
@@ -200,6 +231,29 @@ class _NoGameQueries:
 
     async def find_unfinished(self) -> tuple[GameId, ...]:
         raise AssertionError("not reached in registry tests")
+
+
+class StubGames:
+    """`GameQueriesPort`, answered from a fixed script rather than a
+    database.
+
+    Task 13 only needs `find_unfinished`; Task 15's reaper extends this
+    same class with `empty_lobbies`/`stale_lobbies` scripting and cutoff
+    recording, so the other two methods are here now, returning `()`,
+    rather than each task growing its own stub.
+    """
+
+    def __init__(self, unfinished: tuple[GameId, ...] = ()) -> None:
+        self.unfinished = unfinished
+
+    async def find_unfinished(self) -> tuple[GameId, ...]:
+        return self.unfinished
+
+    async def find_empty_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
+        return ()
+
+    async def find_stale_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
+        return ()
 
 
 _created_managers: list[GameManager] = []

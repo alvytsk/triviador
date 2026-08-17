@@ -7,10 +7,9 @@ from datetime import timedelta
 import pytest
 
 from tests.conftest import lobby_state
-from tests.runtime.conftest import T0, StubExecutor, a_manager
+from tests.runtime.conftest import T0, ScriptedLoader, StubExecutor, a_manager
 from tests.runtime.fakes import FakeClock, FakeSubscribers, RecordingOrigin
 from triviador.domain.game.actions import JoinGame
-from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId, PlayerId
 from triviador.runtime.errors import (
     CommitFault,
@@ -23,22 +22,6 @@ from triviador.runtime.runtime import QueuedCommand
 from triviador.services.ports import RuntimeCode
 
 GAME = GameId("g1")
-
-
-class ScriptedLoader:
-    """`outcomes` is consumed one per load: a `GameState`, or an exception
-    to raise."""
-
-    def __init__(self, outcomes: list[GameState | Exception]) -> None:
-        self._outcomes = outcomes
-        self.calls = 0
-
-    async def load(self, game_id: GameId) -> GameState:
-        self.calls += 1
-        outcome = self._outcomes.pop(0)
-        if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
 
 
 class MaxJitter(random.Random):

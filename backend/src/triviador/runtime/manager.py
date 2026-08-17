@@ -127,6 +127,34 @@ class GameManager:
         """What `/api/health/ready` reports (Plan 5 consumes this)."""
         return tuple((gid, e.reason) for gid, e in self._entries.items() if isinstance(e, Failed))
 
+    async def recover_active_games(self) -> tuple[GameId, ...]:
+        """Load every game the database says is still being played.
+
+        §11.6 forbids evicting active games — nobody would own their
+        `DeadlineId` — and a process restart is exactly an eviction.
+        Without this, every deploy pauses every live game until a player
+        happens to reconnect, and nothing on the server side shows it.
+
+        `find_unfinished` returns `status IN ('expansion', 'battle')`.
+        `FinalTiebreak` is inside `battle`; there is no `final` status.
+        Lobbies are deliberately excluded: they hold no deadline, so
+        loading them at boot would be work with no owner and no timer,
+        and the reaper reaches the abandoned ones through the database
+        anyway.
+
+        One unloadable game must not stop the rest, so failures are
+        collected and returned rather than raised. `_load` has already
+        recorded `Failed` for the permanent ones.
+        """
+        unloadable: list[GameId] = []
+        for game_id in await self._games.find_unfinished():
+            try:
+                await self.get(game_id)
+            except Exception as exc:
+                logger.error("game %s: could not be recovered at startup — %s", game_id, exc)
+                unloadable.append(game_id)
+        return tuple(unloadable)
+
     async def get(self, game_id: GameId) -> GameRuntime:
         entry = self._entries.get(game_id)
         runtime = self._usable(entry)

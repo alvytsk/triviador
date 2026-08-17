@@ -2,10 +2,14 @@
 mix."""
 
 import asyncio
+from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 
-from tests.runtime.conftest import T0, CountingLoader, a_manager
+from tests.conftest import lobby_state
+from tests.runtime.conftest import T0, CountingLoader, ScriptedLoader, StubGames, a_manager
+from tests.runtime.fakes import FakeClock
 from triviador.domain.ids import GameId
 from triviador.runtime.errors import GameRecovering, GameUnrecoverable, PermanentReplayFailure
 from triviador.runtime.manager import Failed, Recovering
@@ -104,3 +108,50 @@ async def test_get_reloads_a_closed_runtime() -> None:
 
     assert second is not first
     assert loader.calls == 2
+
+
+async def test_recover_active_games_loads_every_unfinished_game() -> None:
+    games = StubGames((GameId("g1"), GameId("g2")))
+    manager = a_manager(CountingLoader(), games=games)
+
+    unloadable = await manager.recover_active_games()
+
+    assert unloadable == ()
+    assert {r.game_id for r in manager.live_runtimes()} == {GameId("g1"), GameId("g2")}
+
+
+async def test_recover_active_games_reports_what_it_could_not_load() -> None:
+    """One bad game must not stop the other nineteen from coming back. The
+    ids it skipped are returned so the caller can log them at error rather
+    than discover the gap when a player complains."""
+    games = StubGames((GameId("g1"), GameId("g2")))
+    manager = a_manager(
+        ScriptedLoader(
+            [PermanentReplayFailure("bad digest"), replace(lobby_state(), game_id=GameId("g2"))]
+        ),
+        games=games,
+    )
+
+    unloadable = await manager.recover_active_games()
+
+    assert unloadable == (GameId("g1"),)
+    assert [r.game_id for r in manager.live_runtimes()] == [GameId("g2")]
+
+
+async def test_recovered_games_rearm_their_deadlines() -> None:
+    """§5.6: the rebuilt state carries an absolute `deadline_at`; if it is
+    still in the future the deadline task is scheduled for that instant.
+    A recovery that came back without a timer is a game that never
+    advances again."""
+    from tests.runtime.conftest import warmup_state
+
+    state = warmup_state()
+    deadline = state.current_deadline()
+    assert deadline is not None
+    clock = FakeClock(deadline.deadline_at - timedelta(seconds=5))
+    manager = a_manager(ScriptedLoader([state]), games=StubGames((GameId("g1"),)), clock=clock)
+
+    await manager.recover_active_games()
+    await clock.settle()
+
+    assert clock.pending() == (deadline.deadline_at,)
