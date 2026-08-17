@@ -196,8 +196,13 @@ async def test_the_fence_is_rolled_back_when_the_enqueue_fails() -> None:
     await clock.settle()
     assert clock.pending() == (deadline.deadline_at,)
 
-    before = runtime.expiry_enqueued_deadline_id
-    assert before is None  # nothing pending yet — the fence starts clean
+    # A non-`None` prior fence, set as if an earlier deadline's expiry is
+    # still genuinely pending. `None` alone cannot distinguish "restored
+    # to the previous value" from a naive "reset to `None`" — both read
+    # back as `None`. Only a distinct sentinel value proves the rollback
+    # *restores*, rather than merely *clears*.
+    before = DeadlineId(4242)
+    runtime.expiry_enqueued_deadline_id = before
 
     # Simulate the manager closing this runtime out from under the
     # deadline task, exactly the race `submit`'s `RuntimeClosed` guards.
