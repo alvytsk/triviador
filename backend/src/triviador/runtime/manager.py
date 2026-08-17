@@ -245,6 +245,54 @@ class GameManager:
         self._entries[game_id] = Live(runtime)
         return runtime
 
+    async def unload(self, game_id: GameId) -> bool:
+        """Drop a resident runtime that nobody needs. Returns False if it
+        was busy and should be retried on a later tick.
+
+        Unloading is not a fault: no origin is resolved with a failure
+        code and no subscriber is closed. So a runtime with queued or
+        in-flight work is left alone rather than being torn down — the
+        alternative is inventing a failure code for "we decided to
+        garbage-collect your command", which no client should ever see.
+
+        Three details, each load-bearing (Task 15):
+
+        1. **`closed` is set before the idle check, not after.** `submit`
+           is synchronous and takes no lock, so between "it looks idle"
+           and "it is detached" a WebSocket read loop can enqueue a
+           command. Closing first makes that submit raise `RuntimeClosed`
+           — which the caller handles by re-`get()`ing — instead of
+           dropping a command into a queue about to be discarded. If the
+           runtime turns out not to be idle, `closed` is rolled back:
+           otherwise a game nobody unloaded is left permanently refusing
+           commands, with only a re-`get()` nobody knows to make able to
+           revive it.
+        2. **`is_idle()`, not `pending_commands() == 0`.** The consumer
+           dequeues before executing, so an empty queue is not an idle
+           runtime — for the whole duration of a transaction, `qsize()`
+           reads zero while a command is very much in progress.
+        3. **`stop()`, not `aclose()`.** Even having checked, the only
+           safe way to end a consumer is to let it finish: `aclose`
+           cancels, and a cancel that lands inside COMMIT manufactures
+           the ambiguous-commit case for a runtime we were merely trying
+           to garbage-collect.
+        """
+        lock = self._locks.setdefault(game_id, asyncio.Lock())
+        async with lock:
+            entry = self._entries.get(game_id)
+            if not isinstance(entry, Live):
+                return False
+
+            runtime = entry.runtime
+            runtime.closed = True
+            if not runtime.is_idle():
+                runtime.closed = False
+                return False
+
+            del self._entries[game_id]
+            await runtime.stop()
+            return True
+
     def _on_fault(self, runtime: GameRuntime, exc: BaseException) -> None:
         """Called from inside the faulting consumer task, so it may only
         *schedule*. §5.6: quarantine is "scheduled onto the manager and

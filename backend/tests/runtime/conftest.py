@@ -8,7 +8,7 @@ import asyncio
 import random
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 import pytest
@@ -20,9 +20,11 @@ from triviador.domain.game.events import PlayerJoined
 from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId, PlayerId, RegionId
+from triviador.runtime.commit import Executor
 from triviador.runtime.manager import GameManager, Live, Loader
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.origins import Accepted, Ignored, Rejected
+from triviador.runtime.reaper import Reaper
 from triviador.runtime.runtime import GameRuntime, QueuedCommand
 from triviador.services.ports import Transaction
 
@@ -233,27 +235,34 @@ class _NoGameQueries:
         raise AssertionError("not reached in registry tests")
 
 
+@dataclass
 class StubGames:
     """`GameQueriesPort`, answered from a fixed script rather than a
     database.
 
-    Task 13 only needs `find_unfinished`; Task 15's reaper extends this
-    same class with `empty_lobbies`/`stale_lobbies` scripting and cutoff
-    recording, so the other two methods are here now, returning `()`,
-    rather than each task growing its own stub.
+    Task 13 only needed `find_unfinished`; Task 15's reaper extends this
+    same class with `empty_lobbies`/`stale_lobbies` scripting, recording
+    the cutoff each of the latter two was called with so the age test can
+    assert on the cutoffs actually passed rather than on a mock's call
+    log.
     """
 
-    def __init__(self, unfinished: tuple[GameId, ...] = ()) -> None:
-        self.unfinished = unfinished
+    unfinished: tuple[GameId, ...] = ()
+    empty_lobbies: tuple[GameId, ...] = ()
+    stale_lobbies: tuple[GameId, ...] = ()
+    empty_cutoffs: list[datetime] = field(default_factory=list)
+    stale_cutoffs: list[datetime] = field(default_factory=list)
 
     async def find_unfinished(self) -> tuple[GameId, ...]:
         return self.unfinished
 
     async def find_empty_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
-        return ()
+        self.empty_cutoffs.append(created_before)
+        return self.empty_lobbies
 
     async def find_stale_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
-        return ()
+        self.stale_cutoffs.append(created_before)
+        return self.stale_lobbies
 
 
 def stalled_runtime(state: GameState, clock: FakeClock, *, queue_maxsize: int = 256) -> GameRuntime:
@@ -307,6 +316,48 @@ def drain_queue(runtime: GameRuntime) -> list[QueuedCommand]:
     drained = list(runtime._queue._queue)  # type: ignore[attr-defined]
     runtime._queue._queue.clear()  # type: ignore[attr-defined]
     return drained
+
+
+def a_reaper(
+    manager: GameManager,
+    games: StubGames,
+    clock: FakeClock,
+    *,
+    subscribers: FakeSubscribers | None = None,
+) -> Reaper:
+    return Reaper(
+        manager=manager,
+        games=games,
+        subscribers=subscribers if subscribers is not None else FakeSubscribers(),
+        clock=clock,
+        empty_lobby_grace_minutes=5,
+        lobby_max_age_hours=6,
+    )
+
+
+def manager_with_resident(
+    state: GameState,
+    clock: FakeClock,
+    *,
+    start: bool = True,
+    executor: Executor | None = None,
+) -> tuple[GameManager, GameRuntime]:
+    """A manager holding one runtime built directly from `state`, so a
+    test can choose the phase without playing a game to reach it."""
+    manager = a_manager(CountingLoader())
+    runtime = GameRuntime(
+        state=state,
+        executor=executor if executor is not None else StubExecutor([]),
+        clock=clock,
+        broadcaster=FakeBroadcaster(),
+        on_fault=lambda rt, exc: None,
+        generation=1,
+        rng=random.Random(0),
+    )
+    if start:
+        runtime.start()
+    manager._entries[runtime.game_id] = Live(runtime)
+    return manager, runtime
 
 
 _created_managers: list[GameManager] = []
