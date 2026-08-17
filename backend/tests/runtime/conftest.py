@@ -6,6 +6,7 @@
 
 import asyncio
 import random
+from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 
@@ -201,6 +202,9 @@ class _NoGameQueries:
         raise AssertionError("not reached in registry tests")
 
 
+_created_managers: list[GameManager] = []
+
+
 def a_manager(loader: Loader, **overrides: object) -> GameManager:
     """Builds a `GameManager` wired for the registry suite: real fakes for
     the collaborators `get` actually touches (clock, broadcaster,
@@ -208,8 +212,16 @@ def a_manager(loader: Loader, **overrides: object) -> GameManager:
     materialiser, games). Tasks 12, 13, 14 and 15 all call this, several
     of them through `clock=`, `games=`, `backoff_initial_s=` and
     `backoff_max_s=` overrides.
+
+    Registered into `_created_managers` so `_close_started_runtimes` below
+    can find and close whatever `GameRuntime`s this manager started, the
+    same obligation `test_deadlines.py` and `test_runtime_loop.py` meet
+    with an explicit `await runtime.aclose()` in every test — `get()`
+    calls `runtime.start()`, which spawns a consumer task, and a test that
+    never submits anything leaves that task parked on `await
+    self._queue.get()` forever if nobody closes it.
     """
-    return GameManager(
+    manager = GameManager(
         loader=loader,
         uow=_NoUnitOfWork(),
         materialiser=_NoMaterialiser(clock=FakeClock(T0), rng=random.Random(0)),
@@ -220,3 +232,28 @@ def a_manager(loader: Loader, **overrides: object) -> GameManager:
         rng=random.Random(0),
         **overrides,  # type: ignore[arg-type]
     )
+    _created_managers.append(manager)
+    return manager
+
+
+@pytest.fixture(autouse=True)
+async def _close_started_runtimes() -> AsyncIterator[None]:
+    """Closes every runtime a `a_manager`-built manager still holds live.
+
+    Central rather than per-test so Tasks 12-15 — which all reuse
+    `a_manager` — inherit the cleanup instead of each having to remember
+    `await runtime.aclose()`. `test_get_reloads_a_closed_runtime` closes
+    its *first* runtime itself as part of the scenario it is testing;
+    that runtime is no longer in `live_runtimes()` by teardown time
+    (`_entries` was overwritten on reload), so this only ever reaches the
+    still-open second one — nothing here is a double close.
+
+    A no-op for every other module in this directory: `_created_managers`
+    stays empty unless a test called `a_manager`.
+    """
+    yield
+    managers, _created_managers[:] = list(_created_managers), []
+    for manager in managers:
+        for runtime in manager.live_runtimes():
+            if not runtime.closed:
+                await runtime.aclose()
