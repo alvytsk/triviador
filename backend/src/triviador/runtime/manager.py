@@ -145,11 +145,27 @@ class GameManager:
         One unloadable game must not stop the rest, so failures are
         collected and returned rather than raised. `_load` has already
         recorded `Failed` for the permanent ones.
+
+        A shutdown racing this sweep — a SIGTERM landing mid-boot — is
+        not one of those failures. `_load` raises `ServerRestarting`
+        from its own fence, and that propagates here rather than being
+        folded into the returned tuple: a caller that logs the returned
+        ids at error would otherwise report every game the sweep never
+        reached as "unrecoverable", when the true state is "not yet
+        looked at, because the process is exiting". The caller — Plan
+        5's startup hook — is expected to treat this the same way
+        `_load` itself does: abandon the attempt, not retry it.
         """
         unloadable: list[GameId] = []
         for game_id in await self._games.find_unfinished():
             try:
                 await self.get(game_id)
+            except ServerRestarting:
+                # The fence, not a per-game failure: the server is going
+                # away, not this one game. Re-raised rather than caught by
+                # `except Exception` below, so it aborts the sweep instead
+                # of being reported as N unloadable games.
+                raise
             except Exception as exc:
                 logger.error("game %s: could not be recovered at startup — %s", game_id, exc)
                 unloadable.append(game_id)

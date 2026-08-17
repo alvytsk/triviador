@@ -10,9 +10,15 @@ import pytest
 from tests.conftest import lobby_state
 from tests.runtime.conftest import T0, CountingLoader, ScriptedLoader, StubGames, a_manager
 from tests.runtime.fakes import FakeClock
+from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId
-from triviador.runtime.errors import GameRecovering, GameUnrecoverable, PermanentReplayFailure
-from triviador.runtime.manager import Failed, Recovering
+from triviador.runtime.errors import (
+    GameRecovering,
+    GameUnrecoverable,
+    PermanentReplayFailure,
+    ServerRestarting,
+)
+from triviador.runtime.manager import Failed, GameManager, Recovering
 
 GAME = GameId("g1")
 
@@ -155,3 +161,38 @@ async def test_recovered_games_rearm_their_deadlines() -> None:
     await clock.settle()
 
     assert clock.pending() == (deadline.deadline_at,)
+
+
+class _FlipsShuttingDownMidLoad:
+    """Loads whatever game it's asked for, and — as a side effect of that
+    load — flips the manager's `_shutting_down` flag. Stands in for a
+    SIGTERM landing between two games in a startup recovery sweep: by
+    the time the sweep reaches the next game, `_load`'s own fence is
+    already up.
+    """
+
+    def __init__(self) -> None:
+        self.manager: GameManager | None = None
+
+    async def load(self, game_id: GameId) -> GameState:
+        assert self.manager is not None
+        self.manager._shutting_down = True
+        return replace(lobby_state(), game_id=game_id)
+
+
+async def test_recover_active_games_aborts_if_shutdown_races_the_sweep() -> None:
+    """§11.6: a shutdown mid-sweep must not be reported as unrecoverable
+    games. `_load`'s shutdown fence raises `ServerRestarting`, and that
+    must propagate out of `recover_active_games` rather than being folded
+    into the returned tuple — a caller that logs the returned ids at
+    error would otherwise report every game the sweep never reached as
+    unrecoverable, when they were simply not looked at."""
+    loader = _FlipsShuttingDownMidLoad()
+    games = StubGames((GameId("g1"), GameId("g2")))
+    manager = a_manager(loader, games=games)
+    loader.manager = manager
+
+    with pytest.raises(ServerRestarting):
+        await manager.recover_active_games()
+
+    assert [r.game_id for r in manager.live_runtimes()] == [GameId("g1")]
