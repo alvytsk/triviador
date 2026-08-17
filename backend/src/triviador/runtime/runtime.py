@@ -100,6 +100,17 @@ class GameRuntime:
         for production API."""
         self._executor = executor
 
+    def replace_state_for_test(self, state: GameState) -> None:
+        """Test-only seam: overwrites `self._state` directly.
+
+        The watchdog's own tests advance a game between ticks without
+        running the consumer at all — there is no queued command to fold
+        events from, only the reducer called directly. Named for what it
+        is so it is never mistaken for production API; nothing outside
+        `_apply` touches `self._state` any other way.
+        """
+        self._state = state
+
     def pending_commands(self) -> int:
         return self._queue.qsize()
 

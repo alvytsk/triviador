@@ -20,10 +20,10 @@ from triviador.domain.game.events import PlayerJoined
 from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId, PlayerId, RegionId
-from triviador.runtime.manager import GameManager, Loader
+from triviador.runtime.manager import GameManager, Live, Loader
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.origins import Accepted, Ignored, Rejected
-from triviador.runtime.runtime import GameRuntime
+from triviador.runtime.runtime import GameRuntime, QueuedCommand
 from triviador.services.ports import Transaction
 
 T0 = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
@@ -254,6 +254,59 @@ class StubGames:
 
     async def find_stale_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
         return ()
+
+
+def stalled_runtime(state: GameState, clock: FakeClock, *, queue_maxsize: int = 256) -> GameRuntime:
+    """A runtime that is **not** started: commands accumulate in the queue
+    and nothing consumes them. That is exactly the condition the watchdog
+    exists to survive — a consumer that is wedged, or a deadline task that
+    died without firing.
+
+    Shared by Task 14's watchdog tests and Task 15's reaper tests.
+    """
+    return GameRuntime(
+        state=state,
+        executor=StubExecutor([]),
+        clock=clock,
+        broadcaster=FakeBroadcaster(),
+        on_fault=lambda rt, exc: None,
+        generation=1,
+        rng=random.Random(0),
+        queue_maxsize=queue_maxsize,
+    )
+
+
+def manager_holding(*runtimes: GameRuntime) -> GameManager:
+    """A manager whose registry is populated directly. The watchdog and
+    reaper only ever read `live_runtimes()`, so building one through
+    `get()` would mean wiring a loader for no gain.
+
+    Every runtime passed in must carry a distinct `game_id` — `_entries`
+    is a dict keyed by `game_id`, so two runtimes sharing one (as every
+    runtime built from `lobby_state()` or `warmup_state()` does by
+    default) would collapse into a single registry entry and silently
+    drop one of them.
+    """
+    manager = a_manager(CountingLoader())
+    for runtime in runtimes:
+        manager._entries[runtime.game_id] = Live(runtime)
+    return manager
+
+
+def queued_commands(runtime: GameRuntime) -> list[QueuedCommand]:
+    """Peek without consuming — `asyncio.Queue` has no public peek, and
+    reaching into `_queue` from five test modules is worse than reaching
+    into it from one. `asyncio.Queue`'s underlying deque is genuinely
+    private, not merely undocumented, so `mypy --strict` does not know it
+    exists; the `type: ignore` is confined to these two helpers by
+    controller ruling rather than sprinkled across every caller."""
+    return list(runtime._queue._queue)  # type: ignore[attr-defined]
+
+
+def drain_queue(runtime: GameRuntime) -> list[QueuedCommand]:
+    drained = list(runtime._queue._queue)  # type: ignore[attr-defined]
+    runtime._queue._queue.clear()  # type: ignore[attr-defined]
+    return drained
 
 
 _created_managers: list[GameManager] = []
