@@ -12,8 +12,10 @@ import logging
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
+from uuid import uuid4
 
-from triviador.domain.game.actions import AbortGame, Command
+from triviador.domain.game.actions import AbortGame, Command, ExpireDeadline
 from triviador.domain.game.events import GameEvent
 from triviador.domain.game.reducer import fold
 from triviador.domain.game.state import GameState
@@ -217,10 +219,75 @@ class GameRuntime:
             logger.exception("game %s: broadcast failed after commit", self.game_id)
 
     def _reschedule_deadline(self) -> None:
-        """Task 10 implements deadline scheduling. Left as a deliberate
-        no-op here so the consumer loop is complete and independently
-        testable — every call site this task needs already exists."""
-        return None
+        """One-shot task, cancelled and respawned whenever
+        `current_deadline().id` changes (§5.4).
+
+        Keyed on the id, not on the instant: two different windows can
+        share a `deadline_at` down to the microsecond, and re-arming on
+        every command would reset the sleep each time a player answered —
+        quietly extending the window they are racing.
+        """
+        deadline = self._state.current_deadline()
+        target = deadline.id if deadline is not None else None
+        if target == self._scheduled_deadline_id:
+            return
+
+        if self._deadline_task is not None:
+            self._deadline_task.cancel()
+            self._deadline_task = None
+        self._scheduled_deadline_id = target
+
+        if deadline is None:
+            return
+
+        self._deadline_task = asyncio.create_task(
+            self._await_deadline(deadline.id, deadline.deadline_at),
+            name=f"deadline:{self.game_id}:{deadline.id}",
+        )
+
+    async def _await_deadline(self, deadline_id: DeadlineId, when: datetime) -> None:
+        """Sleeps until an absolute instant and submits one expiry.
+
+        `sleep_until` on a past instant returns immediately, which is
+        exactly §5.6's recovery clause — a window that expired while the
+        process was down is expired *now*, not restarted. One code path
+        covers both of that clause's cases.
+
+        A stale fire is harmless under guard 2 (`current.id !=
+        command.deadline_id` → zero events), so correctness never depends
+        on cancellation winning the race against a wake-up.
+        """
+        try:
+            await self._clock.sleep_until(when)
+        except asyncio.CancelledError:
+            return
+
+        previous_fence = self.expiry_enqueued_deadline_id
+        self.expiry_enqueued_deadline_id = deadline_id
+        try:
+            self.submit(
+                QueuedCommand(
+                    command=ExpireDeadline(deadline_id),
+                    operation_id=f"deadline-{self.game_id}-{deadline_id}-{uuid4()}",
+                    origin=SystemOrigin("deadline"),
+                )
+            )
+        except (RuntimeClosed, ServerBusy):
+            # The fence must be *rolled back* when the enqueue fails.
+            # Setting it first closes the window in which a watchdog tick
+            # sees a queued expiry with no fence and enqueues a second —
+            # but leaving it set after a failure is far worse: nothing is
+            # in the queue, and every later tick now skips this deadline
+            # because the fence says an expiry is already pending. The
+            # game would stall on that window forever, with the watchdog
+            # that exists to rescue it looking straight past it.
+            #
+            # Closed: the manager is tearing this runtime down and the new
+            # generation will re-arm from the rebuilt state. Busy: 256
+            # commands are queued, and the watchdog must stay free to
+            # re-fire once the queue drains.
+            self.expiry_enqueued_deadline_id = previous_fence
+            logger.warning("game %s: could not enqueue expiry for %s", self.game_id, deadline_id)
 
     async def stop(self) -> None:
         """End the consumer loop *without* cancelling it.

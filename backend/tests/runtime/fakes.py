@@ -43,7 +43,16 @@ class FakeClock:
             return
         event = asyncio.Event()
         self._waiters.append((when, event))
-        await event.wait()
+        try:
+            await event.wait()
+        finally:
+            # Covers cancellation, not just a normal wake: `advance_to`
+            # already drops a due waiter before setting its event, so this
+            # is a no-op there. Without it, a cancelled deadline task (the
+            # ordinary case when a window retargets, §5.4) would leave a
+            # phantom entry in `pending()` forever — the fake would keep
+            # reporting a wait nothing is actually doing.
+            self._waiters = [(w, e) for w, e in self._waiters if e is not event]
 
     def pending(self) -> tuple[datetime, ...]:
         return tuple(sorted(when for when, _ in self._waiters))

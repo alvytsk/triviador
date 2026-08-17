@@ -22,13 +22,14 @@ from triviador.runtime.runtime import GameRuntime
 T0 = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 
 
-def _warmup_state() -> GameState:
+def warmup_state() -> GameState:
     """A started game, parked in its MediaWarmup window.
 
-    Shared by `test_materialiser.py` and `test_commit.py` — a plain
-    function, not a fixture, because both modules also build further
-    states on top of it (`test_materialiser._picking_state` drives it
-    forward), which a fixture's single per-test instance would not serve.
+    Shared by `test_materialiser.py`, `test_commit.py` and
+    `test_deadlines.py` — a plain function, not a fixture, because
+    several modules also build further states on top of it
+    (`test_materialiser._picking_state` drives it forward), which a
+    fixture's single per-test instance would not serve.
     """
     state = lobby_state()
     ctx = DecisionContext(
@@ -113,3 +114,15 @@ async def drain_runtime(runtime: GameRuntime, *, max_turns: int = 200) -> None:
         if runtime.is_idle():
             return
     raise AssertionError(f"game {runtime.game_id} never went idle")
+
+
+async def settle(runtime: GameRuntime) -> None:
+    """`drain_runtime` under the name `test_deadlines.py` uses.
+
+    A deadline task registering its wait with the clock is exactly the
+    kind of extra scheduling hop `drain_runtime`'s loop-until-idle exists
+    for: a fixed number of `clock.settle()` yields would be a guess at
+    how many hops a given command chain needs, which is the guess the
+    no-wall-clock rule exists to avoid.
+    """
+    await drain_runtime(runtime)

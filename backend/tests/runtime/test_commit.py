@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from tests.conftest import full_pool, lobby_state
-from tests.runtime.conftest import T0, _warmup_state
+from tests.runtime.conftest import T0, warmup_state
 from tests.runtime.fakes import FakeClock
 from triviador.domain.game.actions import JoinGame, StartGame
 from triviador.domain.game.events import GameEvent, PlayerJoined
@@ -130,7 +130,7 @@ async def test_zero_events_roll_back_and_return_ignored() -> None:
     """§5.2: a no-op resolves before ever reaching `append` — no evolve,
     no reschedule, no publish, and nothing written."""
     uow = FakeUnitOfWork()
-    state = _warmup_state()
+    state = warmup_state()
     from triviador.domain.game.actions import ExpireDeadline
     from triviador.domain.ids import DeadlineId
 

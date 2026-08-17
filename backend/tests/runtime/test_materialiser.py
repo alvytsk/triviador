@@ -9,7 +9,7 @@ from datetime import timedelta
 import pytest
 
 from tests.conftest import full_pool, lobby_state
-from tests.runtime.conftest import T0, _warmup_state
+from tests.runtime.conftest import T0, warmup_state
 from tests.runtime.fakes import FakeClock
 from triviador.db.errors import InsufficientQuestions, MalformedQuestion
 from triviador.domain.game.actions import (
@@ -202,7 +202,7 @@ async def test_expire_deadline_outside_picking_leaves_region_order_none() -> Non
     """Materialise what this command needs, nothing else: a shuffle no
     reducer branch reads is dead weight in every answer window."""
     materialiser = Materialiser(clock=FakeClock(T0), rng=random.Random(0))
-    state = _warmup_state()
+    state = warmup_state()
 
     ctx = await materialiser.build(
         state, ExpireDeadline(DeadlineId(1)), StubTransaction(StubBank())
@@ -216,7 +216,7 @@ def _picking_state() -> GameState:
     lands on ExpansionPicking with grants to hand out."""
     from tests.conftest import expire_warmup
 
-    state = expire_warmup(_warmup_state())
+    state = expire_warmup(warmup_state())
     assert state.turn is not None
     state = fold(
         state,
