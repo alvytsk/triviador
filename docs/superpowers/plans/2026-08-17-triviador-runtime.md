@@ -6441,7 +6441,11 @@ git commit -m "test(runtime): the runtime against real PostgreSQL, end to end"
 - [ ] Recovery honours an absolute deadline in both directions: future → scheduled at the original instant, past → `ExpireDeadline` enqueued immediately.
 - [ ] A `map_sha256` mismatch has been watched to produce `Failed`, and `degraded()` names the game.
 - [ ] Every origin in every test resolved exactly once. `RecordingOrigin.outcome` asserts this; no test bypasses it.
-- [ ] No test anywhere in `tests/runtime` calls `asyncio.sleep` with a non-zero argument.
+- [ ] No test anywhere in `tests/runtime` calls `asyncio.sleep` with a non-zero argument **to stand in for game time** — no test guesses how long a deadline, answer window, or backoff takes. Simulated time comes from `FakeClock.advance_to` and nothing else.
+
+  **One carve-out, discovered by Task 17 and ruled acceptable:** a *bounded* real sleep may be interleaved into a polling loop whose exit is gated on a behavioural condition, solely to let an already-issued real I/O call complete. `tests/runtime/integration/conftest.py`'s `drain_runtime` does this at 1 ms per poll. It is necessary because `FakeClock.settle()`'s zero-delay yields reschedule the current task without ever letting the event loop block with a non-zero timeout, so they structurally cannot observe an asyncpg response arrive — a live run had the consumer parked `in_flight` through all 200 turns of a pure `settle()` loop, resolving in ~4 turns once a real sleep was interleaved. Sixteen tasks of fake-based tests could not have surfaced this.
+
+  The carve-out holds only while all of these are true, and becomes a defect the moment any fails: the loop exits on the condition (`runtime.is_idle()`), never on elapsed time; it is bounded (`max_turns`); it **raises** rather than returning silently on timeout; no assertion anywhere depends on elapsed time; and the sleep is never tuned to make a timing-sensitive assertion pass. A completion signal on `GameRuntime` — an awaitable rather than the current boolean `is_idle()`/`consumer_done()` — would remove the need for the sleep entirely and is the better long-term shape; it was out of scope for Task 17, which was tests-only.
 - [ ] `reducer.py` and `db/codec/` are still at 100 % branch coverage.
 - [ ] `ruff check`, `ruff format --check`, and `mypy --strict` are clean.
 
