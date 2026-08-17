@@ -8,8 +8,8 @@ from datetime import timedelta
 
 import pytest
 
-from tests.conftest import NOW, full_pool, lobby_state
-from tests.runtime.conftest import T0
+from tests.conftest import full_pool, lobby_state
+from tests.runtime.conftest import T0, _warmup_state
 from tests.runtime.fakes import FakeClock
 from triviador.db.errors import InsufficientQuestions, MalformedQuestion
 from triviador.domain.game.actions import (
@@ -24,7 +24,7 @@ from triviador.domain.game.events import GameEvent
 from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.rules import required_question_budget
 from triviador.domain.game.state import ExpansionPicking, GameState
-from triviador.domain.ids import DeadlineId, GameId, PlayerId, QuestionId, RegionId
+from triviador.domain.ids import DeadlineId, GameId, PlayerId, QuestionId
 from triviador.domain.questions.types import QuestionBudget, QuestionKind, QuestionPool
 from triviador.runtime.materialiser import Materialiser
 from triviador.services.ports import EventRef, QuestionPoolUnavailable, ReconcileOutcome
@@ -209,18 +209,6 @@ async def test_expire_deadline_outside_picking_leaves_region_order_none() -> Non
     )
 
     assert ctx.shuffled_region_ids is None
-
-
-def _warmup_state() -> GameState:
-    """A started game, parked in its MediaWarmup window."""
-    state = lobby_state()
-    ctx = DecisionContext(
-        now=NOW,
-        shuffled_player_ids=tuple(state.players),
-        base_regions=(RegionId("r0"), RegionId("r2"), RegionId("r6")),
-        drawn_pool=full_pool(),
-    )
-    return fold(state, decide(state, StartGame(PlayerId("p1")), ctx))
 
 
 def _picking_state() -> GameState:
