@@ -40,6 +40,7 @@ from triviador.db.repositories.events import (
     select_event_refs_for_operation,
     select_events_ordered,
 )
+from triviador.db.repositories.questions import QuestionBank
 from triviador.domain.game import events as ev
 from triviador.domain.game.events import GameEvent
 from triviador.domain.ids import GameId
@@ -77,6 +78,19 @@ class TransactionContext:
 
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    @property
+    def questions(self) -> QuestionBank:
+        """A `QuestionBank` bound to *this* transaction's session.
+
+        Selection and append share one unit of work for every command
+        (§5.3), so the `FOR SHARE` locks the bank takes are still held when
+        the resulting `QuestionPoolDrawn` event is inserted. Exposing the
+        bank rather than the raw `session` is what keeps `AsyncSession` out
+        of `services.ports.Transaction` — and therefore out of every
+        signature `runtime/` can see.
+        """
+        return QuestionBank(self.session)
 
     async def append(
         self,
