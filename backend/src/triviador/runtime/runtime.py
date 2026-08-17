@@ -73,6 +73,7 @@ class GameRuntime:
         self._rng = rng
         self._queue: asyncio.Queue[QueuedCommand] = asyncio.Queue(maxsize=queue_maxsize)
         self._consumer: asyncio.Task[None] | None = None
+        self._consumer_finished = False
         self._deadline_task: asyncio.Task[None] | None = None
         self._scheduled_deadline_id: DeadlineId | None = None
         self.expiry_enqueued_deadline_id: DeadlineId | None = None
@@ -92,6 +93,12 @@ class GameRuntime:
         """Read-only, and exposed only so tests can drive the fake. The
         runtime itself always goes through `self._clock`."""
         return self._clock
+
+    def replace_executor_for_test(self, executor: Executor) -> None:
+        """Test-only seam: swaps the executor on a live runtime so its next
+        command faults on cue. Named for what it is so it is never mistaken
+        for production API."""
+        self._executor = executor
 
     def pending_commands(self) -> int:
         return self._queue.qsize()
@@ -115,8 +122,17 @@ class GameRuntime:
     def consumer_done(self) -> bool:
         """True once the consumer task has actually finished — not merely
         asked to stop. Exists so a test can assert the loop stopped
-        without reaching into `_consumer`."""
-        return self._consumer is not None and self._consumer.done()
+        without reaching into `_consumer`.
+
+        Backed by a flag set from inside `_consume` itself, not by
+        `self._consumer.done()`: both `stop()` and `aclose()` null out
+        `self._consumer` once they have awaited it, and quarantine's
+        teardown (`aclose()`) can easily finish before a caller gets
+        around to checking — at which point `self._consumer is not None`
+        would already be false and this would report "not done" for a
+        consumer that plainly is.
+        """
+        return self._consumer_finished
 
     def start(self) -> None:
         self._consumer = asyncio.create_task(
@@ -157,6 +173,16 @@ class GameRuntime:
             drained += 1
 
     async def _consume(self) -> None:
+        try:
+            await self._consume_loop()
+        finally:
+            # Runs on every exit — normal return, quarantine's early
+            # return after a fault, or cancellation — so `consumer_done`
+            # stays accurate even after `stop()`/`aclose()` have already
+            # discarded `self._consumer`.
+            self._consumer_finished = True
+
+    async def _consume_loop(self) -> None:
         while True:
             qc = await self._queue.get()
             if qc.stop:

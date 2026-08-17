@@ -10,7 +10,7 @@ import itertools
 import logging
 import random
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from triviador.domain.game.state import GameState
@@ -29,6 +29,7 @@ from triviador.services.ports import (
     Clock,
     GameQueriesPort,
     GameSubscriberControl,
+    RuntimeCode,
     UnitOfWorkPort,
 )
 
@@ -89,6 +90,8 @@ class GameManager:
         rng: random.Random,
         queue_maxsize: int = 256,
         commit_max_attempts: int = 3,
+        backoff_initial_s: float = 1.0,
+        backoff_max_s: float = 60.0,
     ) -> None:
         self._loader = loader
         self._uow = uow
@@ -100,9 +103,15 @@ class GameManager:
         self._rng = rng
         self._queue_maxsize = queue_maxsize
         self._commit_max_attempts = commit_max_attempts
+        self._backoff_initial_s = backoff_initial_s
+        self._backoff_max_s = backoff_max_s
         self._entries: dict[GameId, Entry] = {}
         self._locks: dict[GameId, asyncio.Lock] = {}
         self._generations = itertools.count(1)
+        # One quarantine task per game, keyed so a second fault report for
+        # the same runtime can be recognised and dropped (see `quarantine`)
+        # rather than racing the first teardown.
+        self._quarantines: dict[GameId, asyncio.Task[None]] = {}
         # Set by Task 16's `shutdown`. Declared here because `_load`
         # already reads it — a flag added later to a method written
         # earlier is how the shutdown race got in.
@@ -193,6 +202,113 @@ class GameManager:
         return runtime
 
     def _on_fault(self, runtime: GameRuntime, exc: BaseException) -> None:
-        """Task 12 replaces this with the scheduled quarantine. Until then
-        it only logs, so Task 11's registry can be tested on its own."""
-        logger.error("game %s: fault reported — %s", runtime.game_id, exc)
+        """Called from inside the faulting consumer task, so it may only
+        *schedule*. §5.6: quarantine is "scheduled onto the manager and
+        never run by the faulting consumer task" — a task cannot cancel
+        and await itself."""
+        self.quarantine(runtime, str(exc))
+
+    def quarantine(self, runtime: GameRuntime, reason: str) -> None:
+        """Schedules teardown of `runtime` and recovery of its game.
+
+        Never awaited by its caller: `_on_fault` calls this from inside
+        the consumer task it is about to ask to cancel, and Plan 5's
+        operator endpoint calls it from an HTTP handler that must not
+        block on a full teardown-and-reload. Both get a task they can
+        walk away from.
+        """
+        existing = self._quarantines.get(runtime.game_id)
+        if existing is not None and not existing.done():
+            # Already tearing this game down. A second report — from the
+            # deadline task, or a caller that raced the first — must not
+            # start a second teardown that would destroy the replacement
+            # generation the first one is about to install.
+            return
+        self._quarantines[runtime.game_id] = asyncio.create_task(
+            self._quarantine(runtime, reason), name=f"quarantine:{runtime.game_id}"
+        )
+
+    async def _quarantine(self, runtime: GameRuntime, reason: str) -> None:
+        """§5.6's teardown, in order, under the per-game lock: detach from
+        the registry, mark closed, drain the queue (every origin gets
+        `GAME_RECOVERING`), cancel the consumer and deadline tasks, close
+        the sockets through the port, then hand off to `_recover` — which
+        re-acquires the lock itself, once per attempt, so a `get` racing
+        the backoff sees `Recovering` rather than blocking on it.
+        """
+        game_id = runtime.game_id
+        lock = self._locks.setdefault(game_id, asyncio.Lock())
+        async with lock:
+            entry = self._entries.get(game_id)
+            if isinstance(entry, Live) and entry.runtime is not runtime:
+                # A newer generation is already installed; this report is
+                # about a runtime nobody can reach any more.
+                return
+
+            logger.error(
+                "game %s: quarantining generation %d — %s", game_id, runtime.generation, reason
+            )
+            # Detach from the registry first: no caller handed a `Live`
+            # entry from this point on can still be pointed at `runtime`.
+            self._entries[game_id] = Recovering(attempt=1, next_at=self._clock.now())
+            runtime.closed = True
+            runtime.drain(RuntimeCode.GAME_RECOVERING, "game is recovering")
+            await runtime.aclose()
+            # Through the port: the sockets stay owned by the hub, which
+            # is the only thing that knows how to close one.
+            self._subscribers.close_game_subscribers(game_id, 1011)
+            if self._shutting_down:
+                # Tear down, but do not start a recovery the process has
+                # no intention of finishing.
+                del self._entries[game_id]
+                return
+
+        await self._recover(game_id)
+
+    async def _recover(self, game_id: GameId) -> None:
+        """Bounded exponential backoff, capped and jittered, retried for as
+        long as the fault looks transient.
+
+        Attempts are not capped — a database that is down for ten minutes
+        must not leave every game in that window permanently `Failed`,
+        because nothing about it is permanent. What is capped is the
+        *delay*, so a long outage settles into a steady retry rather than
+        an ever-growing one.
+        """
+        attempt = 1
+        # Bound before the loop: mypy cannot see that the only path
+        # reaching `sleep_until` below is the one that assigned `next_at`
+        # inside the `except`.
+        next_at = self._clock.now()
+        while True:
+            lock = self._locks.setdefault(game_id, asyncio.Lock())
+            async with lock:
+                if self._shutting_down:
+                    # The fence. Without this the loop outlives
+                    # `shutdown()` and installs a fresh `Live` runtime
+                    # into a registry the process has finished with.
+                    return
+                if not isinstance(self._entries.get(game_id), Recovering):
+                    return  # someone unloaded or replaced this game
+                try:
+                    await self._load(game_id)
+                    logger.info("game %s: recovered on attempt %d", game_id, attempt)
+                    return
+                except GameUnrecoverable:
+                    return  # `_load` already recorded Failed
+                except Exception as exc:
+                    delay = min(self._backoff_max_s, self._backoff_initial_s * (2 ** (attempt - 1)))
+                    delay = self._rng.uniform(0.0, delay)
+                    attempt += 1
+                    next_at = self._clock.now() + timedelta(seconds=delay)
+                    self._entries[game_id] = Recovering(attempt=attempt, next_at=next_at)
+                    logger.warning(
+                        "game %s: recovery attempt %d failed (%s); retrying at %s",
+                        game_id,
+                        attempt - 1,
+                        exc,
+                        next_at,
+                    )
+            # Outside the lock: a `get` during the wait must be able to
+            # observe `Recovering` and answer 503 rather than block.
+            await self._clock.sleep_until(next_at)

@@ -210,8 +210,14 @@ def a_manager(loader: Loader, **overrides: object) -> GameManager:
     the collaborators `get` actually touches (clock, broadcaster,
     subscribers), raising stubs for the ones it never reaches (uow,
     materialiser, games). Tasks 12, 13, 14 and 15 all call this, several
-    of them through `clock=`, `games=`, `backoff_initial_s=` and
-    `backoff_max_s=` overrides.
+    of them through `clock=`, `subscribers=`, `games=`, `backoff_initial_s=`
+    and `backoff_max_s=` overrides.
+
+    Defaults live in a dict merged with `overrides` rather than as keyword
+    arguments on the `GameManager(...)` call itself: passing `clock=` (or
+    any other) both positionally-as-keyword and via `**overrides` would be
+    a `TypeError` — "got multiple values for keyword argument" — the
+    moment a test actually used the override this docstring promises.
 
     Registered into `_created_managers` so `_close_started_runtimes` below
     can find and close whatever `GameRuntime`s this manager started, the
@@ -221,7 +227,7 @@ def a_manager(loader: Loader, **overrides: object) -> GameManager:
     never submits anything leaves that task parked on `await
     self._queue.get()` forever if nobody closes it.
     """
-    manager = GameManager(
+    kwargs: dict[str, object] = dict(
         loader=loader,
         uow=_NoUnitOfWork(),
         materialiser=_NoMaterialiser(clock=FakeClock(T0), rng=random.Random(0)),
@@ -230,8 +236,9 @@ def a_manager(loader: Loader, **overrides: object) -> GameManager:
         subscribers=FakeSubscribers(),
         games=_NoGameQueries(),
         rng=random.Random(0),
-        **overrides,  # type: ignore[arg-type]
     )
+    kwargs.update(overrides)
+    manager = GameManager(**kwargs)  # type: ignore[arg-type]
     _created_managers.append(manager)
     return manager
 
