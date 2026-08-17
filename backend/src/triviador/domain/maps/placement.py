@@ -56,6 +56,9 @@ def choose_base_regions(
     blocked: set[RegionId] = set()
 
     def search(start: int) -> bool:
+        # `nonlocal`, not just closing over `blocked`: the `|=`/`-=` below
+        # rebind the name, which would otherwise shadow it as local to
+        # `search` and raise `UnboundLocalError` on the next read.
         nonlocal blocked
         if len(chosen) == count:
             return True
