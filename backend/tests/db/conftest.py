@@ -31,6 +31,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from triviador.db.engine import create_engine, sessionmaker_for
 from triviador.db.models.auth import User
+from triviador.db.models.content import Category, Question, QuestionChoice, QuestionNumeric
 from triviador.db.repositories.games import GameRepository
 from triviador.db.unit_of_work import UnitOfWork
 from triviador.domain.game.rules import DEFAULT_RULES
@@ -59,6 +61,115 @@ DATABASE_URL = os.environ.get("TRIVIADOR_TEST_DATABASE_URL", TEST_DATABASE_URL)
 THIS_DIR = Path(__file__).parent
 BACKEND_DIR = THIS_DIR.parent.parent
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
+
+
+async def _seed_category(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    category_id: str = "cat-1",
+    *,
+    slug: str = "general",
+    name: str = "General",
+) -> None:
+    """Shared with `tests/db/test_question_bank.py` and
+    `tests/runtime/integration/conftest.py` — lifted here rather than
+    kept as a private helper of one test module, so the seeding never
+    has to be reimplemented (and inevitably drift) for a second caller."""
+    async with sessionmaker() as session:
+        session.add(Category(id=category_id, slug=slug, name=name))
+        await session.commit()
+
+
+async def _seed_user(sessionmaker: async_sessionmaker[AsyncSession], user_id: str) -> None:
+    async with sessionmaker() as session:
+        session.add(
+            User(
+                id=user_id,
+                username=user_id,
+                password_hash="hash",
+                display_name=user_id,
+                role="admin",
+            )
+        )
+        await session.commit()
+
+
+async def _seed_mc_question(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    question_id: str,
+    *,
+    category_id: str = "cat-1",
+    is_active: bool = True,
+    prompt: str = "prompt",
+    difficulty: str = "easy",
+    version: int = 1,
+    media_asset_id: str | None = None,
+    choices: tuple[tuple[str, bool, str | None], ...] = (
+        ("A", False, None),
+        ("B", True, None),
+    ),
+) -> None:
+    async with sessionmaker() as session:
+        session.add(
+            Question(
+                id=question_id,
+                version=version,
+                kind="multiple_choice",
+                prompt=prompt,
+                category_id=category_id,
+                difficulty=difficulty,
+                media_asset_id=media_asset_id,
+                is_active=is_active,
+                prompt_hash=f"hash-{question_id}",
+            )
+        )
+        for idx, (choice_text, is_correct, choice_media_asset_id) in enumerate(choices):
+            session.add(
+                QuestionChoice(
+                    question_id=question_id,
+                    idx=idx,
+                    text=choice_text,
+                    is_correct=is_correct,
+                    media_asset_id=choice_media_asset_id,
+                )
+            )
+        await session.commit()
+
+
+async def _seed_numeric_question(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    question_id: str,
+    *,
+    category_id: str = "cat-1",
+    is_active: bool = True,
+    prompt: str = "how many?",
+    difficulty: str = "medium",
+    version: int = 1,
+    correct_value: Decimal = Decimal("42.5"),
+    unit: str | None = "km",
+    with_numeric_row: bool = True,
+) -> None:
+    """`with_numeric_row=False` seeds the bare `questions` row with
+    `kind='numeric'` but no matching `question_numeric` row — the malformed
+    shape `_materialize` must catch (F4): a row that passes `_select_kind`'s
+    count check but has no child row for `_materialize` to read."""
+    async with sessionmaker() as session:
+        session.add(
+            Question(
+                id=question_id,
+                version=version,
+                kind="numeric",
+                prompt=prompt,
+                category_id=category_id,
+                difficulty=difficulty,
+                is_active=is_active,
+                prompt_hash=f"hash-{question_id}",
+            )
+        )
+        if with_numeric_row:
+            session.add(
+                QuestionNumeric(question_id=question_id, correct_value=correct_value, unit=unit)
+            )
+        await session.commit()
 
 
 def alembic_config(url: str) -> Config:
