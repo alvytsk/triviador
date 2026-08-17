@@ -25,6 +25,8 @@ Every task's requirements implicitly include this section.
 - **No external response is produced while database locks are held.** Origins resolve only after the transaction context exits (§5.2).
 - **The broadcaster is synchronous and never faults the runtime.** `publish` is a `def`, may only project and `put_nowait`, and an exception out of it is logged and swallowed (§5.5).
 - **Quarantine never runs on the faulting task.** A task cannot cancel and await itself; teardown is scheduled onto the manager (§5.6).
+- **`NewType` aliases are constructed, never implied.** `PlayerId`, `GameId`, `RegionId`, `MapId` and `DeadlineId` are `NewType`s (`domain/ids.py`), so `PlayerJoined("p1", ...)` fails `mypy --strict` even though it runs. Every literal in production code and in tests goes through its constructor: `PlayerJoined(PlayerId("p1"), "P1", seat=0)`.
+- **Commands carry their actor.** `StartGame`, `JoinGame`, `SubmitAnswer`, `PickRegion`, `SelectAttackTarget` and `Surrender` all take `actor_id: PlayerId` as their first field; only `ExpireDeadline` and `AbortGame` do not (`AbortGame`'s is optional, and `None` means system-issued). Check `domain/game/actions.py` before constructing one — a command built with the wrong arity is a task that cannot reach its own red state.
 - **Every timestamp is timezone-aware UTC.** `Clock.now()` returns an aware `datetime`; a naive one is a bug that only surfaces after a process restart, when an absolute deadline is compared across it.
 - **Recovery honours absolute deadlines, never restarts them** (ADR-003, §5.6). A window a player has already spent must not be extended.
 - Python `>=3.13`. Line length 100. `ruff check`, `ruff format --check`, and `mypy --strict` must pass on every commit.
@@ -309,6 +311,24 @@ class QuestionPoolUnavailable(Exception):
     """
 
 
+class EventStreamCorrupt(Exception):
+    """A stored event cannot be turned back into a domain event.
+
+    The base class of the codec's `UnknownEventType`,
+    `UnknownSchemaVersion` and `NaiveDatetime`. Declared here for the
+    same reason as `QuestionPoolUnavailable`: the runtime must be able to
+    tell "this log will never decode" (permanent — go to `Failed`) from
+    "the database is unreachable" (transient — retry with backoff), and
+    it cannot import `db/` to ask.
+
+    Naming a real type rather than matching on class-name strings is not
+    style. A string match silently reclassifies every renamed or newly
+    added decode error as *transient*, and a permanent failure retried
+    forever is an invisible outage — the exact failure mode this split
+    exists to prevent.
+    """
+
+
 class QuestionBankPort(Protocol):
     async def select_pool(self, budget: QuestionBudget) -> QuestionPool: ...
 
@@ -360,14 +380,10 @@ class Transaction(Protocol):
         self, game_id: GameId, operation_id: str
     ) -> tuple[EventRef, ...]: ...
 
-    async def operation_matches(
-        self,
-        game_id: GameId,
-        operation_id: str,
-        *,
-        expected_base_seq: int,
-        events: Sequence[GameEvent],
-    ) -> ReconcileOutcome: ...
+    # `operation_matches` joins this Protocol in Task 6, together with the
+    # adapter method that satisfies it. Declaring it here first would
+    # leave the conformance check red for five tasks, which is a broken
+    # build, not a red test.
 
 
 class UnitOfWorkPort(Protocol):
@@ -420,23 +436,41 @@ class Origin(Protocol):
     def resolve_failed(self, code: RuntimeCode, message: str) -> None: ...
 ```
 
-- [ ] **Step 4: Make the bank errors subclass the port exception**
+- [ ] **Step 4: Reparent the db exceptions onto the port's base classes**
 
-In `backend/src/triviador/db/errors.py`, add the import and change both class headers:
+In `backend/src/triviador/db/errors.py`, add the import and change five class headers:
 
 ```python
-from triviador.services.ports import QuestionPoolUnavailable
+from triviador.services.ports import EventStreamCorrupt, QuestionPoolUnavailable
 ```
 
 ```python
+class UnknownEventType(EventStreamCorrupt):
+class UnknownSchemaVersion(EventStreamCorrupt):
+class NaiveDatetime(EventStreamCorrupt):
 class InsufficientQuestions(QuestionPoolUnavailable):
-```
-
-```python
 class MalformedQuestion(QuestionPoolUnavailable):
 ```
 
-Keep both docstrings and both `__init__` bodies exactly as they are. Add one line to each docstring recording that the base class is the port's exception and why: the materialiser catches one type, so a content problem stays a rejection instead of quarantining a healthy lobby.
+Keep every docstring and every `__init__` body exactly as it is. Add one line to each docstring recording the new base class and why it is there: the runtime catches one type per category, so a content shortfall stays a rejection and a corrupt log is classified as permanent — neither by guessing at a class name.
+
+Extend `backend/tests/services/test_ports.py`:
+
+```python
+def test_decode_failures_are_catchable_as_one_port_exception() -> None:
+    """The loader's permanent/transient split hangs off this. If a decode
+    error stops subclassing `EventStreamCorrupt`, an undecodable log gets
+    classified transient and retried with backoff forever — an outage
+    with no error to find."""
+    from triviador.db.errors import NaiveDatetime, UnknownEventType, UnknownSchemaVersion
+
+    for error in (
+        UnknownEventType("battle.unheard_of"),
+        UnknownSchemaVersion("battle.duel_resolved", 9),
+        NaiveDatetime("turn.deadline.deadline_at"),
+    ):
+        assert isinstance(error, ports.EventStreamCorrupt)
+```
 
 - [ ] **Step 5: Add the runtime settings**
 
@@ -496,7 +530,9 @@ def test_runtime_settings_defaults() -> None:
         return QuestionBank(self.session)
 ```
 
-Keep the existing `self.session` attribute: `tests/db` uses it, and Plan 5's admin paths will too. `operation_matches` arrives in Task 6, not here — leave it out for now, and expect `_tx: ports.Transaction = tx` to fail mypy until then. To keep this task green, declare `operation_matches` on the Protocol only in Task 6 and omit it from `ports.Transaction` here.
+Keep the existing `self.session` attribute: `tests/db` uses it, and Plan 5's admin paths will too.
+
+`ReconcileOutcome` is declared on the port in this task (the runtime's `Transaction` needs the enum before the method exists), but `operation_matches` itself lands in Task 6 on both sides at once — Protocol and adapter together. The conformance assignment `_tx: ports.Transaction = tx` must be green at the end of *every* task, so a method may never be declared on a port one task ahead of the adapter that satisfies it.
 
 - [ ] **Step 7: Verify**
 
@@ -1138,7 +1174,7 @@ async def test_start_game_draws_the_pool_for_the_rules_budget() -> None:
     materialiser = Materialiser(clock=FakeClock(T0), rng=random.Random(0))
     state = lobby_state()
 
-    ctx = await materialiser.build(state, StartGame(), StubTransaction(bank))
+    ctx = await materialiser.build(state, StartGame(PlayerId("p1")), StubTransaction(bank))
 
     assert bank.budgets == [required_question_budget(state.rules)]
     assert ctx.drawn_pool is not None
@@ -1150,8 +1186,8 @@ async def test_start_game_context_satisfies_decide() -> None:
     materialiser = Materialiser(clock=FakeClock(T0), rng=random.Random(7))
     state = lobby_state()
 
-    ctx = await materialiser.build(state, StartGame(), StubTransaction(StubBank()))
-    events = decide(state, StartGame(), ctx)
+    ctx = await materialiser.build(state, StartGame(PlayerId("p1")), StubTransaction(StubBank()))
+    events = decide(state, StartGame(PlayerId("p1")), ctx)
 
     assert events
     assert ctx.shuffled_player_ids is not None
@@ -1164,7 +1200,7 @@ async def test_start_game_bases_are_mutually_non_adjacent() -> None:
     materialiser = Materialiser(clock=FakeClock(T0), rng=random.Random(3))
     state = lobby_state()
 
-    ctx = await materialiser.build(state, StartGame(), StubTransaction(StubBank()))
+    ctx = await materialiser.build(state, StartGame(PlayerId("p1")), StubTransaction(StubBank()))
 
     assert ctx.base_regions is not None
     for region in ctx.base_regions:
@@ -1191,11 +1227,11 @@ async def test_a_bank_shortfall_leaves_the_pool_none_and_becomes_a_rejection(
     materialiser = Materialiser(clock=FakeClock(T0), rng=random.Random(0))
     state = lobby_state()
 
-    ctx = await materialiser.build(state, StartGame(), StubTransaction(StubBank(raises=error)))
+    ctx = await materialiser.build(state, StartGame(PlayerId("p1")), StubTransaction(StubBank(raises=error)))
 
     assert ctx.drawn_pool is None
     with pytest.raises(RejectedCommand) as caught:
-        decide(state, StartGame(), ctx)
+        decide(state, StartGame(PlayerId("p1")), ctx)
     assert caught.value.code is RejectCode.QUESTION_POOL_INSUFFICIENT
 
 
@@ -1207,7 +1243,7 @@ async def test_a_database_failure_in_the_bank_propagates() -> None:
 
     with pytest.raises(RuntimeError):
         await materialiser.build(
-            lobby_state(), StartGame(), StubTransaction(StubBank(raises=RuntimeError("conn lost")))
+            lobby_state(), StartGame(PlayerId("p1")), StubTransaction(StubBank(raises=RuntimeError("conn lost")))
         )
 
 
@@ -1253,7 +1289,7 @@ def _warmup_state():
         base_regions=(RegionId("r0"), RegionId("r2"), RegionId("r6")),
         drawn_pool=full_pool(),
     )
-    return fold(state, decide(state, StartGame(), ctx))
+    return fold(state, decide(state, StartGame(PlayerId("p1")), ctx))
 
 
 def _picking_state():
@@ -1430,6 +1466,7 @@ import pytest
 
 from triviador.domain.game.actions import RejectCode
 from triviador.domain.game.events import PlayerJoined
+from triviador.domain.ids import PlayerId
 from triviador.runtime.origins import (
     Accepted,
     Failed,
@@ -1440,7 +1477,7 @@ from triviador.runtime.origins import (
 )
 from triviador.services.ports import RuntimeCode
 
-EVENT = PlayerJoined("p1", "P1", seat=0)
+EVENT = PlayerJoined(PlayerId("p1"), "P1", seat=0)
 
 
 async def test_future_origin_delivers_the_committed_events() -> None:
@@ -1730,6 +1767,7 @@ gets its own assertion."""
 import pytest
 
 from triviador.domain.game.events import PlayerJoined, PlayerLeft
+from triviador.domain.ids import PlayerId
 from triviador.services.ports import ReconcileOutcome
 
 pytestmark = pytest.mark.integration
@@ -1741,13 +1779,13 @@ async def test_absent_when_nothing_with_that_operation_id_committed(lobby_game) 
             lobby_game.game_id,
             "op-never-ran",
             expected_base_seq=1,
-            events=[PlayerJoined("p1", "P1", seat=0)],
+            events=[PlayerJoined(PlayerId("p1"), "P1", seat=0)],
         )
     assert verdict is ReconcileOutcome.ABSENT
 
 
 async def test_matched_for_the_exact_batch_that_committed(lobby_game) -> None:
-    events = [PlayerJoined("p1", "P1", seat=0), PlayerJoined("p2", "P2", seat=1)]
+    events = [PlayerJoined(PlayerId("p1"), "P1", seat=0), PlayerJoined(PlayerId("p2"), "P2", seat=1)]
     async with lobby_game.uow.begin() as tx:
         await tx.append(lobby_game.game_id, expected_last_seq=1, events=events, operation_id="op-1")
 
@@ -1759,7 +1797,7 @@ async def test_matched_for_the_exact_batch_that_committed(lobby_game) -> None:
 
 
 async def test_mismatch_when_the_row_count_differs(lobby_game) -> None:
-    committed = [PlayerJoined("p1", "P1", seat=0), PlayerJoined("p2", "P2", seat=1)]
+    committed = [PlayerJoined(PlayerId("p1"), "P1", seat=0), PlayerJoined(PlayerId("p2"), "P2", seat=1)]
     async with lobby_game.uow.begin() as tx:
         await tx.append(
             lobby_game.game_id, expected_last_seq=1, events=committed, operation_id="op-1"
@@ -1780,7 +1818,7 @@ async def test_mismatch_when_the_ordered_types_differ(lobby_game) -> None:
         await tx.append(
             lobby_game.game_id,
             expected_last_seq=1,
-            events=[PlayerJoined("p1", "P1", seat=0), PlayerJoined("p2", "P2", seat=1)],
+            events=[PlayerJoined(PlayerId("p1"), "P1", seat=0), PlayerJoined(PlayerId("p2"), "P2", seat=1)],
             operation_id="op-1",
         )
 
@@ -1789,7 +1827,7 @@ async def test_mismatch_when_the_ordered_types_differ(lobby_game) -> None:
             lobby_game.game_id,
             "op-1",
             expected_base_seq=1,
-            events=[PlayerJoined("p1", "P1", seat=0), PlayerLeft("p2")],
+            events=[PlayerJoined(PlayerId("p1"), "P1", seat=0), PlayerLeft(PlayerId("p2"))],
         )
     assert verdict is ReconcileOutcome.MISMATCH
 
@@ -1798,7 +1836,7 @@ async def test_mismatch_when_the_seq_range_is_not_the_expected_one(lobby_game) -
     """The batch committed at seq 2, but this attempt decided against
     state.seq = 5. Same rows, wrong place in history — accepting it would
     fold events onto a state they were never decided against."""
-    events = [PlayerJoined("p1", "P1", seat=0)]
+    events = [PlayerJoined(PlayerId("p1"), "P1", seat=0)]
     async with lobby_game.uow.begin() as tx:
         await tx.append(lobby_game.game_id, expected_last_seq=1, events=events, operation_id="op-1")
 
@@ -1865,7 +1903,20 @@ Add to `backend/src/triviador/db/unit_of_work.py` (and import `ReconcileOutcome`
 
 - [ ] **Step 4: Add the method to the port**
 
-In `backend/src/triviador/services/ports.py`, add to `class Transaction` the `operation_matches` signature exactly as written in Task 1's Step 3 listing (it was deferred there so Task 1 could stay green). Uncomment nothing else.
+In `backend/src/triviador/services/ports.py`, add to `class Transaction`, replacing the comment Task 1 left in its place:
+
+```python
+    async def operation_matches(
+        self,
+        game_id: GameId,
+        operation_id: str,
+        *,
+        expected_base_seq: int,
+        events: Sequence[GameEvent],
+    ) -> ReconcileOutcome: ...
+```
+
+Port and adapter land in the same task deliberately: `tests/services/test_ports.py`'s conformance assignment is checked by `mypy` on every commit, so a Protocol method with no implementer is a red build for however long it takes the next task to arrive.
 
 - [ ] **Step 5: Verify**
 
@@ -1973,7 +2024,7 @@ async def test_loads_a_lobby_from_its_genesis_event() -> None:
 
 async def test_folds_every_event_after_genesis() -> None:
     loader = GameLoader(
-        uow=StubUnitOfWork([genesis(), PlayerJoined("p1", "P1", seat=0)]), maps=StubMaps()
+        uow=StubUnitOfWork([genesis(), PlayerJoined(PlayerId("p1"), "P1", seat=0)]), maps=StubMaps()
     )
 
     state = await loader.load(GAME)
@@ -1992,10 +2043,38 @@ async def test_a_digest_mismatch_is_permanent() -> None:
         await loader.load(GAME)
 
 
-async def test_an_unloadable_map_is_permanent() -> None:
+async def test_an_invalid_map_is_permanent() -> None:
     loader = GameLoader(
         uow=StubUnitOfWork([genesis()]), maps=StubMaps(raises=InvalidMapError("no map.json"))
     )
+
+    with pytest.raises(PermanentReplayFailure):
+        await loader.load(GAME)
+
+
+async def test_a_transient_map_read_failure_is_not_permanent() -> None:
+    """An unmounted volume is not a corrupt map. Wrapping this would mark
+    the game `Failed` over a disk hiccup, and `Failed` is cleared only by
+    operator action — so a fault that fixed itself in a second would need
+    a human to notice it."""
+    loader = GameLoader(
+        uow=StubUnitOfWork([genesis()]), maps=StubMaps(raises=OSError("input/output error"))
+    )
+
+    with pytest.raises(OSError):
+        await loader.load(GAME)
+
+
+async def test_a_log_that_does_not_fold_is_permanent() -> None:
+    """`fold` is pure, so this failure is a function of the log and the
+    map alone and will reproduce identically forever. Left unwrapped it
+    would sit in the recovery backoff loop for the life of the process,
+    looking like an outage that might clear.
+
+    Build a stream whose second event is a second `GameCreated` —
+    `evolve` raises `GenesisEventNotFoldable` on it.
+    """
+    loader = GameLoader(uow=StubUnitOfWork([genesis(), genesis()]), maps=StubMaps())
 
     with pytest.raises(PermanentReplayFailure):
         await loader.load(GAME)
@@ -2011,7 +2090,7 @@ async def test_an_empty_stream_is_permanent() -> None:
 
 
 async def test_a_stream_not_starting_with_genesis_is_permanent() -> None:
-    loader = GameLoader(uow=StubUnitOfWork([PlayerJoined("p1", "P1", seat=0)]), maps=StubMaps())
+    loader = GameLoader(uow=StubUnitOfWork([PlayerJoined(PlayerId("p1"), "P1", seat=0)]), maps=StubMaps())
 
     with pytest.raises(PermanentReplayFailure):
         await loader.load(GAME)
@@ -2038,7 +2117,7 @@ async def test_a_database_failure_propagates_unchanged() -> None:
         await loader.load(GAME)
 ```
 
-The `UnknownEventType` import inside the test is deliberate: the *test* may name `db` (it is wiring an adapter's error into a stub), but `runtime/loader.py` must not — see Step 3 for how it classifies without importing.
+The `UnknownEventType` import inside the test is deliberate: the *test* names the concrete adapter error to prove the real one is classified correctly, while `runtime/loader.py` catches only `services.ports.EventStreamCorrupt`, its declared base class (Task 1, Step 4). That pairing is the point — the test would fail the moment the codec's errors stopped subclassing the port's type, which is exactly when the classification would silently break.
 
 - [ ] **Step 2: Run and watch it fail**
 
@@ -2078,20 +2157,11 @@ from triviador.domain.game.genesis import create_initial_state
 from triviador.domain.game.reducer import fold
 from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId
+from triviador.maps.registry import InvalidMapError
 from triviador.runtime.errors import PermanentReplayFailure
-from triviador.services.ports import MapProvider, UnitOfWorkPort
+from triviador.services.ports import EventStreamCorrupt, MapProvider, UnitOfWorkPort
 
 logger = logging.getLogger(__name__)
-
-# Decode failures. Named by class name rather than imported, because
-# `runtime/` may not import `db/` — and the port cannot usefully declare
-# them either: `load_stream` raises whatever the *codec* raises, which is
-# an adapter detail. Matching on the name keeps the dependency at zero and
-# the classification explicit; a codec that renames one of these breaks
-# `tests/runtime/test_loader.py`, which is where it should break.
-_PERMANENT_DECODE_ERRORS = frozenset(
-    {"UnknownEventType", "UnknownSchemaVersion", "NaiveDatetime"}
-)
 
 
 class GameLoader:
@@ -2103,12 +2173,17 @@ class GameLoader:
         try:
             async with self._uow.begin() as tx:
                 events = await tx.load_stream(game_id)
-        except Exception as exc:
-            if type(exc).__name__ in _PERMANENT_DECODE_ERRORS:
-                raise PermanentReplayFailure(
-                    f"game {game_id}: cannot decode its log — {type(exc).__name__}: {exc}"
-                ) from exc
-            raise
+        except EventStreamCorrupt as exc:
+            # A real type, declared on the port and subclassed by the
+            # codec's three decode errors. Matching on class-name strings
+            # would silently reclassify any renamed or newly added decode
+            # error as transient, and a permanent failure retried forever
+            # is an outage with no error to find.
+            raise PermanentReplayFailure(
+                f"game {game_id}: cannot decode its log — {type(exc).__name__}: {exc}"
+            ) from exc
+        # Everything else — a dropped connection, a refused socket — is
+        # transient and propagates unwrapped, so the manager retries it.
 
         if not events:
             raise PermanentReplayFailure(f"game {game_id}: empty event stream")
@@ -2124,9 +2199,16 @@ class GameLoader:
         # have nothing left to compare (Plan 3, deliberately deferred here).
         try:
             loaded = self._maps.load_with_digest(genesis.map_id)
-        except Exception as exc:
+        except InvalidMapError as exc:
+            # `InvalidMapError` only: the map file is missing, malformed,
+            # or structurally invalid, and none of that improves by
+            # waiting. An `OSError` from the same call — an unmounted
+            # volume, a transient read failure — deliberately propagates
+            # instead, because marking a game `Failed` for a disk hiccup
+            # would need an operator to clear something that fixed itself
+            # a second later.
             raise PermanentReplayFailure(
-                f"game {game_id}: map {genesis.map_id!r} will not load — {exc}"
+                f"game {game_id}: map {genesis.map_id!r} is invalid — {exc}"
             ) from exc
 
         if loaded.sha256 != genesis.map_sha256:
@@ -2135,7 +2217,18 @@ class GameLoader:
                 f"the log was written against {genesis.map_sha256}"
             )
 
-        return fold(create_initial_state(genesis, game_id, loaded.definition), events[1:])
+        try:
+            return fold(create_initial_state(genesis, game_id, loaded.definition), events[1:])
+        except Exception as exc:
+            # `create_initial_state` and `fold` are pure, so this failure
+            # is a function of the log and the map alone: it will
+            # reproduce identically on every retry, forever. Leaving it
+            # unwrapped would let a `GenesisEventNotFoldable` or a reducer
+            # bug sit in the backoff loop for the life of the process,
+            # looking like an outage that might clear.
+            raise PermanentReplayFailure(
+                f"game {game_id}: its log does not fold — {type(exc).__name__}: {exc}"
+            ) from exc
 ```
 
 - [ ] **Step 4: Verify**
@@ -2326,16 +2419,23 @@ async def test_a_rejected_command_rolls_back_and_reports_the_code() -> None:
 async def test_a_known_rollback_retries_the_whole_attempt(sqlstate: str) -> None:
     """Not just the append: the materialiser runs again too. The FOR SHARE
     locks were released at rollback, so a reused pool would be appended
-    under locks that no longer hold."""
+    under locks that no longer hold.
+
+    Note where the fake raises: on *exit*, i.e. at COMMIT, with `append`
+    already returned. That is the common case in production and it is the
+    reason SQLSTATE must be classified before the ambiguity check — the
+    `reconciliations == 0` assertion below is what pins that ordering.
+    """
     uow = FakeUnitOfWork()
     uow.exit_raises = [FakeSerializationFailure(sqlstate)]
     state = lobby_state()
 
-    outcome = await executor(uow).execute(state, StartGame(), "op-1")
+    outcome = await executor(uow).execute(state, StartGame(PlayerId("p1")), "op-1")
 
     assert isinstance(outcome, Accepted)
     assert uow.begins == 2
-    assert uow.bank.draws == 2  # re-materialised, not reused
+    assert uow.bank.draws == 2       # re-materialised, not reused
+    assert uow.reconciliations == 0  # a known rollback is never ambiguous
 
 
 async def test_retries_are_bounded_and_then_fault() -> None:
@@ -2538,16 +2638,16 @@ class CommandExecutor:
                 # healthy, reply to the origin.
                 return Rejected(exc.code, exc.message)
             except Exception as exc:
-                if appended:
-                    # `append` returned, so the only operation left was the
-                    # COMMIT: whether it landed is unknown. This is the
-                    # ambiguous commit, and the *only* path that may look
-                    # for rows written by a previous attempt.
-                    outcome = await self._reconcile(state, operation_id, events)
-                    if outcome is not None:
-                        return outcome
-                    continue  # ABSENT: nothing landed, re-run the attempt
-
+                # SQLSTATE first, *before* the ambiguity check — order is
+                # load-bearing. A serialization failure or deadlock is
+                # reported by PostgreSQL at COMMIT as often as before it,
+                # so it routinely arrives with `appended` already true.
+                # But it is not ambiguous: 40001 and 40P01 mean the
+                # transaction definitively did not commit. Checking
+                # `appended` first would send every one of them through a
+                # reconciliation round trip that can only ever answer
+                # ABSENT — an extra transaction, on the exact path that is
+                # already under contention.
                 if _sqlstate(exc) in RETRYABLE_SQLSTATES:
                     logger.warning(
                         "game %s: retryable rollback on attempt %d/%d",
@@ -2557,6 +2657,17 @@ class CommandExecutor:
                     )
                     await self._backoff(attempt)
                     continue
+
+                if appended:
+                    # `append` returned and this is not a known rollback,
+                    # so the only operation left was the COMMIT and
+                    # whether it landed is unknown. This is the ambiguous
+                    # commit, and the *only* path that may look for rows
+                    # written by a previous attempt.
+                    outcome = await self._reconcile(state, operation_id, events)
+                    if outcome is not None:
+                        return outcome
+                    continue  # ABSENT: nothing landed, re-run the attempt
 
                 raise CommitFault(f"game {state.game_id}: command attempt failed") from exc
 
@@ -2762,7 +2873,7 @@ async def test_a_committed_command_folds_publishes_and_resolves_in_that_order() 
     from triviador.domain.game.events import PlayerJoined
     from triviador.runtime.origins import Accepted
 
-    event = PlayerJoined("p2", "P2", seat=1)
+    event = PlayerJoined(PlayerId("p2"), "P2", seat=1)
     executor = StubExecutor([Accepted((event,))])
     broadcaster = FakeBroadcaster()
     runtime = a_runtime(executor, broadcaster=broadcaster)
@@ -2872,6 +2983,7 @@ class GameRuntime:
         self._deadline_task: asyncio.Task[None] | None = None
         self._scheduled_deadline_id: DeadlineId | None = None
         self.expiry_enqueued_deadline_id: DeadlineId | None = None
+        self._in_flight = False
         self.closed = False
 
     @property
@@ -2890,6 +3002,22 @@ class GameRuntime:
 
     def pending_commands(self) -> int:
         return self._queue.qsize()
+
+    def is_idle(self) -> bool:
+        """Nothing queued *and* nothing in flight.
+
+        `qsize() == 0` alone is a lie: `_consume` removes a command from
+        the queue before executing it, so throughout the entire
+        transaction — the append, the COMMIT — the queue reads empty
+        while a command is very much in progress. A caller that unloaded
+        on that reading would cancel the consumer mid-COMMIT, which is
+        both the ambiguous-commit case the design goes out of its way
+        never to manufacture and an origin nobody ever resolves.
+
+        `_in_flight` is set and cleared by the consumer itself, so it
+        cannot disagree with what the consumer is actually doing.
+        """
+        return self._queue.empty() and not self._in_flight
 
     def start(self) -> None:
         self._consumer = asyncio.create_task(
@@ -2934,6 +3062,12 @@ class GameRuntime:
             qc = await self._queue.get()
             if qc.stop:
                 return
+            # Set *before* the try and cleared in `finally`: the window
+            # this closes is the one between dequeuing a command and
+            # finishing it, during which `qsize()` reads zero and the
+            # reaper would otherwise judge this runtime idle and cancel
+            # it mid-transaction.
+            self._in_flight = True
             try:
                 await self._apply(qc)
             except CommitFault as exc:
@@ -2953,6 +3087,8 @@ class GameRuntime:
                 logger.exception("game %s: unexpected consumer failure", self.game_id)
                 self._on_fault(self, exc)
                 return
+            finally:
+                self._in_flight = False
 
     async def _apply(self, qc: QueuedCommand) -> None:
         base_seq = self._state.seq
@@ -2988,7 +3124,41 @@ class GameRuntime:
         complete and testable on its own."""
         return None
 
+    async def stop(self) -> None:
+        """End the consumer loop *without* cancelling it.
+
+        The sentinel goes in after `closed` is set, so nothing can be
+        submitted behind it, and the consumer picks it up only once it has
+        finished whatever it was doing. That is the whole point:
+        cancelling a consumer mid-COMMIT would manufacture the
+        ambiguous-commit case — on every deploy for shutdown (Task 16),
+        and on an unlucky tick for the reaper (Task 15).
+
+        The deadline task *is* cancelled: it holds no transaction, and a
+        timer firing into a queue nobody will read again is noise.
+        """
+        self.closed = True
+        if self._deadline_task is not None:
+            self._deadline_task.cancel()
+        if self._consumer is not None:
+            self._queue.put_nowait(QueuedCommand.stop_sentinel())
+            await self._consumer
+            self._consumer = None
+        if self._deadline_task is not None:
+            try:
+                await self._deadline_task
+            except asyncio.CancelledError:
+                pass
+            self._deadline_task = None
+
     async def aclose(self) -> None:
+        """The ungraceful counterpart, for quarantine only.
+
+        Quarantine is reached because something already broke, and the
+        in-flight transaction is usually the thing that broke — waiting
+        for it politely could mean waiting on a dead connection's
+        timeout. Everywhere else, use `stop()`.
+        """
         self.closed = True
         for task in (self._deadline_task, self._consumer):
             if task is not None:
@@ -3228,6 +3398,7 @@ Replace `_reschedule_deadline` in `backend/src/triviador/runtime/runtime.py` and
         except asyncio.CancelledError:
             return
 
+        previous_fence = self.expiry_enqueued_deadline_id
         self.expiry_enqueued_deadline_id = deadline_id
         try:
             self.submit(
@@ -3238,10 +3409,20 @@ Replace `_reschedule_deadline` in `backend/src/triviador/runtime/runtime.py` and
                 )
             )
         except (RuntimeClosed, ServerBusy):
+            # The fence must be *rolled back* when the enqueue fails.
+            # Setting it first closes the window in which a watchdog tick
+            # sees a queued expiry with no fence and enqueues a second —
+            # but leaving it set after a failure is far worse: nothing is
+            # in the queue, and every later tick now skips this deadline
+            # because the fence says an expiry is already pending. The
+            # game would stall on that window forever, with the watchdog
+            # that exists to rescue it looking straight past it.
+            #
             # Closed: the manager is tearing this runtime down and the new
             # generation will re-arm from the rebuilt state. Busy: 256
-            # commands are already queued, and one of them will move the
-            # game past this window — the watchdog re-fires if it does not.
+            # commands are queued, and the watchdog must stay free to
+            # re-fire once the queue drains.
+            self.expiry_enqueued_deadline_id = previous_fence
             logger.warning("game %s: could not enqueue expiry for %s", self.game_id, deadline_id)
 ```
 
@@ -3465,6 +3646,7 @@ from triviador.runtime.errors import (
     GameRecovering,
     GameUnrecoverable,
     PermanentReplayFailure,
+    ServerRestarting,
 )
 from triviador.runtime.loader import GameLoader
 from triviador.runtime.materialiser import Materialiser
@@ -3535,6 +3717,10 @@ class GameManager:
         self._entries: dict[GameId, Entry] = {}
         self._locks: dict[GameId, asyncio.Lock] = {}
         self._generations = itertools.count(1)
+        # Set by Task 16's `shutdown`. Declared here because `_load`
+        # already reads it — a flag added later to a method written
+        # earlier is how the shutdown race got in.
+        self._shutting_down = False
 
     def entry_for(self, game_id: GameId) -> Entry | None:
         return self._entries.get(game_id)
@@ -3577,6 +3763,13 @@ class GameManager:
                 return None
 
     async def _load(self, game_id: GameId) -> GameRuntime:
+        # Task 16 adds this guard. It is the one that actually holds: a
+        # recovery already inside `_load` when the fence goes up would
+        # otherwise install a `Live` runtime after `shutdown()` returned,
+        # and the checks in `_recover` never get another turn to notice.
+        if self._shutting_down:
+            raise ServerRestarting("server is restarting")
+
         try:
             state = await self._loader.load(game_id)
         except PermanentReplayFailure as exc:
@@ -3821,6 +4014,11 @@ Add to `backend/src/triviador/runtime/manager.py` (and take `backoff_initial_s: 
             # Through the port: the sockets stay owned by the hub, which
             # is the only thing that knows how to close one.
             self._subscribers.close_game_subscribers(game_id, 1011)
+            if self._shutting_down:
+                # Tear down, but do not start a recovery the process has
+                # no intention of finishing.
+                del self._entries[game_id]
+                return
 
         await self._recover(game_id)
 
@@ -3841,6 +4039,11 @@ Add to `backend/src/triviador/runtime/manager.py` (and take `backoff_initial_s: 
         while True:
             lock = self._locks.setdefault(game_id, asyncio.Lock())
             async with lock:
+                if self._shutting_down:
+                    # The fence. Without this the loop outlives
+                    # `shutdown()` and installs a fresh `Live` runtime
+                    # into a registry the process has finished with.
+                    return
                 if not isinstance(self._entries.get(game_id), Recovering):
                     return  # someone unloaded or replaced this game
                 try:
@@ -4092,6 +4295,20 @@ async def test_a_full_queue_or_closed_runtime_does_not_kill_the_tick() -> None:
     """One sick game must not stop the watchdog from rescuing the other
     nineteen."""
     ...
+
+
+async def test_a_failed_enqueue_leaves_the_fence_clear_for_the_next_tick() -> None:
+    """The fence is set before `submit` so no tick can see a queued expiry
+    without one — but a `submit` that *raises* must roll it back. A fence
+    left set behind a failed enqueue means nothing is queued and every
+    later tick skips this deadline, so the game stalls on that window
+    forever and the watchdog looks straight past it.
+
+    Build a runtime with `queue_maxsize=1`, fill it, tick (the submit
+    raises ServerBusy), then drain the queue and tick again — the second
+    tick must enqueue the expiry.
+    """
+    ...
 ```
 
 Write each body against a manager holding one or two runtimes built from `warmup_state()`, driving the loop with `clock.advance_to(T0 + timedelta(seconds=5 * n))`. The worked shape:
@@ -4211,6 +4428,7 @@ class Watchdog:
                 # queue with copies of it.
                 continue
 
+            previous_fence = runtime.expiry_enqueued_deadline_id
             runtime.expiry_enqueued_deadline_id = deadline.id
             try:
                 runtime.submit(
@@ -4221,6 +4439,11 @@ class Watchdog:
                     )
                 )
             except (RuntimeClosed, ServerBusy) as exc:
+                # Roll the fence back. A fence left set after a failed
+                # enqueue makes every subsequent tick skip this deadline —
+                # the watchdog would permanently stop watching the one
+                # game that most needs it.
+                runtime.expiry_enqueued_deadline_id = previous_fence
                 logger.warning(
                     "watchdog could not enqueue expiry for game %s: %s", runtime.game_id, exc
                 )
@@ -4343,6 +4566,30 @@ async def test_a_runtime_with_queued_work_is_not_unloaded() -> None:
     ...
 
 
+async def test_a_runtime_executing_a_command_is_not_unloaded() -> None:
+    """The race an empty queue hides. `_consume` dequeues *before* it
+    executes, so for the whole duration of the transaction — append,
+    COMMIT — `qsize()` reads zero while a command is very much in
+    progress. Unloading on that reading cancels the consumer mid-COMMIT:
+    the ambiguous-commit case, manufactured deliberately, plus an origin
+    nobody ever resolves.
+
+    Use a gated executor (as in `test_shutdown.py`): submit one command,
+    wait for `entered`, tick the reaper, and assert the runtime is still
+    resident. Then release the gate and assert the origin resolved `ok`.
+    """
+    ...
+
+
+async def test_an_unload_that_finds_the_runtime_busy_leaves_it_submittable() -> None:
+    """`unload` sets `closed` before checking, so a submit racing it fails
+    loudly rather than landing in a queue about to be discarded. But when
+    the check then says "busy", `closed` must be rolled back — otherwise
+    a game nobody unloaded is left permanently refusing commands, and
+    only a re-`get()` no caller knows to make would revive it."""
+    ...
+
+
 async def test_one_failing_game_does_not_stop_the_sweep() -> None:
     ...
 ```
@@ -4384,21 +4631,43 @@ Expected: `ModuleNotFoundError: No module named 'triviador.runtime.reaper'`.
         in-flight work is left alone rather than being torn down — the
         alternative is inventing a failure code for "we decided to
         garbage-collect your command", which no client should ever see.
+
+        Three details, each load-bearing:
+
+        1. **`closed` is set before the idle check, not after.** `submit`
+           is synchronous and takes no lock, so between "it looks idle"
+           and "it is detached" a WebSocket read loop can enqueue a
+           command. Closing first makes that submit raise `RuntimeClosed`
+           — which the caller handles by re-`get()`ing — instead of
+           dropping a command into a queue about to be discarded. If the
+           runtime turns out not to be idle, `closed` is rolled back.
+        2. **`is_idle()`, not `pending_commands() == 0`.** The consumer
+           dequeues before executing, so an empty queue is not an idle
+           runtime.
+        3. **`stop()`, not `aclose()`.** Even having checked, the only
+           safe way to end a consumer is to let it finish: `aclose`
+           cancels, and a cancel that lands inside COMMIT manufactures
+           the ambiguous-commit case for a runtime we were merely trying
+           to garbage-collect.
         """
         lock = self._locks.setdefault(game_id, asyncio.Lock())
         async with lock:
             entry = self._entries.get(game_id)
             if not isinstance(entry, Live):
                 return False
-            if entry.runtime.pending_commands() > 0:
+
+            runtime = entry.runtime
+            runtime.closed = True
+            if not runtime.is_idle():
+                runtime.closed = False
                 return False
+
             del self._entries[game_id]
-            entry.runtime.closed = True
-            await entry.runtime.aclose()
+            await runtime.stop()
             return True
 ```
 
-Add `def pending_commands(self) -> int: return self._queue.qsize()` to `GameRuntime`.
+`pending_commands`, `is_idle`, `_in_flight` and `stop()` all arrive with `GameRuntime` in Task 9, so nothing new is needed on the runtime here.
 
 - [ ] **Step 4: Implement the reaper**
 
@@ -4623,6 +4892,28 @@ async def test_get_after_shutdown_raises_server_restarting() -> None:
 
 async def test_shutdown_is_idempotent() -> None:
     ...
+
+
+async def test_a_recovering_game_cannot_install_a_runtime_after_shutdown() -> None:
+    """`_recover` is an unbounded retry loop on a manager-owned task, and
+    it ends by installing a fresh `Live` entry. Every await inside
+    shutdown is a chance for it to do so — and a shutdown loop that only
+    inspects `Live` entries would never see it.
+
+    Quarantine a game with a loader scripted to fail once, call
+    `shutdown` while the entry is `Recovering`, then advance the clock
+    past the backoff. Assert: the registry is empty, no new runtime was
+    built, and the recovery task is done rather than still looping.
+    """
+    ...
+
+
+async def test_shutdown_awaits_a_quarantine_already_in_progress() -> None:
+    """A quarantine task cancelled mid-teardown could leave a runtime
+    detached from the registry but still consuming — invisible to the
+    shutdown loop, which iterates the registry. Assert every task in
+    `_quarantines` is done when `shutdown` returns."""
+    ...
 ```
 
 The gated-executor helper for the second test:
@@ -4634,12 +4925,13 @@ class GatedExecutor:
         self.release = asyncio.Event()
 
     async def execute(self, state, command, operation_id):
-        from triviador.runtime.origins import Accepted
         from triviador.domain.game.events import PlayerJoined
+        from triviador.domain.ids import PlayerId
+        from triviador.runtime.origins import Accepted
 
         self.entered.set()
         await self.release.wait()          # stands in for a COMMIT in flight
-        return Accepted((PlayerJoined("p2", "P2", seat=1),))
+        return Accepted((PlayerJoined(PlayerId("p2"), "P2", seat=1),))
 ```
 
 - [ ] **Step 2: Run and watch it fail**
@@ -4650,65 +4942,81 @@ cd backend && uv run pytest tests/runtime/test_shutdown.py -q --no-cov
 
 Expected: `AttributeError: 'GameManager' object has no attribute 'shutdown'`.
 
-- [ ] **Step 3: Implement `GameRuntime.stop`**
+- [ ] **Step 3: Implement `GameManager.shutdown`**
 
-```python
-    async def stop(self) -> None:
-        """End the consumer loop without cancelling it.
-
-        The sentinel goes in *after* `drain`, so there is room for it even
-        if the queue was full, and the consumer picks it up only once it
-        has finished whatever it was doing. That is the whole point:
-        cancelling a consumer mid-COMMIT would manufacture the
-        ambiguous-commit case on every deploy — the one failure mode never
-        worth generating deliberately.
-
-        The deadline task *is* cancelled: it holds no transaction, and a
-        timer that fires into a queue nobody will read again is noise.
-        """
-        self.closed = True
-        if self._deadline_task is not None:
-            self._deadline_task.cancel()
-        if self._consumer is not None:
-            self._queue.put_nowait(QueuedCommand.stop_sentinel())
-            await self._consumer
-            self._consumer = None
-        if self._deadline_task is not None:
-            try:
-                await self._deadline_task
-            except asyncio.CancelledError:
-                pass
-            self._deadline_task = None
-```
-
-`QueuedCommand.stop_sentinel()` is a classmethod returning a `QueuedCommand` with `stop=True`, a `SystemOrigin("shutdown")`, and any command value — the loop checks `stop` before touching `command`. Note that `closed = True` is set before the sentinel is queued, so nothing new can be submitted behind it.
-
-- [ ] **Step 4: Implement `GameManager.shutdown`**
+`GameRuntime.stop()` already exists (Task 9). Shutdown calls `drain` first so the queue has room for the sentinel even if it was full, then `stop()`.
 
 ```python
     async def shutdown(self, *closers: SupportsAclose) -> None:
-        """§5.6, in order. `closers` are the watchdog and reaper: they are
-        stopped *first*, so neither can enqueue into a queue that is being
-        drained — a race whose prize is an origin nobody ever resolves."""
+        """§5.6, in an order chosen so that nothing can be resurrected
+        behind it.
+
+        The subtle failure this guards against: `_recover` is an
+        unbounded retry loop living on a task the manager spawned, and it
+        installs a fresh `Live` runtime when it finally succeeds. Every
+        `await` below is a chance for it to do exactly that. Draining the
+        `Live` entries and returning would therefore leave a process that
+        has "shut down" still holding a running consumer, an open
+        deadline task, and a database connection — and the loop would
+        never have noticed, because it only ever inspected `Live`.
+
+        So: fence first, then mark, then stop everything the manager
+        owns, and only then tear the runtimes down.
+        """
         if self._shutting_down:
             return
+
+        # 1. Fence. `get` now raises ServerRestarting, `_load` refuses,
+        #    and every `_recover` loop exits at its next check — before
+        #    any `await` below can give one a turn.
         self._shutting_down = True
 
+        # 2. Mark every resident runtime closed *before* awaiting
+        #    anything. From here no submit succeeds anywhere, so a
+        #    watchdog or reaper tick already in flight cannot enqueue
+        #    into a queue that is about to be drained.
+        for entry in self._entries.values():
+            if isinstance(entry, Live):
+                entry.runtime.closed = True
+
+        # 3. Stop the background tasks: the caller's watchdog and reaper,
+        #    then the manager's own quarantine/recovery tasks. These are
+        #    awaited, not just cancelled — a quarantine task cancelled
+        #    mid-teardown could leave a runtime detached but still
+        #    consuming.
         for closer in closers:
             await closer.aclose()
+        await self._cancel_lifecycle_tasks()
 
+        # 4. Now the runtimes, which are the only things left running.
         for game_id, entry in list(self._entries.items()):
-            if not isinstance(entry, Live):
-                continue
-            runtime = entry.runtime
-            runtime.closed = True
-            runtime.drain(RuntimeCode.SERVER_RESTARTING, "server is restarting")
-            await runtime.stop()
-            self._subscribers.close_game_subscribers(game_id, 1001)
+            if isinstance(entry, Live):
+                runtime = entry.runtime
+                runtime.drain(RuntimeCode.SERVER_RESTARTING, "server is restarting")
+                await runtime.stop()
+                self._subscribers.close_game_subscribers(game_id, 1001)
             del self._entries[game_id]
+
+    async def _cancel_lifecycle_tasks(self) -> None:
+        tasks = [t for t in self._quarantines.values() if not t.done()]
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("quarantine task failed during shutdown")
+        self._quarantines.clear()
 ```
 
-Add `self._shutting_down = False` to `__init__`, and make `get` raise `ServerRestarting` when it is set — that is "stop accepting new commands", enforced at the one place a caller can reach a runtime. Declare `SupportsAclose` as a local `Protocol` with `async def aclose(self) -> None: ...` rather than importing the watchdog and reaper into the manager, which would make the dependency circular.
+One supporting change is still needed here; the other three already landed in Tasks 11 and 12, because a flag added later to a method written earlier is precisely how this race got in:
+
+- **New in this task:** `get` raises `ServerRestarting` when `self._shutting_down` is set. That is "stop accepting new commands", enforced at the one place a caller can reach a runtime.
+- Already present: `self._shutting_down = False` in `__init__` and the `_load` guard (Task 11); the `_recover` and `_quarantine` checks (Task 12). Verify all four are in place before writing `shutdown` — the fence works only if every path that can install a `Live` entry consults it.
+
+Declare `SupportsAclose` as a local `Protocol` with `async def aclose(self) -> None: ...` rather than importing the watchdog and reaper into the manager, which would make the dependency circular.
 
 - [ ] **Step 5: Verify**
 
@@ -4893,8 +5201,12 @@ git commit -m "test(runtime): the runtime against real PostgreSQL, end to end"
 - [ ] `uv run pytest tests/db tests/runtime/integration -q --no-cov` passes against a live PostgreSQL 17, and **fails loudly** — never skips — when the database is down.
 - [ ] `tests/test_layering.py` proves `domain/` imports no persistence code, `services/` imports no adapter, and `runtime/` imports no `db` or `api` module — in both the absolute and the relative import form.
 - [ ] `services/ports.py` mentions no SQLAlchemy type, no `asyncpg`, and no `triviador.db` symbol, and the Plan 3 adapters satisfy every port under `mypy --strict`.
-- [ ] A `StartGame` retry after `40001` has been **watched to re-draw the pool** — not merely to re-append.
+- [ ] A `StartGame` retry after `40001` has been **watched to re-draw the pool** — not merely to re-append — and to reach that retry **without** a reconciliation round trip, even though the failure arrived at COMMIT.
 - [ ] Reconciliation has been watched to reject a batch whose `seq` range does not match exactly, and to accept the one that does.
+- [ ] A failed expiry enqueue has been watched to leave `expiry_enqueued_deadline_id` clear, so the next watchdog tick still fires.
+- [ ] The reaper has been watched to leave a runtime alone while it is executing a command with an empty queue, and to restore `closed` when it finds one busy.
+- [ ] A game in `Recovering` has been watched **not** to install a runtime after `shutdown()` returned, and every quarantine task is `done()` at that point.
+- [ ] The permanent/transient split has been watched in both directions on each of its three inputs: a decode error and an `InvalidMapError` and a non-folding log are permanent; a database error and an `OSError` from the map provider are not.
 - [ ] Quarantine teardown has been watched to run off the faulting task — the consumer task actually finishes.
 - [ ] Nothing queued against generation *N* has been observed reaching generation *N+1*.
 - [ ] The watchdog has been watched **not** to double-enqueue while an expiry is still queued, and to fire again once the `DeadlineId` changes.
