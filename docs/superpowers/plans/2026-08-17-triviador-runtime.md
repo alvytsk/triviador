@@ -2803,13 +2803,21 @@ from triviador.runtime.runtime import GameRuntime, QueuedCommand
 
 class StubExecutor:
     """Returns scripted outcomes. The executor's own behaviour is Task 8's
-    subject; here it is a boundary."""
+    subject; here it is a boundary.
 
-    def __init__(self, outcomes: list[object]) -> None:
+    Annotated to satisfy `runtime.commit.Executor` structurally — never by
+    subclassing it. A stub that drifts from the Protocol then fails
+    `mypy --strict` at the call site, which is where it is cheapest to
+    notice.
+    """
+
+    def __init__(self, outcomes: list[Accepted | Ignored | Rejected | Exception]) -> None:
         self._outcomes = outcomes
-        self.calls: list[tuple[int, object, str]] = []
+        self.calls: list[tuple[int, Command, str]] = []
 
-    async def execute(self, state, command, operation_id):
+    async def execute(
+        self, state: GameState, command: Command, operation_id: str
+    ) -> Accepted | Ignored | Rejected:
         self.calls.append((state.seq, command, operation_id))
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, Exception):
@@ -2817,13 +2825,23 @@ class StubExecutor:
         return outcome
 
 
-def a_runtime(executor, *, broadcaster=None, faults=None, queue_maxsize=256):
+def a_runtime(
+    executor: Executor,
+    *,
+    broadcaster: FakeBroadcaster | None = None,
+    faults: list[tuple[object, BaseException]] | None = None,
+    queue_maxsize: int = 256,
+) -> GameRuntime:
+    def on_fault(rt: GameRuntime, exc: BaseException) -> None:
+        if faults is not None:
+            faults.append((rt, exc))
+
     return GameRuntime(
         state=lobby_state(players={"p1": 0}),
         executor=executor,
         clock=FakeClock(T0),
         broadcaster=broadcaster if broadcaster is not None else FakeBroadcaster(),
-        on_fault=(lambda rt, exc: faults.append((rt, exc))) if faults is not None else (lambda rt, exc: None),
+        on_fault=on_fault,
         generation=17,
         rng=random.Random(0),
         queue_maxsize=queue_maxsize,
@@ -2831,74 +2849,256 @@ def a_runtime(executor, *, broadcaster=None, faults=None, queue_maxsize=256):
 
 
 async def test_a_committed_command_folds_publishes_and_resolves_in_that_order() -> None:
-    ...
+    """Fold, then publish, then resolve. Publishing a state that has not
+    folded the batch sends clients a snapshot that contradicts the events
+    beside it; resolving before publishing lets a REST caller observe its
+    own write before any subscriber does."""
+    event = PlayerJoined(PlayerId("p2"), "P2", seat=1)
+    trace: list[str] = []
+    broadcaster = TracingBroadcaster(trace)
+    runtime = a_runtime(StubExecutor([Accepted((event,))]), broadcaster=broadcaster)
+    runtime.start()
+    origin = TracingOrigin(trace)
+
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", origin))
+    await settle(runtime)
+
+    assert PlayerId("p2") in runtime.state.players
+    assert trace == ["publish", "resolve_ok"]
+    assert PlayerId("p2") in broadcaster.published[0].state.players  # folded before publish
+    await runtime.aclose()
 
 
 async def test_an_ignored_command_does_not_evolve_publish_or_reschedule() -> None:
-    ...
+    """§5.2: a no-op resolves and `continue`s — no evolve, no reschedule,
+    no publish. A stale window is a benign race, and broadcasting a
+    state that did not change would make every client re-render for
+    nothing."""
+    broadcaster = FakeBroadcaster()
+    runtime = a_runtime(StubExecutor([Ignored()]), broadcaster=broadcaster)
+    runtime.start()
+    before = runtime.state
+    origin = RecordingOrigin()
+
+    runtime.submit(QueuedCommand(ExpireDeadline(DeadlineId(99)), "op-1", origin))
+    await settle(runtime)
+
+    assert runtime.state is before
+    assert broadcaster.published == []
+    assert origin.outcome == ("noop", None)
+    await runtime.aclose()
 
 
 async def test_a_rejected_command_leaves_state_untouched_and_the_runtime_healthy() -> None:
-    ...
+    """§5.5: rollback, reply to origin, state untouched, runtime healthy.
+    The second command proves the last clause — a loop that stopped
+    consuming after a rejection would hang every later request."""
+    executor = StubExecutor(
+        [Rejected(RejectCode.GAME_FULL, "lobby is full"), Ignored()]
+    )
+    broadcaster = FakeBroadcaster()
+    runtime = a_runtime(executor, broadcaster=broadcaster)
+    runtime.start()
+    before = runtime.state
+    rejected, followup = RecordingOrigin(), RecordingOrigin()
+
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p9"), "P9"), "op-1", rejected))
+    await settle(runtime)
+    runtime.submit(QueuedCommand(ExpireDeadline(DeadlineId(99)), "op-2", followup))
+    await settle(runtime)
+
+    assert runtime.state is before
+    assert broadcaster.published == []
+    assert rejected.outcome == ("rejected", RejectCode.GAME_FULL)
+    assert followup.outcome == ("noop", None)
+    assert runtime.closed is False
+    await runtime.aclose()
 
 
 async def test_publish_receives_the_pre_command_base_seq_and_the_post_command_state() -> None:
-    ...
+    """§8.2's dispatcher needs the *pre*-command seq to detect a gap:
+    a client holding seq N applies a frame whose `base_seq` is N and
+    resyncs otherwise. Publishing the post-fold seq would make every
+    client believe it is already up to date and silently skip the gap."""
+    event = PlayerJoined(PlayerId("p2"), "P2", seat=1)
+    broadcaster = FakeBroadcaster()
+    runtime = a_runtime(StubExecutor([Accepted((event,))]), broadcaster=broadcaster)
+    runtime.start()
+    base_seq = runtime.state.seq
+
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", RecordingOrigin()))
+    await settle(runtime)
+
+    published = broadcaster.published[0]
+    assert published.base_seq == base_seq
+    assert published.state is runtime.state
+    assert published.state.seq == base_seq + 1
+    await runtime.aclose()
 
 
 async def test_a_broadcaster_that_raises_never_faults_the_runtime() -> None:
-    ...
-
-
-async def test_a_commit_fault_reports_to_the_manager_and_stops_the_loop() -> None:
-    ...
-
-
-async def test_submit_on_a_full_queue_raises_without_resolving_the_origin() -> None:
-    ...
-
-
-async def test_submit_on_a_closed_runtime_raises_runtime_closed() -> None:
-    ...
-
-
-async def test_drain_resolves_every_queued_origin_once_with_the_given_code() -> None:
-    ...
-```
-
-Fill each body following this worked example, which is the template for the rest — spawn the loop, submit, let the loop turn with `clock.settle()`, then assert:
-
-```python
-async def test_a_committed_command_folds_publishes_and_resolves_in_that_order() -> None:
-    from triviador.domain.game.events import PlayerJoined
-    from triviador.runtime.origins import Accepted
-
+    """§5.5: the commit is durable and memory is correct. Destroying a
+    healthy runtime over a misbehaving socket converts a client problem
+    into a game-wide outage, and §8.5 already gives every client an
+    unconditional recovery path."""
     event = PlayerJoined(PlayerId("p2"), "P2", seat=1)
-    executor = StubExecutor([Accepted((event,))])
     broadcaster = FakeBroadcaster()
-    runtime = a_runtime(executor, broadcaster=broadcaster)
+    broadcaster.fail_with = RuntimeError("socket gone")
+    faults: list[tuple[object, BaseException]] = []
+    runtime = a_runtime(
+        StubExecutor([Accepted((event,))]), broadcaster=broadcaster, faults=faults
+    )
     runtime.start()
     origin = RecordingOrigin()
 
     runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", origin))
-    await runtime.clock.settle()
+    await settle(runtime)
 
-    assert PlayerId("p2") in runtime.state.players       # folded
-    assert broadcaster.published[0].events == (event,)   # published
-    assert origin.outcome == ("ok", (event,))            # resolved exactly once
+    assert faults == []
+    assert runtime.closed is False
+    assert origin.outcome == ("ok", (event,))
+    assert PlayerId("p2") in runtime.state.players
+    await runtime.aclose()
+
+
+async def test_a_commit_fault_reports_to_the_manager_and_stops_the_loop() -> None:
+    """The dequeued command's origin is resolved *here*, not by the
+    manager's drain: quarantine drains the queue, and this command is no
+    longer in it. Then the loop stops — teardown must not run on this
+    task, because a task cannot cancel and await itself."""
+    faults: list[tuple[object, BaseException]] = []
+    runtime = a_runtime(StubExecutor([CommitFault("boom")]), faults=faults)
+    runtime.start()
+    origin = RecordingOrigin()
+
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", origin))
+    await settle(runtime)
+
+    assert len(faults) == 1
+    assert faults[0][0] is runtime
+    assert origin.outcome == ("failed", RuntimeCode.GAME_RECOVERING)
+    assert runtime.consumer_done()
+    # The loop stopped, but the *manager* closes the runtime — not the
+    # faulting task. Until quarantine runs, submit still accepts.
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p3"), "P3"), "op-2", RecordingOrigin()))
+    assert runtime.pending_commands() == 1
+    await runtime.aclose()
+
+
+async def test_submit_on_a_full_queue_raises_without_resolving_the_origin() -> None:
+    """An origin belongs to the caller until `submit` returns
+    successfully. Resolving here as well as raising would be a double
+    resolution the moment the caller handles the raise."""
+    runtime = a_runtime(StubExecutor([]), queue_maxsize=1)  # not started: nothing drains it
+    accepted, refused = RecordingOrigin(), RecordingOrigin()
+
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", accepted))
+    with pytest.raises(ServerBusy):
+        runtime.submit(QueuedCommand(JoinGame(PlayerId("p3"), "P3"), "op-2", refused))
+
+    assert refused.resolutions == []
+    assert accepted.resolutions == []
+
+
+async def test_submit_on_a_closed_runtime_raises_runtime_closed() -> None:
+    runtime = a_runtime(StubExecutor([]))
+    runtime.start()
+    await runtime.aclose()
+
+    with pytest.raises(RuntimeClosed):
+        runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", RecordingOrigin()))
+
+
+async def test_drain_resolves_every_queued_origin_once_with_the_given_code() -> None:
+    """Used by quarantine (`GAME_RECOVERING`) and shutdown
+    (`SERVER_RESTARTING`) — the two places where queued commands will
+    never be processed and their origins would otherwise hang forever."""
+    runtime = a_runtime(StubExecutor([]))  # not started
+    first, second = RecordingOrigin(), RecordingOrigin()
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", first))
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p3"), "P3"), "op-2", second))
+
+    drained = runtime.drain(RuntimeCode.SERVER_RESTARTING, "server is restarting")
+
+    assert drained == 2
+    assert first.outcome == ("failed", RuntimeCode.SERVER_RESTARTING)
+    assert second.outcome == ("failed", RuntimeCode.SERVER_RESTARTING)
+    assert runtime.pending_commands() == 0
+
+
+async def test_in_flight_is_true_only_while_a_command_is_executing() -> None:
+    """`is_idle()` is what stops the reaper cancelling a live
+    transaction, and it is only as good as this flag. The queue reads
+    empty for the whole duration of a command, because `_consume`
+    dequeues before it executes."""
+    executor = GatedExecutor()
+    runtime = a_runtime(executor)
+    runtime.start()
+    assert runtime.is_idle()
+
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", RecordingOrigin()))
+    await executor.entered.wait()
+
+    assert runtime.pending_commands() == 0  # the lie is_idle() exists to correct
+    assert not runtime.is_idle()
+
+    executor.release.set()
+    await settle(runtime)
+    assert runtime.is_idle()
     await runtime.aclose()
 ```
 
-The remaining bodies, each asserting exactly what its name says:
+Two helpers the module needs, above the tests:
 
-- **ignored** — `StubExecutor([Ignored()])`; after the turn, `runtime.state` is the same object, `broadcaster.published == []`, `origin.outcome == ("noop", None)`.
-- **rejected** — `StubExecutor([Rejected(RejectCode.GAME_FULL, "lobby is full")])`; state unchanged, nothing published, `origin.outcome[0] == "rejected"`, and the loop still accepts a second command afterwards.
-- **base_seq** — assert `published[0].base_seq == state_before.seq` and `published[0].state is runtime.state`. §8.2's dispatcher needs the *pre*-command seq to detect a gap; publishing the post-fold seq would make every client believe it is up to date.
-- **broadcaster raises** — `broadcaster.fail_with = RuntimeError("socket gone")`; after the turn `faults == []`, `runtime.closed is False`, and the origin still resolved `("ok", ...)`. §5.5: destroying a healthy runtime over a misbehaving socket converts a client problem into a game-wide outage.
-- **commit fault** — `StubExecutor([CommitFault("boom")])`; `faults` has one entry whose runtime is this one, the origin resolved `("failed", RuntimeCode.GAME_RECOVERING)`, and a later `submit` still queues (the manager, not the loop, closes the runtime — Task 12).
-- **full queue** — build with `queue_maxsize=1`, do *not* call `start()`, submit twice; the second raises `ServerBusy` and `origin.resolutions == []` — the caller still owns it.
-- **closed** — `await runtime.aclose()` then `submit` raises `RuntimeClosed`.
-- **drain** — queue two commands without starting the loop, call `runtime.drain(RuntimeCode.SERVER_RESTARTING, "server is restarting")`, assert both origins resolved once with that code and the queue is empty.
+```python
+@dataclass
+class TracingOrigin:
+    """Appends to a shared trace so ordering against the broadcaster is
+    observable, which `RecordingOrigin` alone cannot show."""
+
+    trace: list[str]
+
+    def resolve_ok(self, events: Sequence[GameEvent]) -> None:
+        self.trace.append("resolve_ok")
+
+    def resolve_noop(self) -> None:
+        self.trace.append("resolve_noop")
+
+    def resolve_rejected(self, code: RejectCode, message: str) -> None:
+        self.trace.append("resolve_rejected")
+
+    def resolve_failed(self, code: RuntimeCode, message: str) -> None:
+        self.trace.append("resolve_failed")
+
+
+class TracingBroadcaster(FakeBroadcaster):
+    def __init__(self, trace: list[str]) -> None:
+        super().__init__()
+        self._trace = trace
+
+    def publish(self, game_id, base_seq, state, events) -> None:
+        self._trace.append("publish")
+        super().publish(game_id, base_seq, state, events)
+
+
+class GatedExecutor:
+    """Blocks inside `execute` until released — stands in for a COMMIT in
+    flight. Shared with `test_shutdown.py` and `test_reaper.py`; put it in
+    `tests/runtime/conftest.py`."""
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def execute(
+        self, state: GameState, command: Command, operation_id: str
+    ) -> Accepted | Ignored | Rejected:
+        self.entered.set()
+        await self.release.wait()
+        return Accepted((PlayerJoined(PlayerId("p2"), "P2", seat=1),))
+```
+
+`consumer_done()` is a one-line accessor on `GameRuntime` — `return self._consumer is not None and self._consumer.done()` — added so a test can assert the loop actually stopped without reaching into a private attribute.
 
 - [ ] **Step 2: Run and watch it fail**
 
@@ -3319,25 +3519,98 @@ async def test_the_task_is_respawned_when_the_deadline_id_changes() -> None:
     """A command that opens a new window must retarget the timer. The old
     task is cancelled; if it fires anyway, guard 2 drops it — but leaving
     it scheduled would mean two timers racing on one game."""
-    ...
+    state = warmup_state()
+    first = state.current_deadline()
+    assert first is not None
+    clock = FakeClock(first.deadline_at - timedelta(seconds=1))
+
+    # Drive the warmup close through the real reducer, so the events that
+    # open the next window are the ones production would produce.
+    closing = decide(
+        state,
+        ExpireDeadline(first.id),
+        DecisionContext(now=first.deadline_at + timedelta(milliseconds=1)),
+    )
+    runtime = a_runtime(state, clock, StubExecutor([Accepted(closing)]))
+    runtime.start()
+    await settle(runtime)
+    assert clock.pending() == (first.deadline_at,)
+
+    runtime.submit(QueuedCommand(ExpireDeadline(first.id), "op-1", RecordingOrigin()))
+    await settle(runtime)
+
+    second = runtime.state.current_deadline()
+    assert second is not None
+    assert second.id != first.id
+    assert clock.pending() == (second.deadline_at,)  # exactly one timer, retargeted
+    await runtime.aclose()
 
 
 async def test_the_task_is_not_respawned_when_the_deadline_is_unchanged() -> None:
     """An answer submitted mid-window does not reopen it. Respawning on
     every command would reset the sleep and quietly extend the window each
-    time a player typed."""
-    ...
+    time a player typed — the fastest player would give everyone else
+    more time."""
+    state = warmup_state()
+    deadline = state.current_deadline()
+    assert deadline is not None
+    clock = FakeClock(deadline.deadline_at - timedelta(seconds=5))
+    runtime = a_runtime(state, clock, StubExecutor([Ignored()]))
+    runtime.start()
+    await settle(runtime)
+    before = clock.pending()
+
+    runtime.submit(QueuedCommand(ExpireDeadline(DeadlineId(999)), "op-1", RecordingOrigin()))
+    await settle(runtime)
+
+    assert clock.pending() == before == (deadline.deadline_at,)
+    await runtime.aclose()
 
 
 async def test_the_expiry_is_submitted_with_a_system_origin_and_a_fresh_operation_id() -> None:
-    ...
+    """Nobody is waiting for a deadline expiry, so its origin must absorb
+    every resolution silently — including the `resolve_noop` a stale
+    expiry gets. And each expiry needs its own `operation_id`: two
+    expiries sharing one would make the second look, to §5.5's
+    reconciliation, like a replay of the first.
+    """
+    state = warmup_state()
+    first = state.current_deadline()
+    assert first is not None
+    clock = FakeClock(first.deadline_at - timedelta(seconds=1))
+    closing = decide(
+        state,
+        ExpireDeadline(first.id),
+        DecisionContext(now=first.deadline_at + timedelta(milliseconds=1)),
+    )
+    executor = StubExecutor([Accepted(closing), Ignored()])
+    runtime = a_runtime(state, clock, executor)
+    runtime.start()
+    await settle(runtime)
+
+    await clock.advance_to(first.deadline_at)
+    second = runtime.state.current_deadline()
+    assert second is not None
+    await clock.advance_to(second.deadline_at)
+
+    operation_ids = [call[2] for call in executor.calls]
+    assert all(operation_ids)                      # never empty
+    assert len(set(operation_ids)) == len(operation_ids)  # never reused
+    await runtime.aclose()
 ```
 
-For the three unwritten bodies:
+`a_runtime` here takes `(state, clock, executor)` — a different shape from Task 9's, because these tests vary the state and the clock rather than the broadcaster. Keep both local to their modules rather than forcing one signature to serve both.
 
-- **respawned** — start on `warmup_state()`, advance partway, submit a command whose `Accepted` events close the warmup and open an answer window (drive it through the real reducer, as `tests/conftest.expire_warmup` does), then assert `clock.pending()` is exactly the *new* deadline's instant and `runtime.state.current_deadline().id` differs from the first.
-- **not respawned** — capture `clock.pending()` after `start()`, submit a command whose outcome is `Ignored`, and assert `clock.pending()` is unchanged and no second waiter appeared.
-- **system origin** — spy on `submit` (wrap the runtime's queue, or assert on the executor's `operation_id` argument): the expiry's `operation_id` is non-empty, differs between two expiries, and its origin resolves silently rather than raising when the command is ignored.
+`settle` is the narrowing helper from `tests/runtime/conftest.py`:
+
+```python
+async def settle(runtime: GameRuntime) -> None:
+    """`GameRuntime.clock` is typed as the `Clock` Protocol, which has no
+    `settle`. Narrow here once instead of casting in every test."""
+    clock = runtime.clock
+    assert isinstance(clock, FakeClock)
+    await clock.settle()
+```
 
 Move `warmup_state` from `tests/runtime/test_materialiser.py` into `tests/runtime/conftest.py` as a plain function if Task 8 has not already done so.
 
@@ -3892,55 +4165,100 @@ class ScriptedLoader:
 
 
 async def test_a_fault_tears_down_and_loads_a_fresh_generation() -> None:
-    ...
+    clock = FakeClock(T0)
+    loader = ScriptedLoader([lobby_state(), lobby_state()])
+    manager = a_manager(loader, clock=clock)
+    old = await manager.get(GAME)
+
+    manager.quarantine(old, "boom")
+    await clock.settle()
+
+    entry = manager.entry_for(GAME)
+    assert isinstance(entry, Live)
+    assert entry.runtime is not old
+    assert entry.runtime.generation > old.generation
+    assert old.closed is True
+    assert loader.calls == 2
 
 
 async def test_quarantine_does_not_run_on_the_faulting_task() -> None:
-    """A task cannot cancel and await itself. If teardown ran inline the
-    consumer would hang here forever, so this test asserts the loop's task
-    actually finishes."""
-    ...
+    """A task cannot cancel and await itself. If teardown ran inline, the
+    consumer task would be awaiting its own cancellation and hang here
+    forever — so the assertion is simply that it finished."""
+    clock = FakeClock(T0)
+    manager = a_manager(ScriptedLoader([lobby_state(), lobby_state()]), clock=clock)
+    old = await manager.get(GAME)
+    old.replace_executor_for_test(StubExecutor([CommitFault("boom")]))
+
+    old.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", RecordingOrigin()))
+    await clock.settle()
+
+    assert old.consumer_done()
+    assert isinstance(manager.entry_for(GAME), Live)
 
 
 async def test_queued_commands_are_resolved_with_game_recovering() -> None:
-    ...
+    """Anything still in the queue when a runtime is torn down will never
+    be processed. An unresolved origin is a request that hangs until its
+    client gives up."""
+    clock = FakeClock(T0)
+    manager = a_manager(ScriptedLoader([lobby_state(), lobby_state()]), clock=clock)
+    old = await manager.get(GAME)
+    first, second = RecordingOrigin(), RecordingOrigin()
+    old.submit(QueuedCommand(JoinGame(PlayerId("p8"), "P8"), "op-1", first))
+    old.submit(QueuedCommand(JoinGame(PlayerId("p9"), "P9"), "op-2", second))
+
+    manager.quarantine(old, "boom")
+    await clock.settle()
+
+    assert first.outcome == ("failed", RuntimeCode.GAME_RECOVERING)
+    assert second.outcome == ("failed", RuntimeCode.GAME_RECOVERING)
 
 
 async def test_nothing_queued_against_the_old_generation_reaches_the_new_one() -> None:
-    """§12.2's generation quarantine, stated as a test."""
-    ...
+    """§12.2's generation quarantine, stated as a test. A command that
+    survived into the replacement runtime would be decided against a
+    state it never saw."""
+    clock = FakeClock(T0)
+    manager = a_manager(ScriptedLoader([lobby_state(), lobby_state()]), clock=clock)
+    old = await manager.get(GAME)
+    origins = [RecordingOrigin(), RecordingOrigin()]
+    for i, origin in enumerate(origins):
+        old.submit(QueuedCommand(JoinGame(PlayerId(f"p{i}"), f"P{i}"), f"op-{i}", origin))
+
+    manager.quarantine(old, "boom")
+    await clock.settle()
+
+    entry = manager.entry_for(GAME)
+    assert isinstance(entry, Live)
+    new = entry.runtime
+    assert new.generation > old.generation
+    assert new.pending_commands() == 0
+    assert all(o.outcome == ("failed", RuntimeCode.GAME_RECOVERING) for o in origins)
+    with pytest.raises(RuntimeClosed):
+        old.submit(QueuedCommand(JoinGame(PlayerId("px"), "PX"), "op-x", RecordingOrigin()))
 
 
 async def test_subscribers_are_closed_with_1011_through_the_port() -> None:
-    ...
+    """1011 "internal error", and through the port: the sockets stay owned
+    by the hub, which is the only thing that knows how to close one."""
+    clock = FakeClock(T0)
+    subscribers = FakeSubscribers()
+    manager = a_manager(
+        ScriptedLoader([lobby_state(), lobby_state()]), clock=clock, subscribers=subscribers
+    )
+    old = await manager.get(GAME)
+
+    manager.quarantine(old, "boom")
+    await clock.settle()
+
+    assert subscribers.closed == [(GAME, 1011)]
 
 
 async def test_a_transient_recovery_failure_stays_recovering_and_retries() -> None:
     """§5.6: quarantine is reached *because* something broke — most often
     persistence — so "immediately load a fresh generation" is the least
     likely operation to succeed at that moment."""
-    ...
-
-
-async def test_the_backoff_grows_and_is_capped() -> None:
-    ...
-
-
-async def test_a_permanent_recovery_failure_goes_to_failed_without_retrying() -> None:
-    ...
-
-
-async def test_a_second_fault_from_the_same_runtime_is_ignored() -> None:
-    """The consumer stops after reporting, but the deadline task or a
-    caller may report again. Quarantining twice would tear down the
-    replacement generation."""
-    ...
-```
-
-Each body follows one shape — build a manager with a `ScriptedLoader`, force a fault, advance the fake clock over the backoff, assert on `manager.entry_for(GAME)`:
-
-```python
-async def test_a_transient_recovery_failure_stays_recovering_and_retries() -> None:
     clock = FakeClock(T0)
     loader = ScriptedLoader([lobby_state(), OSError("db down"), lobby_state()])
     manager = a_manager(loader, clock=clock, backoff_initial_s=1.0, backoff_max_s=8.0)
@@ -3957,11 +4275,79 @@ async def test_a_transient_recovery_failure_stays_recovering_and_retries() -> No
 
     assert isinstance(manager.entry_for(GAME), Live)
     assert loader.calls == 3
+
+
+async def test_the_backoff_grows_and_is_capped() -> None:
+    """Assert the *bound*, never an exact delay: the backoff is jittered,
+    and an exact-value assertion here would only restate the
+    implementation — and would fail the day someone changes the jitter
+    without changing the behaviour that matters."""
+    clock = FakeClock(T0)
+    loader = ScriptedLoader([lobby_state(), *[OSError("db down")] * 4, lobby_state()])
+    manager = a_manager(loader, clock=clock, backoff_initial_s=1.0, backoff_max_s=4.0)
+    runtime = await manager.get(GAME)
+
+    manager.quarantine(runtime, "persistence unavailable")
+    await clock.settle()
+
+    waits: list[float] = []
+    for attempt in range(1, 5):
+        pending = clock.pending()
+        assert len(pending) == 1, "exactly one recovery timer at a time"
+        delay = (pending[0] - clock.now()).total_seconds()
+        assert 0.0 <= delay <= min(4.0, 1.0 * 2 ** (attempt - 1))
+        waits.append(delay)
+        await clock.advance_to(pending[0])
+
+    assert isinstance(manager.entry_for(GAME), Live)
+    # The cap is what is asserted, not monotonicity: full jitter means any
+    # single delay can be small. The ceiling is what stops a long outage
+    # turning into an ever-growing wait.
+    assert all(w <= 4.0 for w in waits)
+
+
+async def test_a_permanent_recovery_failure_goes_to_failed_without_retrying() -> None:
+    """No backoff, no second attempt: replay will never succeed, and
+    retrying only hides the incident."""
+    clock = FakeClock(T0)
+    loader = ScriptedLoader([lobby_state(), PermanentReplayFailure("bad digest")])
+    manager = a_manager(loader, clock=clock)
+    runtime = await manager.get(GAME)
+
+    manager.quarantine(runtime, "boom")
+    await clock.settle()
+
+    assert isinstance(manager.entry_for(GAME), Failed)
+    assert clock.pending() == ()          # nothing scheduled: it is not coming back
+    assert loader.calls == 2
+    assert manager.degraded() == ((GAME, "bad digest"),)
+
+
+async def test_a_second_fault_from_the_same_runtime_is_ignored() -> None:
+    """The consumer stops after reporting, but the deadline task or a
+    caller may report again. A second teardown would destroy the
+    replacement generation the first one just installed."""
+    clock = FakeClock(T0)
+    loader = ScriptedLoader([lobby_state(), lobby_state()])
+    manager = a_manager(loader, clock=clock)
+    old = await manager.get(GAME)
+
+    manager.quarantine(old, "boom")
+    manager.quarantine(old, "boom again")
+    await clock.settle()
+
+    assert loader.calls == 2              # one reload, not two
+    entry = manager.entry_for(GAME)
+    assert isinstance(entry, Live)
+    assert entry.runtime.generation == old.generation + 1
 ```
 
-For **the backoff grows and is capped**, script four consecutive `OSError`s and assert `clock.pending()` after each retry is strictly larger than the previous wait until it reaches `backoff_max_s`, then stays there. Because the delay is jittered, assert the *bound* (`<= backoff_max_s` and `<= initial * 2 ** (attempt - 1)`), never an exact value — an exact-value assertion here would make the test a restatement of the implementation.
+Two notes on the helpers these need:
 
-For **nothing queued against the old generation reaches the new one**, queue two commands against R17 with `RecordingOrigin`s *before* forcing the fault, then after recovery assert both resolved `("failed", RuntimeCode.GAME_RECOVERING)`, the new runtime's queue is empty, and `new.generation > old.generation`.
+- `a_manager` gains a `subscribers=` override alongside `clock=`, `games=`, `backoff_initial_s=` and `backoff_max_s=`.
+- `replace_executor_for_test` is a one-line seam on `GameRuntime` (`self._executor = executor`), used here to make a live runtime fault on its next command. Name it exactly that so it is never mistaken for production API. `consumer_done()` is the accessor added in Task 9.
+
+`ScriptedLoader` moves to `tests/runtime/conftest.py` in Task 13 — write it here and move it there, rather than leaving two copies.
 
 - [ ] **Step 2: Run and watch it fail**
 
@@ -4264,37 +4650,120 @@ from triviador.runtime.watchdog import Watchdog
 
 
 async def test_it_enqueues_an_expiry_for_a_deadline_past_its_grace() -> None:
-    ...
+    state = warmup_state()
+    deadline = state.current_deadline()
+    assert deadline is not None
+    clock = FakeClock(deadline.deadline_at + timedelta(seconds=6))
+    runtime = stalled_runtime(state, clock)
+    watchdog = Watchdog(manager=manager_holding(runtime), clock=clock, grace_s=5.0)
+
+    watchdog.tick()
+
+    assert [qc.command for qc in queued_commands(runtime)] == [ExpireDeadline(deadline.id)]
+    assert runtime.expiry_enqueued_deadline_id == deadline.id
 
 
 async def test_it_leaves_a_deadline_inside_its_grace_alone() -> None:
     """`now > deadline_at + grace`, not `now > deadline_at`. Firing at the
     instant the deadline passes would race the deadline task on every
     single window in the game and double the command volume."""
-    ...
+    state = warmup_state()
+    deadline = state.current_deadline()
+    assert deadline is not None
+    clock = FakeClock(deadline.deadline_at + timedelta(seconds=4))
+    runtime = stalled_runtime(state, clock)
+    watchdog = Watchdog(manager=manager_holding(runtime), clock=clock, grace_s=5.0)
+
+    watchdog.tick()
+
+    assert queued_commands(runtime) == []
+    assert runtime.expiry_enqueued_deadline_id is None
 
 
 async def test_it_does_not_double_enqueue_while_an_expiry_is_queued() -> None:
     """The named failure: fencing on "last expired" instead of "last
     enqueued" means every tick re-enqueues while the first expiry waits
-    in the queue."""
-    ...
+    in the queue — a briefly stalled consumer would wake to 256 copies of
+    one command."""
+    state = warmup_state()
+    deadline = state.current_deadline()
+    assert deadline is not None
+    clock = FakeClock(deadline.deadline_at + timedelta(seconds=6))
+    runtime = stalled_runtime(state, clock)
+    watchdog = Watchdog(manager=manager_holding(runtime), clock=clock, grace_s=5.0)
+
+    watchdog.tick()
+    await clock.advance_to(clock.now() + timedelta(seconds=5))
+    watchdog.tick()
+    await clock.advance_to(clock.now() + timedelta(seconds=5))
+    watchdog.tick()
+
+    assert [qc.command for qc in queued_commands(runtime)] == [ExpireDeadline(deadline.id)]
 
 
 async def test_it_enqueues_again_once_the_deadline_id_changes() -> None:
     """The fence is per `DeadlineId`, not a latch. A new window that also
-    stalls must still be rescued."""
-    ...
+    stalls must still be rescued — otherwise the watchdog protects
+    exactly one window per game, forever."""
+    state = warmup_state()
+    first = state.current_deadline()
+    assert first is not None
+    clock = FakeClock(first.deadline_at + timedelta(seconds=6))
+    runtime = stalled_runtime(state, clock)
+    watchdog = Watchdog(manager=manager_holding(runtime), clock=clock, grace_s=5.0)
+
+    watchdog.tick()
+    drain_queue(runtime)
+
+    # Advance the game to a new window, exactly as a committed command
+    # would: fold the events that close the warmup.
+    closing = decide(
+        state,
+        ExpireDeadline(first.id),
+        DecisionContext(now=first.deadline_at + timedelta(milliseconds=1)),
+    )
+    runtime.replace_state_for_test(fold(state, closing))
+    second = runtime.state.current_deadline()
+    assert second is not None
+    await clock.advance_to(second.deadline_at + timedelta(seconds=6))
+
+    watchdog.tick()
+
+    assert [qc.command for qc in queued_commands(runtime)] == [ExpireDeadline(second.id)]
 
 
 async def test_it_ignores_a_runtime_with_no_open_deadline() -> None:
-    ...
+    """A lobby has no window. `current_deadline()` is None and there is
+    nothing to rescue."""
+    clock = FakeClock(T0)
+    runtime = stalled_runtime(lobby_state(), clock)
+    watchdog = Watchdog(manager=manager_holding(runtime), clock=clock, grace_s=5.0)
+
+    watchdog.tick()
+
+    assert queued_commands(runtime) == []
 
 
 async def test_a_full_queue_or_closed_runtime_does_not_kill_the_tick() -> None:
     """One sick game must not stop the watchdog from rescuing the other
-    nineteen."""
-    ...
+    nineteen. `tick` is total by construction."""
+    state = warmup_state()
+    deadline = state.current_deadline()
+    assert deadline is not None
+    clock = FakeClock(deadline.deadline_at + timedelta(seconds=6))
+
+    full = stalled_runtime(state, clock, queue_maxsize=1)
+    full.submit(QueuedCommand(ExpireDeadline(DeadlineId(1)), "filler", RecordingOrigin()))
+    closed = stalled_runtime(state, clock)
+    closed.closed = True
+    healthy = stalled_runtime(state, clock)
+
+    watchdog = Watchdog(
+        manager=manager_holding(full, closed, healthy), clock=clock, grace_s=5.0
+    )
+    watchdog.tick()
+
+    assert [qc.command for qc in queued_commands(healthy)] == [ExpireDeadline(deadline.id)]
 
 
 async def test_a_failed_enqueue_leaves_the_fence_clear_for_the_next_tick() -> None:
@@ -4302,38 +4771,94 @@ async def test_a_failed_enqueue_leaves_the_fence_clear_for_the_next_tick() -> No
     without one — but a `submit` that *raises* must roll it back. A fence
     left set behind a failed enqueue means nothing is queued and every
     later tick skips this deadline, so the game stalls on that window
-    forever and the watchdog looks straight past it.
-
-    Build a runtime with `queue_maxsize=1`, fill it, tick (the submit
-    raises ServerBusy), then drain the queue and tick again — the second
-    tick must enqueue the expiry.
-    """
-    ...
-```
-
-Write each body against a manager holding one or two runtimes built from `warmup_state()`, driving the loop with `clock.advance_to(T0 + timedelta(seconds=5 * n))`. The worked shape:
-
-```python
-async def test_it_does_not_double_enqueue_while_an_expiry_is_queued() -> None:
+    forever and the watchdog looks straight past it."""
     state = warmup_state()
     deadline = state.current_deadline()
     assert deadline is not None
     clock = FakeClock(deadline.deadline_at + timedelta(seconds=6))
-    runtime = _stalled_runtime(state, clock)     # started, but its consumer never runs
-    manager = _manager_holding(runtime)
-    watchdog = Watchdog(manager=manager, clock=clock, interval_s=5.0, grace_s=5.0)
+    runtime = stalled_runtime(state, clock, queue_maxsize=1)
+    runtime.submit(QueuedCommand(ExpireDeadline(DeadlineId(1)), "filler", RecordingOrigin()))
+    watchdog = Watchdog(manager=manager_holding(runtime), clock=clock, grace_s=5.0)
+
+    watchdog.tick()  # ServerBusy: the queue is full
+    assert runtime.expiry_enqueued_deadline_id is None  # rolled back
+
+    drain_queue(runtime)
+    watchdog.tick()
+
+    assert [qc.command for qc in queued_commands(runtime)] == [ExpireDeadline(deadline.id)]
+    assert runtime.expiry_enqueued_deadline_id == deadline.id
+
+
+async def test_the_loop_ticks_on_its_interval() -> None:
+    """`tick()` is called directly above; this is the one test that drives
+    `start()`, so the sleep loop itself is not untested code."""
+    state = warmup_state()
+    deadline = state.current_deadline()
+    assert deadline is not None
+    clock = FakeClock(deadline.deadline_at + timedelta(seconds=6))
+    runtime = stalled_runtime(state, clock)
+    watchdog = Watchdog(
+        manager=manager_holding(runtime), clock=clock, interval_s=5.0, grace_s=5.0
+    )
     watchdog.start()
     await clock.settle()
+    assert queued_commands(runtime) == []  # nothing before the first tick
 
     await clock.advance_to(clock.now() + timedelta(seconds=5))
-    await clock.advance_to(clock.now() + timedelta(seconds=5))
 
-    queued = _drain_queue(runtime)
-    assert [qc.command for qc in queued] == [ExpireDeadline(deadline.id)]
+    assert [qc.command for qc in queued_commands(runtime)] == [ExpireDeadline(deadline.id)]
     await watchdog.aclose()
 ```
 
-`_stalled_runtime` builds a `GameRuntime` **without** calling `start()`, so commands accumulate in the queue and nothing consumes them — which is exactly the condition the watchdog is meant to survive. `_drain_queue` pops the runtime's queue via its `drain`-adjacent internals; add a small test-only helper in `tests/runtime/conftest.py` rather than reaching into `_queue` from four modules.
+Four shared test helpers, all in `tests/runtime/conftest.py`:
+
+```python
+def stalled_runtime(
+    state: GameState, clock: FakeClock, *, queue_maxsize: int = 256
+) -> GameRuntime:
+    """A runtime that is **not** started: commands accumulate in the queue
+    and nothing consumes them. That is exactly the condition the watchdog
+    exists to survive — a consumer that is wedged, or a deadline task that
+    died without firing."""
+    return GameRuntime(
+        state=state,
+        executor=StubExecutor([]),
+        clock=clock,
+        broadcaster=FakeBroadcaster(),
+        on_fault=lambda rt, exc: None,
+        generation=1,
+        rng=random.Random(0),
+        queue_maxsize=queue_maxsize,
+    )
+
+
+def manager_holding(*runtimes: GameRuntime) -> GameManager:
+    """A manager whose registry is populated directly. The watchdog and
+    reaper only ever read `live_runtimes()`, so building one through
+    `get()` would mean wiring a loader for no gain."""
+    manager = a_manager(CountingLoader())
+    for runtime in runtimes:
+        manager._entries[runtime.game_id] = Live(runtime)
+    return manager
+
+
+def queued_commands(runtime: GameRuntime) -> list[QueuedCommand]:
+    """Peek without consuming — `asyncio.Queue` has no public peek, and
+    reaching into `_queue` from five test modules is worse than reaching
+    into it from one."""
+    return list(runtime._queue._queue)
+
+
+def drain_queue(runtime: GameRuntime) -> list[QueuedCommand]:
+    drained = list(runtime._queue._queue)
+    runtime._queue._queue.clear()
+    return drained
+```
+
+`manager_holding` gives every runtime the same `game_id` if they were all built from `lobby_state()`, which would collapse them into one registry entry. In `test_a_full_queue_or_closed_runtime_does_not_kill_the_tick`, give each runtime a distinct game by passing `replace(state, game_id=GameId("g2"))` and so on.
+
+`replace_state_for_test` is a one-line test seam on `GameRuntime` (`self._state = state`), needed because the watchdog tests advance a game without running the consumer. Name it exactly that, so it is never mistaken for production API.
 
 - [ ] **Step 2: Run and watch it fail**
 
@@ -4524,46 +5049,126 @@ async def test_an_abandoned_lobby_found_only_in_the_database_is_aborted() -> Non
     """The named §12.2 case. The lobby was unloaded by the no-connections
     rule an hour ago, so a scan over resident runtimes would never see it
     and it would sit in the database forever."""
-    ...
+    clock = FakeClock(T0)
+    games = StubGames(empty_lobbies=(GameId("g-old"),))
+    manager = a_manager(ScriptedLoader([lobby_state(players={})]), clock=clock, games=games)
+    reaper = a_reaper(manager, games, clock)
+
+    await reaper.tick()
+
+    entry = manager.entry_for(GameId("g-old"))
+    assert isinstance(entry, Live)
+    assert [qc.command for qc in queued_commands(entry.runtime)] == [AbortGame(actor_id=None)]
 
 
 async def test_it_uses_the_configured_ages_for_each_query() -> None:
     """`created_before = now - 5 min` for empty lobbies, `now - 6 h` for
     stale ones. Passing the same cutoff to both would either abort every
     lobby after five minutes or leave the empty ones for six hours."""
-    ...
+    clock = FakeClock(T0)
+    games = StubGames()
+    reaper = a_reaper(a_manager(ScriptedLoader([]), clock=clock, games=games), games, clock)
+
+    await reaper.tick()
+
+    assert games.empty_cutoffs == [T0 - timedelta(minutes=5)]
+    assert games.stale_cutoffs == [T0 - timedelta(hours=6)]
 
 
 async def test_the_abort_is_system_issued_with_no_actor() -> None:
-    """`AbortGame(actor_id=None)`. An empty lobby has no participant that
-    could pass guard 3, so an actor-bearing abort would be rejected."""
-    ...
+    """`AbortGame(actor_id=None)`. Guard 3 validates the actor only when
+    one is present, so an actor-bearing abort would be rejected outright
+    in an empty lobby — there is no participant it could name."""
+    clock = FakeClock(T0)
+    games = StubGames(stale_lobbies=(GameId("g-stale"),))
+    manager = a_manager(ScriptedLoader([lobby_state(players={})]), clock=clock, games=games)
+    reaper = a_reaper(manager, games, clock)
+
+    await reaper.tick()
+
+    entry = manager.entry_for(GameId("g-stale"))
+    assert isinstance(entry, Live)
+    command = queued_commands(entry.runtime)[0].command
+    assert isinstance(command, AbortGame)
+    assert command.actor_id is None
+
+
+async def test_a_lobby_that_is_both_empty_and_stale_is_aborted_once() -> None:
+    """Both queries can return the same row. Two aborts would mean the
+    second lands on an already-aborted game — harmless, since guard 1
+    drops it, but it is a command nobody needed to issue and a log line
+    that reads like a bug."""
+    clock = FakeClock(T0)
+    games = StubGames(empty_lobbies=(GameId("g1"),), stale_lobbies=(GameId("g1"),))
+    manager = a_manager(ScriptedLoader([lobby_state(players={})]), clock=clock, games=games)
+    reaper = a_reaper(manager, games, clock)
+
+    await reaper.tick()
+
+    entry = manager.entry_for(GameId("g1"))
+    assert isinstance(entry, Live)
+    assert len(queued_commands(entry.runtime)) == 1
 
 
 async def test_a_finished_game_is_unloaded() -> None:
-    ...
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(finished_state(), clock)
+    reaper = a_reaper(manager, StubGames(), clock)
+
+    await reaper.tick()
+
+    assert manager.entry_for(runtime.game_id) is None
 
 
 async def test_a_lobby_with_no_connections_is_unloaded() -> None:
-    ...
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock)
+    reaper = a_reaper(manager, StubGames(), clock, subscribers=FakeSubscribers())
+
+    await reaper.tick()
+
+    assert manager.entry_for(runtime.game_id) is None
 
 
 async def test_a_lobby_with_a_connection_is_kept() -> None:
-    ...
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock)
+    subscribers = FakeSubscribers({runtime.game_id: 1})
+    reaper = a_reaper(manager, StubGames(), clock, subscribers=subscribers)
+
+    await reaper.tick()
+
+    assert isinstance(manager.entry_for(runtime.game_id), Live)
 
 
 async def test_an_active_game_is_never_unloaded_even_with_zero_connections() -> None:
     """§11.6 is explicit: EXPANSION / BATTLE, never unload, regardless of
     presence. Unloading one would orphan its DeadlineId and the game would
-    stop advancing while looking healthy — and §12.2's presence test says
+    stop advancing while looking healthy — and §12.2's presence case says
     disconnecting the last player must not pause the game."""
-    ...
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(warmup_state(), clock)
+    assert runtime.state.phase is Phase.EXPANSION
+    reaper = a_reaper(manager, StubGames(), clock, subscribers=FakeSubscribers())
+
+    await reaper.tick()
+
+    assert isinstance(manager.entry_for(runtime.game_id), Live)
 
 
 async def test_a_runtime_with_queued_work_is_not_unloaded() -> None:
     """Unloading is not a fault, so it must not resolve anybody's origin
-    with a failure code. If the queue is not empty, skip this tick."""
-    ...
+    with a failure code. If there is queued work, skip this tick."""
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock, start=False)
+    origin = RecordingOrigin()
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p9"), "P9"), "op-1", origin))
+    reaper = a_reaper(manager, StubGames(), clock, subscribers=FakeSubscribers())
+
+    await reaper.tick()
+
+    assert isinstance(manager.entry_for(runtime.game_id), Live)
+    assert origin.resolutions == []
 
 
 async def test_a_runtime_executing_a_command_is_not_unloaded() -> None:
@@ -4572,44 +5177,125 @@ async def test_a_runtime_executing_a_command_is_not_unloaded() -> None:
     COMMIT — `qsize()` reads zero while a command is very much in
     progress. Unloading on that reading cancels the consumer mid-COMMIT:
     the ambiguous-commit case, manufactured deliberately, plus an origin
-    nobody ever resolves.
+    nobody ever resolves."""
+    clock = FakeClock(T0)
+    executor = GatedExecutor()
+    manager, runtime = manager_with_resident(lobby_state(), clock, executor=executor)
+    origin = RecordingOrigin()
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", origin))
+    await executor.entered.wait()
+    assert runtime.pending_commands() == 0  # the lie is_idle() exists to correct
+    reaper = a_reaper(manager, StubGames(), clock, subscribers=FakeSubscribers())
 
-    Use a gated executor (as in `test_shutdown.py`): submit one command,
-    wait for `entered`, tick the reaper, and assert the runtime is still
-    resident. Then release the gate and assert the origin resolved `ok`.
-    """
-    ...
+    await reaper.tick()
+
+    assert isinstance(manager.entry_for(runtime.game_id), Live)
+
+    executor.release.set()
+    await settle(runtime)
+    assert origin.outcome[0] == "ok"
 
 
 async def test_an_unload_that_finds_the_runtime_busy_leaves_it_submittable() -> None:
     """`unload` sets `closed` before checking, so a submit racing it fails
     loudly rather than landing in a queue about to be discarded. But when
-    the check then says "busy", `closed` must be rolled back — otherwise
-    a game nobody unloaded is left permanently refusing commands, and
-    only a re-`get()` no caller knows to make would revive it."""
-    ...
+    the check then says "busy", `closed` must be rolled back — otherwise a
+    game nobody unloaded is left permanently refusing commands, and only a
+    re-`get()` no caller knows to make would revive it."""
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock, start=False)
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p9"), "P9"), "op-1", RecordingOrigin()))
+
+    unloaded = await manager.unload(runtime.game_id)
+
+    assert unloaded is False
+    assert runtime.closed is False
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p8"), "P8"), "op-2", RecordingOrigin()))
 
 
 async def test_one_failing_game_does_not_stop_the_sweep() -> None:
-    ...
-```
-
-The worked shape for the first:
-
-```python
-async def test_an_abandoned_lobby_found_only_in_the_database_is_aborted() -> None:
+    """A lobby that will not load is the manager's problem — it has
+    already been recorded `Failed` or `Recovering`. The other nineteen
+    abandoned lobbies still need aborting."""
     clock = FakeClock(T0)
-    games = StubGames(empty_lobbies=(GameId("g-old"),))
-    manager = a_manager(ScriptedLoader([lobby_state(players={})]), clock=clock, games=games)
-    reaper = Reaper(manager=manager, games=games, subscribers=FakeSubscribers(), clock=clock)
+    games = StubGames(empty_lobbies=(GameId("g-bad"), GameId("g-good")))
+    manager = a_manager(
+        ScriptedLoader([PermanentReplayFailure("bad digest"), lobby_state(players={})]),
+        clock=clock,
+        games=games,
+    )
+    reaper = a_reaper(manager, games, clock)
 
     await reaper.tick()
 
-    runtime = manager.entry_for(GameId("g-old")).runtime
-    assert [qc.command for qc in drain_queue(runtime)] == [AbortGame(actor_id=None)]
+    assert isinstance(manager.entry_for(GameId("g-bad")), Failed)
+    entry = manager.entry_for(GameId("g-good"))
+    assert isinstance(entry, Live)
+    assert [qc.command for qc in queued_commands(entry.runtime)] == [AbortGame(actor_id=None)]
 ```
 
-Extend `StubGames` (Task 13) with `empty_lobbies` and `stale_lobbies` fields and record the `created_before` each query was called with, so the age test can assert on them.
+Three additions to `tests/runtime/conftest.py`:
+
+```python
+@dataclass
+class StubGames:
+    """Extends Task 13's stub with the reaper's two queries, recording the
+    cutoff each was called with so the age test can assert on them rather
+    than on a mock's call log."""
+
+    unfinished: tuple[GameId, ...] = ()
+    empty_lobbies: tuple[GameId, ...] = ()
+    stale_lobbies: tuple[GameId, ...] = ()
+    empty_cutoffs: list[datetime] = field(default_factory=list)
+    stale_cutoffs: list[datetime] = field(default_factory=list)
+
+    async def find_unfinished(self) -> tuple[GameId, ...]:
+        return self.unfinished
+
+    async def find_empty_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
+        self.empty_cutoffs.append(created_before)
+        return self.empty_lobbies
+
+    async def find_stale_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
+        self.stale_cutoffs.append(created_before)
+        return self.stale_lobbies
+
+
+def a_reaper(manager, games, clock, *, subscribers=None) -> Reaper:
+    return Reaper(
+        manager=manager,
+        games=games,
+        subscribers=subscribers if subscribers is not None else FakeSubscribers(),
+        clock=clock,
+        empty_lobby_grace_minutes=5,
+        lobby_max_age_hours=6,
+    )
+
+
+def manager_with_resident(
+    state: GameState, clock: FakeClock, *, start: bool = True, executor=None
+) -> tuple[GameManager, GameRuntime]:
+    """A manager holding one runtime built directly from `state`, so a
+    test can choose the phase without playing a game to reach it."""
+    manager = a_manager(CountingLoader(), clock=clock)
+    runtime = GameRuntime(
+        state=state,
+        executor=executor if executor is not None else StubExecutor([]),
+        clock=clock,
+        broadcaster=FakeBroadcaster(),
+        on_fault=lambda rt, exc: None,
+        generation=1,
+        rng=random.Random(0),
+    )
+    if start:
+        runtime.start()
+    manager._entries[runtime.game_id] = Live(runtime)
+    return manager, runtime
+```
+
+`finished_state()` folds a `GameFinished` onto a started game — build it through the reducer, and if that is more turns than it is worth, reach the terminal phase with `AbortGame(actor_id=None)` instead and assert on `Phase.ABORTED`; §11.6 treats the two identically.
+
+Every runtime built from `lobby_state()` shares `GameId("g1")`, so any test holding two at once must give them distinct ids with `replace(state, game_id=GameId("g2"))`.
 
 - [ ] **Step 2: Run and watch it fail**
 
@@ -4865,74 +5551,143 @@ from triviador.services.ports import RuntimeCode
 
 
 async def test_queued_commands_are_resolved_with_server_restarting() -> None:
-    ...
+    """An unresolved origin is a hung HTTP request that outlives the
+    process it was waiting on."""
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock, start=False)
+    first, second = RecordingOrigin(), RecordingOrigin()
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p8"), "P8"), "op-1", first))
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p9"), "P9"), "op-2", second))
+    runtime.start()
+
+    await manager.shutdown()
+
+    assert first.outcome == ("failed", RuntimeCode.SERVER_RESTARTING)
+    assert second.outcome == ("failed", RuntimeCode.SERVER_RESTARTING)
 
 
 async def test_an_in_flight_transaction_is_allowed_to_finish() -> None:
     """Cancelling mid-COMMIT would manufacture the ambiguous-commit case
-    on every deploy. This test gates a command inside the executor, calls
-    shutdown, releases the gate, and asserts the command committed and its
-    origin resolved `ok` — not `failed`."""
-    ...
+    on every deploy — the one failure mode never worth generating
+    deliberately. So the consumer is never cancelled: it is asked to stop
+    and finishes what it is doing first."""
+    clock = FakeClock(T0)
+    executor = GatedExecutor()
+    manager, runtime = manager_with_resident(lobby_state(), clock, executor=executor)
+    origin = RecordingOrigin()
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p2"), "P2"), "op-1", origin))
+    await executor.entered.wait()
+
+    shutdown = asyncio.create_task(manager.shutdown())
+    await clock.settle()
+    assert not shutdown.done()          # waiting on the transaction, not cancelling it
+
+    executor.release.set()
+    await shutdown
+
+    assert origin.outcome[0] == "ok"    # committed, not SERVER_RESTARTING
+    assert PlayerId("p2") in runtime.state.players
 
 
 async def test_the_watchdog_and_reaper_are_cancelled_first() -> None:
     """Before the runtimes, so neither can enqueue into a queue that is
-    being drained — a race that would leave an origin unresolved."""
-    ...
+    being drained — a race whose prize is an origin nobody resolves."""
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock)
+    trace: list[str] = []
+    closer = TracingCloser(trace, "closer")
+    runtime.on_drain_for_test = lambda: trace.append("drain")
+
+    await manager.shutdown(closer)
+
+    assert trace == ["closer", "drain"]
 
 
 async def test_sockets_are_closed_with_1001() -> None:
-    ...
+    """1001 "going away", not 1011 "internal error": a deploy is not a
+    fault, and the code is what tells the client whether to reconnect
+    quietly or surface an error."""
+    clock = FakeClock(T0)
+    subscribers = FakeSubscribers()
+    manager, runtime = manager_with_resident(lobby_state(), clock, subscribers=subscribers)
+
+    await manager.shutdown()
+
+    assert subscribers.closed == [(runtime.game_id, 1001)]
 
 
 async def test_get_after_shutdown_raises_server_restarting() -> None:
-    ...
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock)
+
+    await manager.shutdown()
+
+    with pytest.raises(ServerRestarting):
+        await manager.get(runtime.game_id)
 
 
 async def test_shutdown_is_idempotent() -> None:
-    ...
+    """A lifespan handler can be invoked twice on a hard stop. The second
+    call must not re-drain queues that no longer exist."""
+    clock = FakeClock(T0)
+    manager, _ = manager_with_resident(lobby_state(), clock)
+
+    await manager.shutdown()
+    await manager.shutdown()
 
 
 async def test_a_recovering_game_cannot_install_a_runtime_after_shutdown() -> None:
     """`_recover` is an unbounded retry loop on a manager-owned task, and
     it ends by installing a fresh `Live` entry. Every await inside
     shutdown is a chance for it to do so — and a shutdown loop that only
-    inspects `Live` entries would never see it.
+    inspects `Live` entries would never see it."""
+    clock = FakeClock(T0)
+    loader = ScriptedLoader([lobby_state(), OSError("db down"), lobby_state()])
+    manager = a_manager(loader, clock=clock, backoff_initial_s=1.0, backoff_max_s=8.0)
+    runtime = await manager.get(GameId("g1"))
+    manager.quarantine(runtime, "persistence unavailable")
+    await clock.settle()
+    assert isinstance(manager.entry_for(GameId("g1")), Recovering)
 
-    Quarantine a game with a loader scripted to fail once, call
-    `shutdown` while the entry is `Recovering`, then advance the clock
-    past the backoff. Assert: the registry is empty, no new runtime was
-    built, and the recovery task is done rather than still looping.
-    """
-    ...
+    await manager.shutdown()
+    await clock.advance_to(T0 + timedelta(seconds=60))
+
+    assert manager.entry_for(GameId("g1")) is None
+    assert loader.calls == 2  # the initial load and the failed retry — never a third
 
 
 async def test_shutdown_awaits_a_quarantine_already_in_progress() -> None:
     """A quarantine task cancelled mid-teardown could leave a runtime
     detached from the registry but still consuming — invisible to the
-    shutdown loop, which iterates the registry. Assert every task in
-    `_quarantines` is done when `shutdown` returns."""
-    ...
+    shutdown loop, which iterates the registry."""
+    clock = FakeClock(T0)
+    loader = ScriptedLoader([lobby_state(), OSError("db down")])
+    manager = a_manager(loader, clock=clock)
+    runtime = await manager.get(GameId("g1"))
+    manager.quarantine(runtime, "boom")
+
+    await manager.shutdown()
+
+    assert all(task.done() for task in manager._quarantines.values())
+    assert runtime.closed is True
 ```
 
-The gated-executor helper for the second test:
+Two helpers this module adds:
 
 ```python
-class GatedExecutor:
-    def __init__(self) -> None:
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
+@dataclass
+class TracingCloser:
+    """Stands in for the watchdog/reaper, recording when it was closed so
+    the ordering against the runtime drain is observable."""
 
-    async def execute(self, state, command, operation_id):
-        from triviador.domain.game.events import PlayerJoined
-        from triviador.domain.ids import PlayerId
-        from triviador.runtime.origins import Accepted
+    trace: list[str]
+    label: str
 
-        self.entered.set()
-        await self.release.wait()          # stands in for a COMMIT in flight
-        return Accepted((PlayerJoined(PlayerId("p2"), "P2", seat=1),))
+    async def aclose(self) -> None:
+        self.trace.append(self.label)
 ```
+
+`on_drain_for_test` is an optional callback on `GameRuntime.drain` (`if self.on_drain_for_test is not None: self.on_drain_for_test()`), defaulting to `None`. It exists only to make ordering observable; name it exactly that so it is never mistaken for production API. `manager_with_resident` gains a `subscribers=` parameter that it forwards to `a_manager`.
 
 - [ ] **Step 2: Run and watch it fail**
 
@@ -5053,119 +5808,587 @@ git commit -m "feat(runtime): graceful shutdown that never cancels a transaction
 
 - [ ] **Step 1: Write the fixtures**
 
-`backend/tests/runtime/integration/conftest.py` builds a real `GameManager`: `UnitOfWork` and `GameRepository` over `tests/db`'s engine, `MapRegistry` pointed at a temporary directory holding the `grid` map written out as `map.json` (so `map_sha256` is a real digest of a real file), `Materialiser(clock=FakeClock(...), rng=Random(seed))`, `FakeBroadcaster`, `FakeSubscribers`. Seed the `questions` / `question_choices` / `question_numeric` tables with enough active rows to cover `required_question_budget(DEFAULT_RULES)` — reuse `tests/db/test_question_bank.py`'s seeding helper rather than writing a second one.
+`backend/tests/runtime/integration/conftest.py`. **Read `tests/db/conftest.py` first** — three of its properties dictate this file's shape:
 
-Every module in this directory carries `pytestmark = pytest.mark.integration`.
+- `engine` is **session-scoped**, and asyncpg binds connections to the loop they were created on. So every module here needs `pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]`, exactly as `tests/db` modules do.
+- Its fixtures are **directory-scoped** to `tests/db`, so they are invisible here. Re-export them by importing the names.
+- Its `pytest_collection_modifyitems` guard filters to items under `tests/db`, so it does **not** cover this directory. Re-declare the guard, or a module that forgets its marks fails at runtime with an opaque "attached to a different loop" error instead of at collection.
+
+```python
+"""Wires the real adapters onto `tests/db`'s database fixtures.
+
+Everything under here is the runtime running against PostgreSQL: a real
+`UnitOfWork`, a real `GameRepository`, a real `QuestionBank`, a real map
+on disk with a real digest. Only the clock, the broadcaster and the
+subscriber control stay fake — the first because §12.2 forbids waiting on
+wall-clock time, the other two because they are Plan 5's.
+"""
+
+import random
+from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+# Re-exported so this directory can use them: conftest fixtures do not
+# reach sideways across sibling directories.
+from tests.db.conftest import (  # noqa: F401
+    _lacks_session_loop_scope,
+    clean_db,
+    engine,
+    migrated_schema,
+    sessions,
+)
+from tests.runtime.fakes import FakeBroadcaster, FakeClock, FakeSubscribers
+from triviador.db.repositories.games import GameRepository
+from triviador.db.unit_of_work import UnitOfWork
+from triviador.domain.game.rules import DEFAULT_RULES
+from triviador.domain.ids import GameId, MapId, PlayerId
+from triviador.maps.registry import MapRegistry
+from triviador.runtime.loader import GameLoader
+from triviador.runtime.manager import GameManager
+from triviador.runtime.materialiser import Materialiser
+
+HERE = Path(__file__).parent
+T0 = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """The same guard `tests/db/conftest.py` applies to its own directory.
+    That hook filters to items under `tests/db`, so this directory would
+    otherwise be unguarded — and an unmarked module here fails at runtime
+    with an opaque cross-loop error rather than at collection."""
+    ours = [item for item in items if item.path.is_relative_to(HERE)]
+    unmarked = sorted({i.nodeid.split("::")[0] for i in ours if "integration" not in i.keywords})
+    missing_loop = sorted({i.nodeid.split("::")[0] for i in ours if _lacks_session_loop_scope(i)})
+    if unmarked or missing_loop:
+        raise pytest.UsageError(
+            "tests/runtime/integration modules must declare `pytestmark = "
+            '[pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]`; '
+            f"missing marker in: {unmarked}; missing loop scope in: {missing_loop}"
+        )
+
+
+@pytest.fixture
+def map_root(tmp_path: Path) -> Path:
+    """Write `tests/conftest.grid_map()` out as a real `map.json`, so
+    `map_sha256` is the digest of a real file a test can rewrite under a
+    live game."""
+    write_grid_map(tmp_path / "grid")
+    return tmp_path
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock(T0)
+
+
+@pytest.fixture
+def broadcaster() -> FakeBroadcaster:
+    return FakeBroadcaster()
+
+
+@pytest.fixture
+def subscribers() -> FakeSubscribers:
+    return FakeSubscribers()
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def manager(
+    clean_db: None,
+    sessions: async_sessionmaker[AsyncSession],
+    clock: FakeClock,
+    map_root: Path,
+    broadcaster: FakeBroadcaster,
+    subscribers: FakeSubscribers,
+) -> GameManager:
+    uow = UnitOfWork(sessions)
+    return GameManager(
+        loader=GameLoader(uow=uow, maps=MapRegistry(root=map_root)),
+        uow=uow,
+        materialiser=Materialiser(clock=clock, rng=random.Random(1234)),
+        clock=clock,
+        broadcaster=broadcaster,
+        subscribers=subscribers,
+        games=GameRepository(sessions),
+        rng=random.Random(1234),
+    )
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def lobby(
+    manager: GameManager, sessions: async_sessionmaker[AsyncSession], map_root: Path
+) -> GameId:
+    """A `games` row plus its genesis event, written through the real
+    `GameRepository.create` — the same path Plan 5's create endpoint will
+    take.
+
+    Seeds the three `users` rows the foreign keys require, and enough
+    active questions to cover `required_question_budget(DEFAULT_RULES)`:
+    **17 numeric and 12 multiple-choice**. Seed exactly that, not a round
+    number — a suite that seeds 50 of each would never notice the budget
+    changing, and Spec 1B's open item 3 is about precisely this floor.
+    """
+    for pid in ("p1", "p2", "p3"):
+        await seed_user(sessions, pid)
+    await seed_question_bank(sessions, numeric=17, multiple_choice=12)
+
+    game_id = GameId("g1")
+    digest = MapRegistry(root=map_root).load_with_digest(MapId("grid")).sha256
+    await GameRepository(sessions).create(
+        game_id=game_id,
+        map_id=MapId("grid"),
+        rules=DEFAULT_RULES,
+        host_id=PlayerId("p1"),
+        map_sha256=digest,
+        preset_id=None,
+        operation_id="genesis-1",
+    )
+    return game_id
+```
+
+`seed_user`, `seed_question_bank` and `write_grid_map` are module-level helpers in this same file:
+
+- Build the seeding by **lifting** `_seed_user`, `_seed_category`, `_seed_numeric_question` and `_seed_mc_question` out of `tests/db/test_question_bank.py` into `tests/db/conftest.py`, then importing them here. Do not write a second set — that file already gets every column right, including `prompt_hash` and the `question_numeric` child row. `seed_question_bank` is a loop over the last two, plus one category.
+- `write_grid_map` serializes `tests/conftest.grid_map()` into the JSON shape `MapRegistry.load_with_digest` parses. Read `maps/registry.py` for the exact keys rather than guessing at them.
+
+Also add these query and seam helpers here, used across all three modules below:
+
+```python
+async def drain_runtime(runtime: GameRuntime, *, max_turns: int = 200) -> None:
+    """Settle the fake clock until the runtime goes idle.
+
+    Bounded, and it raises rather than looping: a wedged consumer must
+    fail the test that provoked it, not hang the suite until CI times out
+    with no indication of which test was responsible.
+    """
+    clock = runtime.clock
+    assert isinstance(clock, FakeClock)
+    for _ in range(max_turns):
+        await clock.settle()
+        if runtime.is_idle():
+            return
+    raise AssertionError(f"game {runtime.game_id} never went idle")
+
+
+async def submit_and_settle(
+    runtime: GameRuntime, command: Command, operation_id: str
+) -> RecordingOrigin:
+    origin = RecordingOrigin()
+    runtime.submit(QueuedCommand(command, operation_id, origin))
+    await drain_runtime(runtime)
+    return origin
+
+
+def fresh_manager(old: GameManager) -> GameManager:
+    """A second `GameManager` over the same sessionmaker, clock and map
+    root — the "process restarted" simulation. Everything durable is
+    shared; everything in memory is new."""
+
+
+async def game_status(sessions, game_id) -> str: ...
+async def last_seq(sessions, game_id) -> int: ...
+async def event_row_count(sessions, game_id) -> int: ...
+async def event_seqs(sessions, game_id) -> list[int]: ...
+async def player_seats(sessions, game_id) -> dict[str, int]: ...
+async def deactivate_all_questions(sessions) -> None: ...
+async def rewrite_every_question_prompt(sessions, prefix: str) -> None: ...
+def rewrite_map_adding_a_region(map_dir: Path) -> None: ...
+```
+
+Each query helper is a two-to-four line `SELECT` over the models in `db/models/games.py` and `db/models/content.py`, following the shape of `_get_game` / `_event_rows` in `tests/db/test_event_store.py`. Write them out; the ellipses above are signatures, not bodies to leave empty.
 
 - [ ] **Step 2: Write `test_play_through.py`**
 
 ```python
-"""Lobby to finished, through the real thing. If this passes, the fakes
-were telling the truth."""
+"""Lobby to a terminal phase, through the real thing. If this passes, the
+fakes were telling the truth."""
 
-pytestmark = pytest.mark.integration
+import pytest
 
+from triviador.domain.game.actions import AbortGame, JoinGame, RejectCode, StartGame
+from triviador.domain.game.state import Phase
+from triviador.domain.ids import PlayerId
+from triviador.runtime.manager import Live
 
-async def test_a_game_plays_from_lobby_to_a_terminal_phase(manager, clock, games_row) -> None:
-    """Create → three joins → start → warmup expiry → answer → picks →
-    battle → finish, driving every window by advancing the clock rather
-    than by waiting. Assert at the end: `runtime.state.phase` is FINISHED
-    or ABORTED, `games.status` matches, `game_players.final_score` is
-    populated for every player, and `last_seq` equals the number of rows
-    in `game_events`."""
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-async def test_the_read_model_matches_the_folded_state(manager, clock, games_row) -> None:
-    """§4.2's projection, checked end to end: after the play-through,
-    reload the game with a fresh `GameLoader` and assert the folded state
-    agrees with the `games` / `game_players` rows on status, winner, and
-    seat assignment."""
+async def join_all(runtime) -> None:
+    for pid in ("p1", "p2", "p3"):
+        origin = await submit_and_settle(runtime, JoinGame(PlayerId(pid), pid.upper()), f"join-{pid}")
+        assert origin.outcome[0] == "ok"
 
 
-async def test_concurrent_commands_produce_a_contiguous_seq(manager, clock, games_row) -> None:
-    """§12.2's serialization case: N commands submitted at once from M
-    origins → seq contiguous, UNIQUE(game_id, seq) intact, every origin
-    resolved exactly once."""
+async def test_three_joins_and_a_start_reach_expansion(manager, lobby, sessions) -> None:
+    """The path every game takes. Asserts against the *database*, not just
+    memory: `last_seq` must equal the row count, or the read model and the
+    log have diverged."""
+    runtime = await manager.get(lobby)
+    await join_all(runtime)
+
+    origin = await submit_and_settle(runtime, StartGame(PlayerId("p1")), "start-1")
+
+    assert origin.outcome[0] == "ok"
+    assert runtime.state.phase is Phase.EXPANSION
+    assert await game_status(sessions, lobby) == "expansion"
+    assert await event_row_count(sessions, lobby) == runtime.state.seq
+    assert await last_seq(sessions, lobby) == runtime.state.seq
+
+
+async def test_the_read_model_matches_the_folded_state(manager, lobby, sessions) -> None:
+    """§4.2's projection, checked end to end: reload with a fresh loader
+    and assert the rebuilt state agrees with the `games` / `game_players`
+    rows on phase, seq, and seat assignment."""
+    runtime = await manager.get(lobby)
+    await join_all(runtime)
+    await submit_and_settle(runtime, StartGame(PlayerId("p1")), "start-1")
+
+    rebuilt = await fresh_manager(manager)._loader.load(lobby)
+
+    assert rebuilt.phase is runtime.state.phase
+    assert rebuilt.seq == runtime.state.seq
+    assert await player_seats(sessions, lobby) == {
+        pid: player.seat for pid, player in rebuilt.players.items()
+    }
+
+
+async def test_bases_are_mutually_non_adjacent_in_the_committed_log(manager, lobby) -> None:
+    """Spec 1 §3.4, asserted where it finally becomes durable. The
+    materialiser chose these regions and nothing downstream checks them —
+    `_decide_start` validates distinctness and membership only."""
+    runtime = await manager.get(lobby)
+    await join_all(runtime)
+    await submit_and_settle(runtime, StartGame(PlayerId("p1")), "start-1")
+
+    bases = {player.base_region for player in runtime.state.players.values()}
+    assert len(bases) == 3
+    assert None not in bases
+    for region in bases:
+        assert runtime.state.map.neighbours(region).isdisjoint(bases)
 
 
 async def test_a_start_with_a_drained_bank_is_rejected_and_the_game_stays_in_lobby(
-    manager, clock, games_row
+    manager, lobby, sessions
 ) -> None:
-    """§10.6's authoritative checkpoint. Deactivate the question rows,
-    submit StartGame, and assert: `Rejected(QUESTION_POOL_INSUFFICIENT)`,
-    `games.status` still 'lobby', zero new rows in `game_events`, and the
-    runtime still healthy."""
+    """§10.6's authoritative checkpoint — genuinely authoritative, because
+    the `FOR SHARE` locks are still held when the events would be
+    inserted. The rejection must leave no trace at all."""
+    runtime = await manager.get(lobby)
+    await join_all(runtime)
+    seq_before = runtime.state.seq
+    await deactivate_all_questions(sessions)
+
+    origin = await submit_and_settle(runtime, StartGame(PlayerId("p1")), "start-1")
+
+    assert origin.outcome == ("rejected", RejectCode.QUESTION_POOL_INSUFFICIENT)
+    assert runtime.state.phase is Phase.LOBBY
+    assert runtime.state.seq == seq_before
+    assert await game_status(sessions, lobby) == "lobby"
+    assert await event_row_count(sessions, lobby) == seq_before
+    assert isinstance(manager.entry_for(lobby), Live)  # a rejection is not a fault
+
+
+async def test_concurrent_commands_produce_a_contiguous_seq(manager, lobby, sessions) -> None:
+    """§12.2's serialization case: N commands from M origins at once →
+    seq contiguous, `UNIQUE(game_id, seq)` intact, every origin resolved
+    exactly once. The consumer serializes them; this proves the database
+    agrees, and that no origin was dropped on the way."""
+    runtime = await manager.get(lobby)
+    origins = [RecordingOrigin() for _ in range(3)]
+    for pid, origin in zip(("p1", "p2", "p3"), origins, strict=True):
+        runtime.submit(QueuedCommand(JoinGame(PlayerId(pid), pid.upper()), f"join-{pid}", origin))
+    await drain_runtime(runtime)
+
+    assert all(len(o.resolutions) == 1 for o in origins)
+    seqs = await event_seqs(sessions, lobby)
+    assert seqs == list(range(1, len(seqs) + 1))
+    assert await last_seq(sessions, lobby) == seqs[-1]
+
+
+async def test_an_abort_reaches_a_terminal_phase_and_the_read_model(
+    manager, lobby, sessions
+) -> None:
+    """The short path to a terminal status. A full play-through to
+    FINISHED would be worth having, but §11.6 treats ABORTED identically
+    and this pins the projection either way."""
+    runtime = await manager.get(lobby)
+    await submit_and_settle(runtime, JoinGame(PlayerId("p1"), "P1"), "join-p1")
+
+    origin = await submit_and_settle(runtime, AbortGame(actor_id=None), "abort-1")
+
+    assert origin.outcome[0] == "ok"
+    assert runtime.state.phase is Phase.ABORTED
+    assert await game_status(sessions, lobby) == "aborted"
 ```
 
 - [ ] **Step 3: Write `test_ambiguous_commit.py`**
 
 ```python
 """§12.2: drop the connection during COMMIT → reconciliation by
-operation_id, no duplicate batch, no lost batch."""
+operation_id, no duplicate batch, no lost batch.
 
-pytestmark = pytest.mark.integration
+The whole point of these three is that the executor *cannot* tell the
+cases apart from the exception it caught. It has to ask the database.
+"""
+
+from contextlib import asynccontextmanager
+
+import pytest
+
+from triviador.db.unit_of_work import TransactionContext, UnitOfWork
+from triviador.domain.game.actions import JoinGame
+from triviador.domain.game.events import PlayerJoined
+from triviador.domain.ids import PlayerId
+from triviador.runtime.manager import Live, Recovering
+from triviador.services.ports import RuntimeCode
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-async def test_a_commit_that_lands_but_reports_failure_is_reconciled(manager, uow) -> None:
-    """Wrap the `UnitOfWork` so that on the first `begin()`, the session's
-    commit runs and *then* raises `OSError` — the commit landed, the
-    caller was told it did not. Assert: exactly one batch in
-    `game_events`, the origin resolved `ok`, `last_seq` advanced once,
-    and the runtime is still `Live`."""
+class BreakingUnitOfWork:
+    """Wraps a real `UnitOfWork` and breaks the COMMIT of its first
+    transaction.
+
+    `mode="landed"` commits and *then* raises: the write is durable and
+    the caller was told it failed. `mode="lost"` rolls back and then
+    raises: identical signal, opposite truth. Later transactions pass
+    straight through, so the retry and the reconciliation both run
+    against a healthy connection — which is what happens in production,
+    where the pool hands out a new one.
+    """
+
+    def __init__(self, inner: UnitOfWork, mode: str) -> None:
+        self._inner = inner
+        self._mode = mode
+        self._broken = False
+
+    @asynccontextmanager
+    async def begin(self):
+        if self._broken:
+            async with self._inner.begin() as tx:
+                yield tx
+            return
+
+        self._broken = True
+        async with self._inner._sessionmaker() as session:
+            await session.begin()
+            yield TransactionContext(session)
+            if self._mode == "landed":
+                await session.commit()
+            else:
+                await session.rollback()
+            raise OSError("connection reset during COMMIT")
 
 
-async def test_a_commit_that_does_not_land_is_retried(manager, uow) -> None:
-    """Same wrapper, but rollback before raising. Assert exactly one batch
-    ends up committed — by the retry, not the original — and the origin
-    resolved `ok`."""
+async def test_a_commit_that_lands_but_reports_failure_is_reconciled(
+    manager, lobby, sessions
+) -> None:
+    """Exactly one batch in `game_events` — never two — the origin
+    resolved `ok`, `last_seq` advanced once, and the runtime still Live."""
+    runtime = await manager.get(lobby)
+    runtime.replace_executor_for_test(
+        executor_over(BreakingUnitOfWork(UnitOfWork(sessions), mode="landed"), manager)
+    )
+
+    origin = await submit_and_settle(runtime, JoinGame(PlayerId("p1"), "P1"), "join-p1")
+
+    assert origin.outcome[0] == "ok"
+    assert await event_row_count(sessions, lobby) == 2  # genesis + one join
+    assert await last_seq(sessions, lobby) == 2
+    assert isinstance(manager.entry_for(lobby), Live)
 
 
-async def test_a_foreign_batch_under_the_same_operation_id_quarantines(manager, uow) -> None:
-    """Write a different batch under the operation_id the executor is
-    about to use, then force the ambiguous path. Assert the game ends up
-    `Recovering` or `Live` on a *new* generation, never silently
-    accepting the foreign batch as its own."""
+async def test_a_commit_that_does_not_land_is_retried(manager, lobby, sessions) -> None:
+    """Reconciliation answers ABSENT, the executor re-runs the whole
+    attempt, and exactly one batch ends up committed — by the retry, not
+    by the original."""
+    runtime = await manager.get(lobby)
+    runtime.replace_executor_for_test(
+        executor_over(BreakingUnitOfWork(UnitOfWork(sessions), mode="lost"), manager)
+    )
+
+    origin = await submit_and_settle(runtime, JoinGame(PlayerId("p1"), "P1"), "join-p1")
+
+    assert origin.outcome[0] == "ok"
+    assert await event_row_count(sessions, lobby) == 2
+    assert await last_seq(sessions, lobby) == 2
+
+
+async def test_a_foreign_batch_under_the_same_operation_id_quarantines(
+    manager, lobby, sessions
+) -> None:
+    """MISMATCH is never "close enough".
+
+    Pre-write a *different* batch under the `operation_id` the command
+    will use, then force the ambiguous path. Reconciliation finds rows
+    for that operation whose ordered types are not the ones this attempt
+    decided, and quarantines rather than adopting them.
+
+    Note the pre-write also advances `last_seq`, so on some interleavings
+    the attempt's own `append` raises `ConcurrentModification` first.
+    Both routes quarantine, which is what is asserted — this test pins
+    the outcome, and `tests/db/test_reconciliation.py` pins the
+    `MISMATCH` verdict itself in isolation.
+    """
+    runtime = await manager.get(lobby)
+    async with UnitOfWork(sessions).begin() as tx:
+        await tx.append(
+            lobby,
+            expected_last_seq=1,
+            events=[PlayerJoined(PlayerId("p9"), "P9", seat=0)],
+            operation_id="join-p1",
+        )
+    runtime.replace_executor_for_test(
+        executor_over(BreakingUnitOfWork(UnitOfWork(sessions), mode="landed"), manager)
+    )
+
+    origin = await submit_and_settle(runtime, JoinGame(PlayerId("p1"), "P1"), "join-p1")
+
+    assert origin.outcome == ("failed", RuntimeCode.GAME_RECOVERING)
+    entry = manager.entry_for(lobby)
+    assert isinstance(entry, Live | Recovering)
+    if isinstance(entry, Live):
+        assert entry.runtime.generation > runtime.generation
 ```
+
+`replace_executor_for_test` is the Task 12 seam; `executor_over(uow, manager)` builds a `CommandExecutor` over a given unit of work with the manager's materialiser, clock and rng — add it to the integration `conftest.py`.
 
 - [ ] **Step 4: Write `test_recovery.py`**
 
 ```python
 """§5.6 and §12.2's recovery cases, against a real log."""
 
-pytestmark = pytest.mark.integration
+from datetime import timedelta
+
+import pytest
+
+from triviador.domain.game.actions import JoinGame, StartGame
+from triviador.domain.ids import PlayerId
+from triviador.runtime.errors import GameUnrecoverable
+from triviador.runtime.manager import Failed
+
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-async def test_a_restart_rebuilds_state_identical_to_the_live_one(manager, clock) -> None:
-    """Play a game partway, snapshot `runtime.state`, drop the manager,
-    build a new one, `recover_active_games()`, and assert the rebuilt
-    state equals the snapshot field for field."""
+async def started_game(manager, lobby):
+    runtime = await manager.get(lobby)
+    for pid in ("p1", "p2", "p3"):
+        await submit_and_settle(runtime, JoinGame(PlayerId(pid), pid.upper()), f"join-{pid}")
+    await submit_and_settle(runtime, StartGame(PlayerId("p1")), "start-1")
+    return runtime
+
+
+async def test_a_restart_rebuilds_state_identical_to_the_live_one(manager, lobby) -> None:
+    """`GameState` is a frozen dataclass all the way down, so `==` is the
+    whole assertion.
+
+    If it fails on a field you did not expect — `next_deadline_id` is the
+    likely one — that is a finding about recovery, not a reason to loosen
+    this to a field-by-field subset.
+    """
+    runtime = await started_game(manager, lobby)
+    snapshot = runtime.state
+    await manager.shutdown()
+
+    revived = await fresh_manager(manager).get(lobby)
+
+    assert revived.state == snapshot
 
 
 async def test_a_deadline_still_in_the_future_is_scheduled_at_its_original_instant(
-    manager, clock
+    manager, lobby, clock
 ) -> None:
-    """§12.2: deadline +20 s, kill the runtime, restart at T+8 → the timer
-    fires at the original absolute time, not 20 s after the restart."""
+    """§12.2: deadline +20 s, kill the runtime, restart before it → the
+    timer fires at the original absolute time, not the full window again
+    from the restart."""
+    runtime = await started_game(manager, lobby)
+    deadline = runtime.state.current_deadline()
+    assert deadline is not None
+    await manager.shutdown()
+
+    await clock.advance_to(deadline.deadline_at - timedelta(seconds=2))
+    revived_manager = fresh_manager(manager)
+    await revived_manager.recover_active_games()
+    await clock.settle()
+
+    assert clock.pending() == (deadline.deadline_at,)
 
 
-async def test_a_deadline_already_passed_is_expired_immediately(manager, clock) -> None:
-    """Restart at T+25 on the same 20 s window → `ExpireDeadline` is
-    enqueued at once. Recovery must never extend a window a player has
-    already spent."""
+async def test_a_deadline_already_passed_is_expired_immediately(manager, lobby, clock) -> None:
+    """Restart after the window closed → `ExpireDeadline` is enqueued at
+    once. Recovery must never extend a window a player has already
+    spent."""
+    runtime = await started_game(manager, lobby)
+    deadline = runtime.state.current_deadline()
+    assert deadline is not None
+    await manager.shutdown()
+
+    await clock.advance_to(deadline.deadline_at + timedelta(seconds=5))
+    revived_manager = fresh_manager(manager)
+    await revived_manager.recover_active_games()
+    revived = await revived_manager.get(lobby)
+    await drain_runtime(revived)
+
+    current = revived.state.current_deadline()
+    assert current is not None
+    assert current.id != deadline.id  # the expiry fired and the game advanced
 
 
-async def test_the_question_pool_survives_a_rewrite_of_the_questions_table(manager, clock) -> None:
-    """§12.2's pool immutability: draw the pool, `UPDATE questions` to
-    change prompts and answers, restart → the *original* snapshots are
-    presented, because they live in the committed `QuestionPoolDrawn`
-    event and not in the table."""
+async def test_the_question_pool_survives_a_rewrite_of_the_questions_table(
+    manager, lobby, sessions
+) -> None:
+    """§12.2's pool immutability. The pool lives in the committed
+    `QuestionPoolDrawn` event, not in the table — rewriting every row must
+    not change a single presented question."""
+    runtime = await started_game(manager, lobby)
+    pool_before = runtime.state.pool
+    await manager.shutdown()
+
+    await rewrite_every_question_prompt(sessions, "TAMPERED")
+
+    revived = await fresh_manager(manager).get(lobby)
+
+    assert revived.state.pool == pool_before
+    assert all("TAMPERED" not in q.prompt for q in revived.state.pool.numeric)
+    assert all("TAMPERED" not in q.prompt for q in revived.state.pool.multiple_choice)
 
 
-async def test_a_map_digest_mismatch_makes_the_game_unrecoverable(manager, clock) -> None:
-    """Rewrite `map.json` after the game was created and restart. Assert
-    the entry is `Failed`, `get` raises `GameUnrecoverable`, `degraded()`
-    names the game, and — the point — no attempt is made to fold the log
-    against a map whose region ids may now mean something else."""
+async def test_a_map_digest_mismatch_makes_the_game_unrecoverable(
+    manager, lobby, map_root
+) -> None:
+    """Rewrite `map.json` under a live game. Every region id in the log may
+    now name a different region, so replay must refuse outright — not fold
+    against different adjacency and carry on looking healthy."""
+    runtime = await manager.get(lobby)
+    await submit_and_settle(runtime, JoinGame(PlayerId("p1"), "P1"), "join-p1")
+    await manager.shutdown()
+
+    rewrite_map_adding_a_region(map_root / "grid")
+
+    revived_manager = fresh_manager(manager)
+    with pytest.raises(GameUnrecoverable):
+        await revived_manager.get(lobby)
+
+    assert isinstance(revived_manager.entry_for(lobby), Failed)
+    assert [game_id for game_id, _ in revived_manager.degraded()] == [lobby]
+
+
+async def test_startup_recovery_skips_lobbies_and_loads_active_games(manager, lobby) -> None:
+    """`find_unfinished` is `status IN ('expansion', 'battle')`. A lobby
+    holds no deadline, so loading it at boot would be work with no owner
+    and no timer — and the reaper reaches the abandoned ones through the
+    database anyway."""
+    await started_game(manager, lobby)
+    await manager.shutdown()
+
+    revived_manager = fresh_manager(manager)
+    unloadable = await revived_manager.recover_active_games()
+
+    assert unloadable == ()
+    assert [rt.game_id for rt in revived_manager.live_runtimes()] == [lobby]
 ```
 
 - [ ] **Step 5: Run the full integration lane**
