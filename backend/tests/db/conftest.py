@@ -30,6 +30,7 @@ mark.
 import asyncio
 import os
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from triviador.db.engine import create_engine, sessionmaker_for
+from triviador.db.models.auth import User
+from triviador.db.repositories.games import GameRepository
+from triviador.db.unit_of_work import UnitOfWork
+from triviador.domain.game.rules import DEFAULT_RULES
+from triviador.domain.ids import GameId, MapId, PlayerId
 
 # Owned here, not by `Settings` (see `triviador.config`): `Settings.database_url`
 # has no default precisely so that an unset `TRIVIADOR_DATABASE_URL` fails loudly
@@ -264,3 +270,58 @@ async def clean_db(migrated_schema: None, engine: AsyncEngine) -> AsyncIterator[
 @pytest_asyncio.fixture(loop_scope="session")
 async def sessions(migrated_schema: None, engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return sessionmaker_for(engine)
+
+
+@dataclass(frozen=True)
+class LobbyGame:
+    """What `tests/db/test_reconciliation.py` needs to drive
+    `operation_matches` without re-deriving `GameRepository.create`'s
+    genesis dance itself: a game id already sitting at `last_seq=1`, and a
+    `UnitOfWork` bound to the same `sessionmaker` that created it."""
+
+    game_id: GameId
+    uow: UnitOfWork
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def lobby_game(clean_db: None, sessions: async_sessionmaker[AsyncSession]) -> LobbyGame:
+    """One `games` row at `last_seq=1`, built the same way
+    `tests/db/test_event_store.py`'s
+    `test_create_then_append_reads_back_as_a_two_event_stream` builds it:
+    a seeded host user, then `GameRepository.create`'s genesis transaction
+    (`INSERT games` + the seq-1 `GameCreated` row). `append`'s optimistic
+    check has nothing to match before that row exists, so every
+    reconciliation test needs this seam crossed first, not `_seed_game`'s
+    direct insert — genesis is exactly what `operation_matches` callers
+    reconcile *after*, not a detail to bypass.
+
+    Also seeds `p1` and `p2`: reconciliation tests append `PlayerJoined`
+    batches naming those ids, and `_project` inserts a `game_players` row
+    with a `user_id` foreign key to `users.id` for each one.
+    """
+    async with sessions() as session:
+        for user_id in ("host", "p1", "p2"):
+            session.add(
+                User(
+                    id=user_id,
+                    username=user_id,
+                    password_hash="hash",
+                    display_name=user_id,
+                    role="player",
+                )
+            )
+        await session.commit()
+
+    game_id = GameId("lobby-game")
+    repo = GameRepository(sessions)
+    await repo.create(
+        game_id=game_id,
+        map_id=MapId("m1"),
+        rules=DEFAULT_RULES,
+        host_id=PlayerId("host"),
+        map_sha256="1" * 64,
+        preset_id=None,
+        operation_id="op-create",
+    )
+
+    return LobbyGame(game_id=game_id, uow=UnitOfWork(sessions))

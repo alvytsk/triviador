@@ -27,7 +27,7 @@ from triviador.domain.game.state import ExpansionPicking, GameState
 from triviador.domain.ids import DeadlineId, GameId, PlayerId, QuestionId, RegionId
 from triviador.domain.questions.types import QuestionBudget, QuestionKind, QuestionPool
 from triviador.runtime.materialiser import Materialiser
-from triviador.services.ports import EventRef, QuestionPoolUnavailable
+from triviador.services.ports import EventRef, QuestionPoolUnavailable, ReconcileOutcome
 
 
 class StubBank:
@@ -45,11 +45,11 @@ class StubBank:
 
 class StubTransaction:
     """Only `questions` is exercised here — the materialiser never appends,
-    loads a stream, or looks up an operation. Those three methods are still
-    part of the Protocol this class must satisfy (`services.ports.
-    Transaction`), so they raise rather than being silently absent, which
-    is what would let `Materialiser.build` narrow its parameter type away
-    from the full port without a test noticing."""
+    loads a stream, looks up an operation, or reconciles one. Those four
+    methods are still part of the Protocol this class must satisfy
+    (`services.ports.Transaction`), so they raise rather than being
+    silently absent, which is what would let `Materialiser.build` narrow
+    its parameter type away from the full port without a test noticing."""
 
     def __init__(self, bank: StubBank) -> None:
         self._bank = bank
@@ -74,6 +74,16 @@ class StubTransaction:
     async def events_for_operation(
         self, game_id: GameId, operation_id: str
     ) -> tuple[EventRef, ...]:
+        raise AssertionError("not reached in materialiser tests")
+
+    async def operation_matches(
+        self,
+        game_id: GameId,
+        operation_id: str,
+        *,
+        expected_base_seq: int,
+        events: Sequence[GameEvent],
+    ) -> ReconcileOutcome:
         raise AssertionError("not reached in materialiser tests")
 
 

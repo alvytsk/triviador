@@ -146,10 +146,14 @@ class Transaction(Protocol):
         self, game_id: GameId, operation_id: str
     ) -> tuple[EventRef, ...]: ...
 
-    # `operation_matches` joins this Protocol in Task 6, together with the
-    # adapter method that satisfies it. Declaring it here first would
-    # leave the conformance check red for five tasks, which is a broken
-    # build, not a red test.
+    async def operation_matches(
+        self,
+        game_id: GameId,
+        operation_id: str,
+        *,
+        expected_base_seq: int,
+        events: Sequence[GameEvent],
+    ) -> ReconcileOutcome: ...
 
 
 class UnitOfWorkPort(Protocol):

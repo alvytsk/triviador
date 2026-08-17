@@ -33,6 +33,7 @@ from sqlalchemy import delete, func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from triviador.db.codec.codec import decode
+from triviador.db.codec.registry import WIRE_NAMES
 from triviador.db.errors import ConcurrentModification
 from triviador.db.models.games import Game, GamePlayer
 from triviador.db.repositories.events import (
@@ -44,6 +45,7 @@ from triviador.db.repositories.questions import QuestionBank
 from triviador.domain.game import events as ev
 from triviador.domain.game.events import GameEvent
 from triviador.domain.ids import GameId
+from triviador.services.ports import ReconcileOutcome
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,41 @@ class TransactionContext:
         slower and a second chance to fail."""
         rows = await select_event_refs_for_operation(self.session, game_id, operation_id)
         return tuple(PersistedEventRef(seq=seq, type=type_) for seq, type_ in rows)
+
+    async def operation_matches(
+        self,
+        game_id: GameId,
+        operation_id: str,
+        *,
+        expected_base_seq: int,
+        events: Sequence[GameEvent],
+    ) -> ReconcileOutcome:
+        """§5.5, verbatim: "Verify the exact expected `seq` range
+        (`state.seq + 1 … state.seq + len(events)`), the row count, and the
+        ordered types against the batch held in memory."
+
+        Three outcomes, not two. `ABSENT` — zero rows for this
+        `operation_id` — means the commit definitively did not land, so
+        the caller may safely re-run the whole attempt; collapsing it into
+        `MISMATCH` would quarantine a game over a dropped connection that
+        cost nothing. `MISMATCH` is never "close enough".
+
+        The comparison lives here rather than in the runtime because it
+        needs `WIRE_NAMES`, and `runtime/` may not import `db/`. The
+        runtime sees three outcomes and never learns a wire name.
+        """
+        refs = await self.events_for_operation(game_id, operation_id)
+        if not refs:
+            return ReconcileOutcome.ABSENT
+
+        expected_seqs = tuple(range(expected_base_seq + 1, expected_base_seq + len(events) + 1))
+        expected_types = tuple(WIRE_NAMES[type(event)] for event in events)
+        actual_seqs = tuple(ref.seq for ref in refs)
+        actual_types = tuple(ref.type for ref in refs)
+
+        if actual_seqs == expected_seqs and actual_types == expected_types:
+            return ReconcileOutcome.MATCHED
+        return ReconcileOutcome.MISMATCH
 
     async def _project(self, game_id: GameId, events: Sequence[GameEvent]) -> None:
         """§4.2's read model, applied event by event.
