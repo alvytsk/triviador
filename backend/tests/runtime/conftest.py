@@ -5,6 +5,8 @@
 """
 
 import asyncio
+import random
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 
 import pytest
@@ -15,9 +17,12 @@ from triviador.domain.game.actions import Command, DecisionContext, StartGame
 from triviador.domain.game.events import PlayerJoined
 from triviador.domain.game.reducer import decide, fold
 from triviador.domain.game.state import GameState
-from triviador.domain.ids import PlayerId, RegionId
+from triviador.domain.ids import GameId, PlayerId, RegionId
+from triviador.runtime.manager import GameManager, Loader
+from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.origins import Accepted, Ignored, Rejected
 from triviador.runtime.runtime import GameRuntime
+from triviador.services.ports import Transaction
 
 T0 = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 
@@ -126,3 +131,92 @@ async def settle(runtime: GameRuntime) -> None:
     no-wall-clock rule exists to avoid.
     """
     await drain_runtime(runtime)
+
+
+class CountingLoader:
+    """Counts calls and awaits once, standing in for `runtime.loader.GameLoader`.
+
+    The `asyncio.sleep(0)` is not decoration: `GameManager.get`'s
+    concurrency test only exercises the per-game lock if the loader
+    genuinely yields control mid-load — a loader that ran to completion
+    without ever awaiting would let every one of eight concurrent `get`
+    calls finish in one uninterrupted step each, serializing them by
+    accident and passing the test even with the lock deleted. A real
+    loader awaits the database, so this is the honest shape.
+
+    Shared by Tasks 11, 12, 13 and 15.
+    """
+
+    def __init__(self, raises: Exception | None = None) -> None:
+        self.calls = 0
+        self._raises = raises
+
+    async def load(self, game_id: GameId) -> GameState:
+        self.calls += 1
+        if self._raises is not None:
+            raise self._raises
+        await asyncio.sleep(0)  # a real load awaits the database
+        return lobby_state()
+
+
+class _NoUnitOfWork:
+    """`GameManager`'s registry tests never open a transaction — `begin`
+    raises rather than being silently absent, the same reason
+    `StubUnitOfWork` in `test_loader.py` raises on the methods its own
+    tests never reach. `object()` would fail `mypy --strict` against the
+    port-typed parameter and say nothing about why; this documents the
+    boundary."""
+
+    def begin(self) -> AbstractAsyncContextManager[Transaction]:
+        raise AssertionError("not reached in registry tests")
+
+
+class _NoMaterialiser(Materialiser):
+    """Same boundary as `_NoUnitOfWork`, for the collaborator `_load`
+    wires into `CommandExecutor` but never calls in these tests.
+
+    Subclasses `Materialiser` rather than standing alone: it is a
+    concrete dataclass, not a Protocol, so `GameManager.__init__`'s
+    `materialiser` parameter (and `CommandExecutor`'s, one hop further
+    in) can only accept a real subtype — a structurally-similar stub
+    would not satisfy `mypy --strict` here the way it does for the
+    Protocol-typed ports.
+    """
+
+    async def build(self, state: GameState, command: Command, tx: Transaction) -> DecisionContext:
+        raise AssertionError("not reached in registry tests")
+
+
+class _NoGameQueries:
+    """Same boundary as `_NoUnitOfWork`, for `GameQueriesPort` — unused
+    until Task 15's reaper walks it."""
+
+    async def find_empty_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
+        raise AssertionError("not reached in registry tests")
+
+    async def find_stale_lobbies(self, *, created_before: datetime) -> tuple[GameId, ...]:
+        raise AssertionError("not reached in registry tests")
+
+    async def find_unfinished(self) -> tuple[GameId, ...]:
+        raise AssertionError("not reached in registry tests")
+
+
+def a_manager(loader: Loader, **overrides: object) -> GameManager:
+    """Builds a `GameManager` wired for the registry suite: real fakes for
+    the collaborators `get` actually touches (clock, broadcaster,
+    subscribers), raising stubs for the ones it never reaches (uow,
+    materialiser, games). Tasks 12, 13, 14 and 15 all call this, several
+    of them through `clock=`, `games=`, `backoff_initial_s=` and
+    `backoff_max_s=` overrides.
+    """
+    return GameManager(
+        loader=loader,
+        uow=_NoUnitOfWork(),
+        materialiser=_NoMaterialiser(clock=FakeClock(T0), rng=random.Random(0)),
+        clock=FakeClock(T0),
+        broadcaster=FakeBroadcaster(),
+        subscribers=FakeSubscribers(),
+        games=_NoGameQueries(),
+        rng=random.Random(0),
+        **overrides,  # type: ignore[arg-type]
+    )
