@@ -79,6 +79,11 @@ class GameRuntime:
         self.expiry_enqueued_deadline_id: DeadlineId | None = None
         self._in_flight = False
         self.closed = False
+        # Test-only seam: fires at the top of `drain`, purely so a test can
+        # observe *when* a drain happened relative to other teardown steps
+        # (Task 16's shutdown ordering). Named for what it is so it is
+        # never mistaken for production API.
+        self.on_drain_for_test: Callable[[], None] | None = None
 
     @property
     def game_id(self) -> GameId:
@@ -174,6 +179,8 @@ class GameRuntime:
         (`GAME_RECOVERING`) and shutdown (`SERVER_RESTARTING`) — the two
         places where queued commands will never be processed and their
         origins would otherwise hang forever."""
+        if self.on_drain_for_test is not None:
+            self.on_drain_for_test()
         drained = 0
         while True:
             try:
@@ -338,6 +345,14 @@ class GameRuntime:
 
         The deadline task *is* cancelled: it holds no transaction, and a
         timer firing into a queue nobody will read again is noise.
+
+        Precondition: the queue must have room for the sentinel, or the
+        `put_nowait` below raises `QueueFull` and aborts teardown with
+        `closed` already set and `self._consumer` never cleared. Callers
+        are responsible for this — `unload` gates on `is_idle()`, and
+        `GameManager.shutdown` calls `drain()` immediately before this —
+        rather than this method silently swallowing a full queue, which
+        would hide a caller that forgot to make room.
         """
         self.closed = True
         if self._deadline_task is not None:

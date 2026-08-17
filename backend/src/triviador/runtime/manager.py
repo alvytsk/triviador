@@ -50,6 +50,21 @@ class Loader(Protocol):
     async def load(self, game_id: GameId) -> GameState: ...
 
 
+class SupportsAclose(Protocol):
+    """What `shutdown` asks of the watchdog and the reaper, structurally.
+
+    Declared here rather than importing `Watchdog`/`Reaper`: both of those
+    modules already import `GameManager` (they call `manager.get`,
+    `manager.live_runtimes`, ...), so importing either back into
+    `manager.py` would be circular. A structural Protocol needs no import
+    at all — anything with an `aclose` coroutine satisfies it, which is
+    also why `TracingCloser` in the test suite can stand in for either
+    without subclassing.
+    """
+
+    async def aclose(self) -> None: ...
+
+
 @dataclass(frozen=True)
 class Live:
     runtime: GameRuntime
@@ -172,6 +187,16 @@ class GameManager:
         return tuple(unloadable)
 
     async def get(self, game_id: GameId) -> GameRuntime:
+        # §5.6's "stop accepting new commands", enforced at the one place
+        # a caller can reach a runtime. `_load` carries the identical
+        # check for the recursive call this makes under the lock, but a
+        # cached `Live` entry returns here before ever reaching `_load` —
+        # without this, a request arriving after `shutdown()` starts could
+        # still be handed a runtime that `shutdown` is mid-way through
+        # tearing down.
+        if self._shutting_down:
+            raise ServerRestarting("server is restarting")
+
         entry = self._entries.get(game_id)
         runtime = self._usable(entry)
         if runtime is not None:
@@ -263,10 +288,17 @@ class GameManager:
            command. Closing first makes that submit raise `RuntimeClosed`
            — which the caller handles by re-`get()`ing — instead of
            dropping a command into a queue about to be discarded. If the
-           runtime turns out not to be idle, `closed` is rolled back:
-           otherwise a game nobody unloaded is left permanently refusing
-           commands, with only a re-`get()` nobody knows to make able to
-           revive it.
+           runtime turns out not to be idle, `closed` is rolled back to
+           whatever it held *before this call*, not unconditionally to
+           `False`: `shutdown()` (Task 16) may have already set it `True`
+           for its own reasons — the reaper can run a full tick between
+           `shutdown` awaiting the watchdog's `aclose()` and the reaper's
+           own — and restoring a literal `False` would reopen the "no
+           submit succeeds anywhere" window shutdown had just closed,
+           until shutdown's own runtime teardown re-closes it. Without the
+           rollback at all, a game nobody unloaded is left permanently
+           refusing commands, with only a re-`get()` nobody knows to make
+           able to revive it.
         2. **`is_idle()`, not `pending_commands() == 0`.** The consumer
            dequeues before executing, so an empty queue is not an idle
            runtime — for the whole duration of a transaction, `qsize()`
@@ -284,9 +316,10 @@ class GameManager:
                 return False
 
             runtime = entry.runtime
+            previously_closed = runtime.closed
             runtime.closed = True
             if not runtime.is_idle():
-                runtime.closed = False
+                runtime.closed = previously_closed
                 return False
 
             del self._entries[game_id]
@@ -404,3 +437,91 @@ class GameManager:
             # Outside the lock: a `get` during the wait must be able to
             # observe `Recovering` and answer 503 rather than block.
             await self._clock.sleep_until(next_at)
+
+    async def shutdown(self, *closers: SupportsAclose) -> None:
+        """§5.6, in an order chosen so that nothing can be resurrected
+        behind it.
+
+        The subtle failure this guards against: `_recover` is an
+        unbounded retry loop living on a task the manager spawned, and it
+        installs a fresh `Live` runtime when it finally succeeds. Every
+        `await` below is a chance for it to do exactly that. Draining the
+        `Live` entries and returning would therefore leave a process that
+        has "shut down" still holding a running consumer, an open
+        deadline task, and a database connection — and the loop would
+        never have noticed, because it only ever inspected `Live`.
+
+        So: fence first, then mark, then stop everything the manager
+        owns, and only then tear the runtimes down. Idempotent — a
+        lifespan handler can be invoked twice on a hard stop, and the
+        second call must not re-drain queues that no longer exist.
+        """
+        if self._shutting_down:
+            return
+
+        # 1. Fence. `get` now raises ServerRestarting, `_load` refuses,
+        #    and every `_recover` loop exits at its next check — before
+        #    any `await` below can give one a turn.
+        self._shutting_down = True
+
+        # 2. Mark every resident runtime closed *before* awaiting
+        #    anything. From here no submit succeeds anywhere, so a
+        #    watchdog or reaper tick already in flight cannot enqueue
+        #    into a queue that is about to be drained.
+        for entry in self._entries.values():
+            if isinstance(entry, Live):
+                entry.runtime.closed = True
+
+        # 3. Stop the background tasks: the caller's watchdog and reaper,
+        #    then the manager's own quarantine/recovery tasks. These are
+        #    awaited, not just cancelled — a quarantine task cancelled
+        #    mid-teardown could leave a runtime detached but still
+        #    consuming, invisible to the loop below, which only iterates
+        #    the registry.
+        for closer in closers:
+            await closer.aclose()
+        await self._cancel_lifecycle_tasks()
+
+        # 4. Now the runtimes, which are the only things left running.
+        #    `del` runs for every entry, `Live` or not: a `Recovering` or
+        #    `Failed` entry has no runtime to tear down, but it is still
+        #    a registry entry the process has finished with.
+        for game_id, entry in list(self._entries.items()):
+            if isinstance(entry, Live):
+                runtime = entry.runtime
+                runtime.drain(RuntimeCode.SERVER_RESTARTING, "server is restarting")
+                # Never `aclose()`: cancelling mid-COMMIT would manufacture
+                # the ambiguous-commit case on every deploy, the one
+                # failure mode never worth generating deliberately. `stop`
+                # asks the consumer to finish what it is doing and end
+                # cleanly. `drain()` ran first, so the queue is guaranteed
+                # empty here (nothing can submit past `closed = True` set
+                # in step 2) and `stop`'s own sentinel enqueue cannot raise
+                # `QueueFull`.
+                await runtime.stop()
+                self._subscribers.close_game_subscribers(game_id, 1001)
+            del self._entries[game_id]
+
+    async def _cancel_lifecycle_tasks(self) -> None:
+        """Cancel every still-running quarantine/recovery task and await
+        each one, retrieving its outcome rather than merely cancelling it.
+
+        Awaiting matters as much as cancelling: a task left uncollected
+        can raise into the void — an unretrieved-exception warning at
+        best, a `BaseException` nobody sees at worst. `asyncio.CancelledError`
+        (our own cancellation) is expected and swallowed; anything else is
+        logged so it is not silently lost, but does not abort the rest of
+        shutdown — one misbehaving quarantine must not stop the runtimes
+        from being torn down.
+        """
+        tasks = [t for t in self._quarantines.values() if not t.done()]
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("quarantine task failed during shutdown")
+        self._quarantines.clear()

@@ -211,6 +211,24 @@ async def test_an_unload_that_finds_the_runtime_busy_leaves_it_submittable() -> 
     runtime.submit(QueuedCommand(JoinGame(PlayerId("p8"), "P8"), "op-2", RecordingOrigin()))
 
 
+async def test_an_unload_that_finds_the_runtime_busy_restores_a_prior_closed_state() -> None:
+    """The rollback must restore whatever `closed` held *before* this
+    call, not a literal `False`. `GameManager.shutdown` (Task 16) can set
+    `closed = True` for its own reasons and then race a reaper tick's
+    `unload` — rolling back to a literal `False` would reopen the "no
+    submit succeeds anywhere" window shutdown had just closed, until
+    shutdown's own runtime teardown re-closes it."""
+    clock = FakeClock(T0)
+    manager, runtime = manager_with_resident(lobby_state(), clock, start=False)
+    runtime.submit(QueuedCommand(JoinGame(PlayerId("p9"), "P9"), "op-1", RecordingOrigin()))
+    runtime.closed = True  # e.g. already marked closed by a concurrent shutdown
+
+    unloaded = await manager.unload(runtime.game_id)
+
+    assert unloaded is False
+    assert runtime.closed is True
+
+
 async def test_one_failing_game_does_not_stop_the_sweep() -> None:
     """A lobby that will not load is the manager's problem — it has
     already been recorded `Failed` or `Recovering`. The other nineteen

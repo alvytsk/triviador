@@ -341,10 +341,14 @@ def manager_with_resident(
     *,
     start: bool = True,
     executor: Executor | None = None,
+    subscribers: FakeSubscribers | None = None,
 ) -> tuple[GameManager, GameRuntime]:
     """A manager holding one runtime built directly from `state`, so a
     test can choose the phase without playing a game to reach it."""
-    manager = a_manager(CountingLoader())
+    overrides: dict[str, object] = {}
+    if subscribers is not None:
+        overrides["subscribers"] = subscribers
+    manager = a_manager(CountingLoader(), **overrides)
     runtime = GameRuntime(
         state=state,
         executor=executor if executor is not None else StubExecutor([]),
