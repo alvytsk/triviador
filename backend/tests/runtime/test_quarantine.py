@@ -1,6 +1,7 @@
 """§5.6. The hard part is not the teardown — it is that recovery can fail
 too, and that commands queued against R17 must never surface in R18."""
 
+import random
 from datetime import timedelta
 
 import pytest
@@ -38,6 +39,30 @@ class ScriptedLoader:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
+
+
+class MaxJitter(random.Random):
+    """`uniform(a, b)` always returns `b`.
+
+    `test_the_backoff_grows_and_is_capped` needs the *sampled* delay to
+    reveal exactly the upper bound `_recover` passed to `uniform` —
+    deterministically, on any seed. Asserting against the suite's default
+    `random.Random(0)` let "drop the `min(...)` cap, keep the jitter"
+    through undetected: with that fixed seed, all four sampled delays
+    happened to land under the cap regardless of whether the cap was
+    actually applied, so the mutation passed on every run. A stub that
+    always samples the top of its range removes that dependency on luck:
+    if the cap is missing, the fourth attempt's upper bound genuinely is
+    8.0, and the sampled delay is genuinely 8.0.
+
+    Subclasses `random.Random` rather than a bare duck-typed object:
+    `GameManager.__init__`'s `rng` parameter is typed against the concrete
+    class, not a Protocol, so `mypy --strict` only accepts an actual
+    subtype here.
+    """
+
+    def uniform(self, a: float, b: float) -> float:
+        return b
 
 
 async def test_a_fault_tears_down_and_loads_a_fresh_generation() -> None:
@@ -157,10 +182,21 @@ async def test_the_backoff_grows_and_is_capped() -> None:
     """Assert the *bound*, never an exact delay: the backoff is jittered,
     and an exact-value assertion here would only restate the
     implementation — and would fail the day someone changes the jitter
-    without changing the behaviour that matters."""
+    without changing the behaviour that matters.
+
+    `rng=MaxJitter()` rather than the suite's default seeded
+    `random.Random(0)`: this test's whole point is that the *sampled*
+    delay never exceeds the cap, and with the default seed every sampled
+    delay happened to land under the cap even with the cap deleted from
+    production — a deterministic blind spot, not a flaky one. `MaxJitter`
+    always samples the top of whatever range `_recover` passes to
+    `uniform`, so the sampled delay exactly exposes that upper bound.
+    """
     clock = FakeClock(T0)
     loader = ScriptedLoader([lobby_state(), *[OSError("db down")] * 4, lobby_state()])
-    manager = a_manager(loader, clock=clock, backoff_initial_s=1.0, backoff_max_s=4.0)
+    manager = a_manager(
+        loader, clock=clock, backoff_initial_s=1.0, backoff_max_s=4.0, rng=MaxJitter()
+    )
     runtime = await manager.get(GAME)
 
     manager.quarantine(runtime, "persistence unavailable")
