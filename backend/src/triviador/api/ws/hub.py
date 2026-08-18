@@ -77,20 +77,26 @@ class Connection:
     def close(self, code: int) -> None:
         """First code wins, like an origin's first outcome.
 
-        The queue is full by definition in the 4408 case, so it is drained
-        before the sentinel is queued — otherwise the close itself would
-        raise `QueueFull` and the connection would stay open forever with
-        nobody reading it.
+        The sentinel is queued directly first. A graceful close leaves
+        whatever was already queued — a `hello`, a `game.update` — to be
+        delivered by the sender before it sees the sentinel and stops.
+        Only `QueueFull` (the 4408 case, by definition: the queue is
+        already full, which is *why* this is closing) falls back to
+        draining — the sentinel must displace something or the connection
+        stays open forever with nobody reading it.
         """
         if self.close_code is not None:
             return
         self.close_code = code
-        while True:
-            try:
-                self._outbound.get_nowait()
-            except QueueEmpty:
-                break
-        self._outbound.put_nowait(_Close(code))
+        try:
+            self._outbound.put_nowait(_Close(code))
+        except QueueFull:
+            while True:
+                try:
+                    self._outbound.get_nowait()
+                except QueueEmpty:
+                    break
+            self._outbound.put_nowait(_Close(code))
 
     async def next_outbound(self) -> "ServerMessage | _Close":
         return await self._outbound.get()

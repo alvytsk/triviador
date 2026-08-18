@@ -8,14 +8,15 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests.api.conftest import ORIGIN, replace_deps
 from tests.conftest import lobby_state
-from tests.runtime.conftest import manager_with_resident, queued_commands
-from tests.runtime.fakes import T0
+from tests.runtime.conftest import manager_with_resident, queued_commands, stalled_runtime
+from tests.runtime.fakes import T0, RecordingOrigin
 from tests.runtime.fakes import FakeClock as RuntimeFakeClock
 from triviador.api.deps import AppDependencies
 from triviador.api.ws.endpoint import WsSocket, serve_connection
 from triviador.domain.game.actions import Surrender
 from triviador.domain.ids import DeadlineId, GameId, PlayerId, SessionId
-from triviador.runtime.manager import Recovering
+from triviador.runtime.manager import Live, Recovering
+from triviador.runtime.runtime import QueuedCommand
 
 
 class ScriptedSocket:
@@ -26,12 +27,14 @@ class ScriptedSocket:
         self.sent: list[dict[str, Any]] = []
         self.accepted = False
         self.closed_with: int | None = None
+        self._disconnected = False
 
     async def accept(self) -> None:
         self.accepted = True
 
     async def receive_text(self) -> str:
         if not self._frames:
+            self._disconnected = True
             raise WebSocketDisconnect(1000)
         return self._frames.pop(0)
 
@@ -39,6 +42,13 @@ class ScriptedSocket:
         self.sent.append(json.loads(text))
 
     async def close(self, code: int) -> None:
+        if self._disconnected:
+            # Matches real Starlette/uvicorn: writing a close frame to a
+            # transport the client already hung up on raises (there,
+            # `OSError` surfacing as `WebSocketDisconnect(1006)`) —
+            # `run_sender`'s `except Exception` around this call already
+            # treats that as the ordinary case of a dead socket.
+            raise OSError("socket is already disconnected")
         self.closed_with = code
 
     def types(self) -> list[str]:
@@ -228,25 +238,52 @@ async def test_an_unexpected_failure_never_echoes_its_exception_text(deps: AppDe
     assert "hunter2" not in json.dumps(socket.sent)
 
 
-async def test_a_runtime_that_cannot_take_the_command_answers_without_closing(
-    deps: AppDependencies,
-) -> None:
-    """`submit` rejects rather than blocking, because its caller is this
-    read loop — and a stalled read loop stops the client's heartbeat too.
+async def test_a_recovering_game_answers_without_closing(deps: AppDependencies) -> None:
+    """`_runtime_or_none`'s own translation, reached when `deps.manager.get`
+    raises before a runtime is ever returned — a quarantine, in production.
 
     Marking the resident runtime `closed` does not exercise this: `_usable`
     treats a closed `Live` entry as unusable and transparently reloads a
     fresh runtime through the manager's `CountingLoader` (`GameManager`
     §5.6) — one that does not know about `u1`, so the command would be
-    refused as `forbidden` before ever reaching a busy runtime. Parking
-    the registry entry in `Recovering` instead raises `GameRecovering`
-    straight out of `get()`, the same way a real quarantine would.
+    refused as `forbidden` before `get` ever raises. Parking the registry
+    entry in `Recovering` instead raises `GameRecovering` straight out of
+    `get()`, the same way a real quarantine would.
     """
     runtime = deps.manager.live_runtimes()[0]
     deps.manager._entries[runtime.game_id] = Recovering(attempt=1, next_at=deps.clock.now())
     socket = ScriptedSocket({"type": "surrender", "command_id": "c1", "game_id": "g1"})
     await serve(deps, socket)
-    assert socket.sent[1]["code"] in {"server_busy", "game_recovering"}
+    assert socket.sent[1]["code"] == "game_recovering"
+    assert socket.closed_with is None
+
+
+async def test_a_full_runtime_queue_answers_with_server_busy(deps: AppDependencies) -> None:
+    """`_command`'s *own* `try: runtime.submit(...) except Exception:` —
+    distinct from `_runtime_or_none`'s translation above. There is no
+    `await` between `_runtime_or_none` returning a live runtime and
+    `submit` being called, so in production this block is reached only by
+    a genuinely full queue — an everyday load condition for this endpoint,
+    not a manager-registry state.
+
+    `stalled_runtime` is unstarted (`start=False`'s rationale throughout
+    this suite), so the one command submitted directly here to fill its
+    `queue_maxsize=1` queue is never drained — `runtime.submit` for the
+    frame the socket sends is the second `put_nowait`, and it is the one
+    that overflows.
+    """
+    runtime = stalled_runtime(
+        lobby_state({"u1": 0, "u2": 1}), RuntimeFakeClock(T0), queue_maxsize=1
+    )
+    runtime.submit(
+        QueuedCommand(
+            command=Surrender(PlayerId("u1")), operation_id="filler", origin=RecordingOrigin()
+        )
+    )
+    deps.manager._entries[runtime.game_id] = Live(runtime)
+    socket = ScriptedSocket({"type": "surrender", "command_id": "c1", "game_id": "g1"})
+    await serve(deps, socket)
+    assert socket.sent[1]["code"] == "server_busy"
     assert socket.closed_with is None
 
 

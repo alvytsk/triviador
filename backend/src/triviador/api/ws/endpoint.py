@@ -14,7 +14,6 @@ Three rules this file exists to enforce, in this order:
 """
 
 import asyncio
-import contextlib
 import logging
 import uuid
 from decimal import Decimal
@@ -128,44 +127,32 @@ async def serve_connection(
     deps.hub.add(connection)
     sender = asyncio.create_task(run_sender(connection), name=f"ws-sender:{connection.id}")
     connection.send(HelloMessage(server_time=deps.clock.now()))
-    client_gone = False
+    # The client's own close code, if it is the one that ended the read
+    # loop — used only as a fallback below, never overriding a code this
+    # module already chose (4403, 1001, ...).
+    disconnect_code = 1000
     try:
         await _read_loop(connection, deps)
-    except WebSocketDisconnect:
-        client_gone = True
+    except WebSocketDisconnect as exc:
+        disconnect_code = exc.code
     finally:
         subscribed_games = [
             t.removeprefix("game:") for t in connection.topics if t.startswith("game:")
         ]
         deps.hub.remove(connection)
-        # One scheduling turn for the sender to drain whatever is still
-        # queued — a `hello` this connection never got to send, say —
-        # before it either receives a close frame or is stopped outright.
-        # `Connection.close`'s drain-then-sentinel behaviour is deliberate
-        # for 4408 (the queue is already backed up and nothing in it will
-        # ever be delivered), but a graceful exit should still land what
-        # was already queued; `test_a_message_reaches_the_socket_through_
-        # the_sender_task` in `test_ws_hub.py` establishes this exact
-        # one-`sleep(0)` pattern.
-        await asyncio.sleep(0)
-        if client_gone and connection.close_code is None:
-            # The client already hung up (`WebSocketDisconnect`): there is
-            # no one left to read a close frame, so the sender is stopped
-            # directly rather than asked to write one to a transport that
-            # is already gone. `close_code` is still recorded directly
-            # (bypassing `Connection.close`'s enqueue-a-sentinel path) so
-            # this connection reads as closed to anything that inspects it
-            # after this point, the same way every other exit leaves it.
-            connection.close_code = 1000
-            sender.cancel()
-        else:
-            connection.close(connection.close_code or 1000)
+        # Unconditional: `Connection.close` now queues its sentinel behind
+        # whatever is already pending (falling back to the drain only on
+        # `QueueFull`, hub.py's own 4408 case), so nothing already queued
+        # — a `hello`, an update — is lost by closing here. Writing a
+        # close frame to a transport that already hung up is not this
+        # module's problem: `run_sender` already treats a failing
+        # `socket.close` as the ordinary case of a dead socket.
+        connection.close(connection.close_code or disconnect_code)
         for game_id in subscribed_games:
             # After removal, so the departing tab is already absent from the
             # roster everyone else receives.
             deps.broadcaster.presence(GameId(game_id))
-        with contextlib.suppress(asyncio.CancelledError):
-            await sender
+        await sender
 
 
 async def _read_loop(connection: Connection, deps: AppDependencies) -> None:
