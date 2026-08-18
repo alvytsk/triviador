@@ -11,7 +11,9 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from triviador.domain.game.state import AcquisitionKind, Phase, TerritoryKind
 from triviador.domain.questions.types import Difficulty, QuestionKind, QuestionSnapshot
+from triviador.services.identity import UserRole
 
 
 def media_url(media_base: str, asset_id: str | None) -> str | None:
@@ -182,3 +184,84 @@ ClientTurn = Annotated[
     WarmupTurn | QuestionTurn | PickingTurn | TargetSelectTurn | DuelTurn | NeutralTurn | FinalTurn,
     Field(discriminator="kind"),
 ]
+
+
+class ClientPlayer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    player_id: str
+    display_name: str
+    seat: int
+    score: int
+    bonus_score: int
+    base_region: str | None
+    is_eliminated: bool
+
+
+class ClientTerritory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    region_id: str
+    owner_id: str | None
+    kind: TerritoryKind
+    base_owner_id: str | None
+    base_hp: int | None
+    acquisition: AcquisitionKind | None
+
+
+class ClientRules(BaseModel):
+    """`GameRules`, verbatim. Public by construction: it is frozen into the
+    `GameCreated` event at creation and every player is playing under it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    player_count: int
+    expansion_rounds: int
+    battle_rounds: int
+    base_hp: int
+    answer_timeout_ms: int
+    pick_timeout_ms: int
+    warmup_ms: int
+    claims_by_rank: tuple[int, ...]
+    pts_base: int
+    pts_territory: int
+    pts_conquered: int
+    pts_defense: int
+
+
+class ClientYou(BaseModel):
+    """Who the recipient is *in this game*. Present so the client never has
+    to correlate its `/api/auth/me` id against the player list itself and
+    get it wrong for a spectating admin."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    player_id: str | None
+    role: UserRole
+
+
+class ClientGameState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    game_id: str
+    map_id: str
+    phase: Phase
+    round_no: int
+    rules: ClientRules
+    turn_order: tuple[str, ...]
+    players: tuple[ClientPlayer, ...]
+    territories: tuple[ClientTerritory, ...]
+    turn: ClientTurn | None
+    winner_id: str | None
+    media_prefetch: tuple[str, ...]
+    you: ClientYou
+
+
+class GameSnapshot(BaseModel):
+    """One projection, two transports (§9.3): the body of
+    `GET /api/games/{id}` and the payload of `game.snapshot`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    seq: int
+    state: ClientGameState
