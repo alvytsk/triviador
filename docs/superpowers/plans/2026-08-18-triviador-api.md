@@ -4328,7 +4328,11 @@ def test_every_turn_variant_has_a_projection() -> None:
     from triviador.api.schemas.games import ClientTurn
     from triviador.domain.game.state import Turn
 
-    kinds = {get_args(v.model_fields["kind"].annotation)[0] for v in get_args(ClientTurn)}
+    # Two unwraps: `ClientTurn` is `Annotated[Union, Field(...)]`, so
+    # `get_args` returns `(Union, Field)` and the union's own members need a
+    # second call. One unwrap raises `AttributeError` at collection time.
+    variants = get_args(get_args(ClientTurn)[0])
+    kinds = {get_args(v.model_fields["kind"].annotation)[0] for v in variants}
     assert len(kinds) == len(get_args(Turn)) - 1  # BattleTiebreak shares DuelTurn's shape
 ```
 
