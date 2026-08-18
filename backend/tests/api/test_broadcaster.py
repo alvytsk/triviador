@@ -6,12 +6,14 @@ outage." So `publish` catches everything, and the two failure modes get
 two different close codes.
 """
 
+from collections.abc import Sequence
 from dataclasses import replace
 from decimal import Decimal
 from typing import cast
 
 from tests.api.test_ws_hub import FakeSocket, a_connection, parsed
 from tests.conftest import full_pool, lobby_state
+from triviador.api.schemas.ws import UpdateMessage
 from triviador.api.ws.broadcaster import WsBroadcaster
 from triviador.api.ws.hub import Connection, Hub
 from triviador.api.ws.origins import WsOrigin
@@ -108,21 +110,35 @@ def test_publish_never_raises_however_badly_projection_fails() -> None:
     WsBroadcaster(hub, media_base="/media").publish(GameId("g1"), 7, Boom(), ())  # type: ignore[arg-type]
 
 
+class BreaksForOneConnection(WsBroadcaster):
+    """Fails `_update` for one nominated connection and behaves normally
+    for every other. A subclass rather than a monkeypatch: assigning over
+    an instance method needs two suppressions and tests the same thing."""
+
+    def __init__(self, hub: Hub, *, media_base: str, failing: Connection) -> None:
+        super().__init__(hub, media_base=media_base)
+        self._failing = failing
+
+    def _update(
+        self,
+        connection: Connection,
+        game_id: GameId,
+        base_seq: int,
+        state: GameState,
+        events: Sequence[ev.GameEvent],
+    ) -> UpdateMessage:
+        if connection is self._failing:
+            raise RuntimeError("only this one")
+        return super()._update(connection, game_id, base_seq, state, events)
+
+
 def test_one_broken_subscriber_does_not_cost_the_others_their_update() -> None:
     """Per-connection `try`, not one around the loop: a single failure that
     aborted the whole publish would silently stall every other player, and
     §8.4's sequencing would then make them all resync."""
     hub, (bad, good) = hub_with("p1", "p2")
-    broadcaster = WsBroadcaster(hub, media_base="/media")
+    broadcaster = BreaksForOneConnection(hub, media_base="/media", failing=bad)
 
-    original = broadcaster._update
-
-    def explode_for_bad(connection, *args, **kwargs):  # type: ignore[no-untyped-def]
-        if connection is bad:
-            raise RuntimeError("only this one")
-        return original(connection, *args, **kwargs)
-
-    broadcaster._update = explode_for_bad  # type: ignore[method-assign]
     broadcaster.publish(GameId("g1"), 7, playing_state(), ())
     assert bad.close_code == 1011
     assert good.close_code is None
