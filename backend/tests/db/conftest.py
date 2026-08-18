@@ -62,6 +62,14 @@ THIS_DIR = Path(__file__).parent
 BACKEND_DIR = THIS_DIR.parent.parent
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
 
+# `test_security.py` (Plan 5) exercises argon2 and `secrets` only — it opens
+# no session, builds no engine, and needs no fixture from this file. Every
+# other module here earns the `integration` mark by depending on the
+# session-scoped `engine`; this is the one named exception, not a loophole,
+# so it stays an explicit allowlist rather than a heuristic ("no `async def`
+# test") that could silently swallow a real integration test later.
+NO_DATABASE_MODULES = frozenset({THIS_DIR / "test_security.py"})
+
 
 async def _seed_category(
     sessionmaker: async_sessionmaker[AsyncSession],
@@ -204,7 +212,8 @@ def _lacks_session_loop_scope(item: pytest.Item) -> bool:
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Every test module under tests/db must be marked `integration`, and
     every async test here must run on the session-scoped loop `engine`
-    (and everything built from it) requires.
+    (and everything built from it) requires — except the modules named in
+    `NO_DATABASE_MODULES`, which need neither.
 
     A conftest.py hook is registered for the whole pytest session once it is
     loaded, not scoped to its own directory — `items` here is every item
@@ -213,7 +222,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     without that filter, this hook would reject the entire fast lane the
     moment collection touches this directory.
     """
-    db_items = [item for item in items if item.path.is_relative_to(THIS_DIR)]
+    db_items = [
+        item
+        for item in items
+        if item.path.is_relative_to(THIS_DIR) and item.path not in NO_DATABASE_MODULES
+    ]
 
     unmarked = sorted(
         {item.nodeid.split("::")[0] for item in db_items if "integration" not in item.keywords}

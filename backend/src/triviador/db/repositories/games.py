@@ -24,7 +24,7 @@ the no-connections rule (§5.6) may already have unloaded a runtime, and a
 resident scan would leave that row in the database forever.
 """
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -35,25 +35,12 @@ from triviador.db.models.games import Game, GameEventRow, GamePlayer
 from triviador.domain.game.events import GameCreated
 from triviador.domain.game.rules import GameRules
 from triviador.domain.ids import GameId, MapId, PlayerId
+from triviador.services.ports import GameSummary
 
-
-@dataclass(frozen=True)
-class GameSummary:
-    """The projection `GET /api/games` and `GET /api/games/{id}` need.
-
-    Deliberately thin: full game state (territories, turn, pool, ...) lives
-    only in the folded `GameState`, never duplicated into this read model.
-    `max_players` and `player_count` together are what a lobby list needs to
-    render fill state without decoding `rules` back into a `GameRules`.
-    """
-
-    game_id: GameId
-    map_id: MapId
-    host_id: PlayerId
-    status: str
-    max_players: int
-    player_count: int
-    created_at: datetime
+# Re-exported: `GameSummary` moved to `services/ports.py` (Plan 5, R-9) so
+# `services/` owns the type, but `tests/db/test_game_repository.py` still
+# imports it from here, and every other existing import site keeps working.
+__all__ = ["GameRepository", "GameSummary"]
 
 
 def _to_summary(game: Game, player_count: int) -> GameSummary:

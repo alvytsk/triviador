@@ -27,6 +27,9 @@ class StubMaps:
         self._digest = digest
         self._raises = raises
 
+    def available(self) -> tuple[MapId, ...]:
+        return (MapId("grid"),)
+
     def load_with_digest(self, map_id: MapId) -> LoadedMap:
         if self._raises is not None:
             raise self._raises
