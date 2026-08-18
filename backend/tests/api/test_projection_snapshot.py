@@ -12,6 +12,7 @@ from decimal import Decimal
 from tests.conftest import NOW, full_pool, lobby_state, own
 from triviador.api.projection.snapshot import project_snapshot
 from triviador.api.projection.viewer import ViewerContext
+from triviador.api.schemas.games import ClientGameState
 from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.game.state import (
     Deadline,
@@ -65,7 +66,7 @@ def test_the_snapshot_carries_the_sequence_it_was_taken_at() -> None:
     the envelope, not inside the state, so there is one of it."""
     snapshot = project_snapshot(playing_state(), viewer(), media_base=MEDIA)
     assert snapshot.seq == 42
-    assert "seq" not in snapshot.state.model_fields
+    assert "seq" not in ClientGameState.model_fields
 
 
 def test_not_one_undrawn_question_reaches_the_client() -> None:
@@ -103,6 +104,53 @@ def test_media_prefetch_covers_the_pool_and_is_opaque() -> None:
     assert set(snapshot.state.media_prefetch) == {"/media/asset0", "/media/asset1"}
     for url in snapshot.state.media_prefetch:
         assert "numeric" not in url
+
+
+def test_media_prefetch_covers_choice_level_media_too() -> None:
+    """`_media_prefetch` walks two data paths: question-level `media_asset_id`
+    (covered above) and choice-level `media_asset_id` on multiple-choice
+    questions' choices. Every other fixture uses `mc=0`, so this second path
+    never ran — a choice image that misses this list is one the client loads
+    during the answer window, exactly the unfairness §9.6's warmup exists to
+    prevent."""
+    pool = full_pool(numeric=0, mc=1)
+    mc = pool.multiple_choice[0]
+    assert mc.choices is not None
+    with_media = replace(
+        pool,
+        multiple_choice=(
+            replace(
+                mc,
+                choices=tuple(
+                    replace(c, media_asset_id=MediaAssetId(f"choice{c.idx}")) for c in mc.choices
+                ),
+            ),
+        ),
+    )
+    state = replace(playing_state(), pool=with_media)
+    snapshot = project_snapshot(state, viewer(), media_base=MEDIA)
+    assert {"/media/choice0", "/media/choice1", "/media/choice2", "/media/choice3"} <= set(
+        snapshot.state.media_prefetch
+    )
+
+
+def test_media_prefetch_is_sorted_not_draw_order() -> None:
+    """The docstring says sortedness is what stops the list leaking the
+    pool's draw order. A `set(...)` comparison cannot prove that — a
+    regression emitting assets in draw order would still pass it — so this
+    uses ids whose sort order differs from their insertion order."""
+    pool = full_pool(numeric=3, mc=0)
+    with_media = replace(
+        pool,
+        numeric=tuple(
+            replace(q, media_asset_id=MediaAssetId(a))
+            for q, a in zip(pool.numeric, ("zeta", "alpha", "mu"), strict=True)
+        ),
+    )
+    state = replace(playing_state(), pool=with_media)
+    snapshot = project_snapshot(state, viewer(), media_base=MEDIA)
+    assert snapshot.state.media_prefetch == ("/media/alpha", "/media/mu", "/media/zeta")
+    assert snapshot.state.media_prefetch == tuple(sorted(snapshot.state.media_prefetch))
 
 
 def test_a_lobby_projects_with_no_turn_and_nothing_to_prefetch() -> None:

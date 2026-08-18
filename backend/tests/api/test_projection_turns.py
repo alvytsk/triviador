@@ -13,6 +13,7 @@ from triviador.api.projection.turns import project_turn
 from triviador.api.projection.viewer import ViewerContext
 from triviador.domain.game.reducer import legal_targets
 from triviador.domain.game.state import (
+    BattleDuel,
     BattleTargetSelect,
     Deadline,
     DeadlineKind,
@@ -112,6 +113,70 @@ def test_an_author_sees_their_own_answer_back() -> None:
     assert turn is not None and turn.kind == "expansion_question"
     assert turn.your_answer is not None
     assert turn.your_answer.value == "99"
+
+
+def duel_state() -> GameState:
+    from dataclasses import replace
+
+    state = own(own(lobby_state(), "r0", "p1"), "r4", "p2")
+    pool = full_pool(numeric=0, mc=1)
+    return replace(
+        state,
+        phase=Phase.BATTLE,
+        pool=pool,
+        turn=BattleDuel(
+            deadline=deadline(DeadlineKind.ANSWER),
+            attacker_id=PlayerId("p1"),
+            defender_id=PlayerId("p2"),
+            region_id=RegionId("r4"),
+            question=pool.multiple_choice[0],
+            answers={},
+        ),
+    )
+
+
+def test_an_author_sees_their_own_choice_answer_back() -> None:
+    """`_own_answer`'s other branch: `ChoiceAnswer` -> `SubmittedValue(kind="choice", ...)`.
+    A `BattleDuel` presents multiple-choice questions, so it is the natural home."""
+    from dataclasses import replace
+
+    from triviador.domain.game.state import ChoiceAnswer, SubmittedAnswer
+
+    base = duel_state()
+    assert isinstance(base.turn, BattleDuel)
+    state = replace(
+        base,
+        turn=replace(
+            base.turn,
+            answers={PlayerId("p1"): SubmittedAnswer(ChoiceAnswer(2), 900)},
+        ),
+    )
+    turn = project_turn(state, viewer("p1"), media_base=MEDIA)
+    assert turn is not None and turn.kind == "battle_duel"
+    assert turn.your_answer is not None
+    assert turn.your_answer.kind == "choice"
+    assert turn.your_answer.idx == 2
+
+
+def test_a_non_author_does_not_see_a_choice_answer() -> None:
+    """The split proven for numeric answers above must hold for choice
+    answers too: a spectator or opponent gets nothing back."""
+    from dataclasses import replace
+
+    from triviador.domain.game.state import ChoiceAnswer, SubmittedAnswer
+
+    base = duel_state()
+    assert isinstance(base.turn, BattleDuel)
+    state = replace(
+        base,
+        turn=replace(
+            base.turn,
+            answers={PlayerId("p1"): SubmittedAnswer(ChoiceAnswer(2), 900)},
+        ),
+    )
+    turn = project_turn(state, viewer("p2"), media_base=MEDIA)
+    assert turn is not None and turn.kind == "battle_duel"
+    assert turn.your_answer is None
 
 
 def picking_state(current: str) -> GameState:
