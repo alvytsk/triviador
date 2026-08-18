@@ -7624,7 +7624,11 @@ async def test_readiness_is_503_until_startup_recovery_finishes(
     deps.readiness.recovery_complete = False
     response = await client.get("/api/health/ready")
     assert response.status_code == 503
-    assert response.json()["details"]["recovery_complete"] is False
+    # Top level, not inside `details`: the 503 path returns the same
+    # `ReadinessReport` model as the 200 path, because a probe wants the
+    # checklist rather than an error code. It is a declared success model,
+    # so the envelope rule holds.
+    assert response.json()["recovery_complete"] is False
 
 
 async def test_a_ready_process_reports_each_check(client: httpx.AsyncClient) -> None:
