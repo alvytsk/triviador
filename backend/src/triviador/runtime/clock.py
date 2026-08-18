@@ -19,5 +19,23 @@ class SystemClock:
         return datetime.now(UTC)
 
     async def sleep_until(self, when: datetime) -> None:
-        delay = (when - self.now()).total_seconds()
-        await asyncio.sleep(max(0.0, delay))
+        """Sleep until `when` has genuinely passed, not merely until one
+        computed delay has elapsed.
+
+        `asyncio.sleep` schedules on the loop's monotonic clock while this
+        delay is computed from the wall clock, so a single sleep can return a
+        few microseconds *before* `now()` reaches `when`. That is not
+        harmless: the deadline task then submits an `ExpireDeadline` that
+        guard 4 correctly ignores, while `expiry_enqueued_deadline_id` stays
+        set — and the watchdog skips every window whose fence is already
+        set, so the game stalls on that window forever.
+
+        Looping until the instant has actually passed removes the early wake
+        at its source. A past instant still resolves immediately, which is
+        §5.6's recovery clause.
+        """
+        while True:
+            delay = (when - self.now()).total_seconds()
+            if delay <= 0:
+                return
+            await asyncio.sleep(delay)

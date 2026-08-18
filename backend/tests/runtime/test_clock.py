@@ -26,6 +26,25 @@ async def test_system_clock_sleep_until_a_past_instant_returns_immediately() -> 
     await clock.sleep_until(clock.now() - timedelta(hours=1))
 
 
+async def test_system_clock_sleep_until_never_returns_early() -> None:
+    """R-24: `asyncio.sleep` schedules on the loop's monotonic clock while
+    the delay handed to it is computed from the wall clock — those two
+    clocks can drift, and a single sleep can return a few microseconds
+    *before* `now()` reaches `when`. That is not harmless downstream: a
+    deadline task that wakes early submits an `ExpireDeadline` the reducer
+    correctly ignores as premature, but the watchdog's fence latches
+    anyway and the game stalls on that window forever.
+
+    A handful of milliseconds is enough to give any early-wake race a
+    chance to show up, and short enough that this stays fast and
+    deterministic rather than a real wall-clock wait."""
+    clock = SystemClock()
+    for _ in range(200):
+        when = clock.now() + timedelta(milliseconds=1)
+        await clock.sleep_until(when)
+        assert clock.now() >= when
+
+
 async def test_fake_clock_does_not_move_on_its_own() -> None:
     clock = FakeClock(T0)
     await asyncio.sleep(0)
