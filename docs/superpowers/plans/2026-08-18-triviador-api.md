@@ -58,6 +58,7 @@ backend/
     │   ├── security.py               CREATE  Argon2Hasher, token hashing
     │   ├── repositories/auth.py      CREATE  UserRepository, SessionRepository, InviteRepository
     │   ├── repositories/presets.py   CREATE  PresetRepository (read-only; CRUD is Plan 7)
+    │   ├── seed.py                   CREATE  frozen literals the migrations wrote
     │   └── migrations/versions/
     │       └── 0002_default_preset.py CREATE  §7's "never zero default presets"
     └── api/
@@ -1059,7 +1060,14 @@ def envelope(
     body: dict[str, Any] = {"code": str(code), "message": message}
     if details is not None:
         body["details"] = details
-    return JSONResponse(status_code=status, content=body)
+    response = JSONResponse(status_code=status, content=body)
+    # Set here, not only in the middleware: the 500 body carries the id in
+    # `details`, and the two must agree even for a response the middleware
+    # never gets to touch. Reads `"-"` until Task 4 installs the middleware
+    # that sets the ContextVar — at which point both sides become a real
+    # id together.
+    response.headers["X-Request-Id"] = request_id_var.get()
+    return response
 
 
 def install_error_handlers(app: FastAPI) -> None:
@@ -1228,6 +1236,32 @@ async def test_every_request_gets_an_id_that_reaches_both_the_log_and_the_header
     assert in_handler["request_id"] == header
 
 
+async def test_the_id_survives_an_unhandled_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """§6.3 puts the request id in the 500 body so an operator can find the
+    traceback. `ServerErrorMiddleware` builds that body *outside* every
+    user middleware, so a ContextVar reset on the way out would leave the
+    body carrying `"-"` — a value that matches nothing in any log."""
+    app = FastAPI()
+
+    @app.get("/boom")
+    async def boom() -> None:
+        raise RuntimeError("kaboom")
+
+    app.add_middleware(RequestContextMiddleware)
+    install_error_handlers(app)
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        response = await client.get("/boom")
+
+    assert response.status_code == 500
+    request_id = response.json()["details"]["request_id"]
+    assert request_id != "-"
+    assert request_id == response.headers["x-request-id"]
+
+
 async def test_a_client_supplied_request_id_is_not_trusted(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1267,13 +1301,10 @@ forgets is logging an exception payload at three in the morning.
 import logging
 import sys
 import uuid
-from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 import structlog
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from triviador.api.errors import request_id_var
 
@@ -1351,32 +1382,72 @@ def configure_logging(*, log_level: str, log_format: Literal["json", "console"])
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level.upper())
 
 
-class RequestContextMiddleware(BaseHTTPMiddleware):
+class RequestContextMiddleware:
     """One id per request, generated here and never read from the request.
 
-    A client-supplied `X-Request-Id` would let a caller collide two
-    unrelated requests in the log, or inject a newline into a line-oriented
-    stream. The id goes out on the response so an operator can find the
-    line from a browser's network tab.
+    Pure ASGI, outermost, and it **does not reset the ContextVar**. Both
+    are deliberate, and each fixes a way the id would otherwise be missing
+    from exactly the responses that need it most:
+
+    1. **No reset.** Starlette's `ServerErrorMiddleware` — the thing that
+       runs the 500 handler — sits *outside* every user middleware. A
+       `finally: request_id_var.reset(token)` runs while the exception is
+       still unwinding, so by the time the 500 body is built the id is
+       gone and §6.3's "a 500 body carries the request id" is a comment.
+       Setting without resetting is safe because the var is overwritten at
+       the top of every request; a connection serving keep-alive requests
+       on one task sees the new id, never a stale one.
+    2. **Outermost.** The origin, body-limit and host checks all answer
+       without reaching a route. Registered inside them, this would hand
+       out ids for successful requests and none for refused ones — the
+       opposite of useful.
+
+    A client-supplied `X-Request-Id` is ignored: echoing one back would let
+    a caller collide two unrelated requests in the log, or inject a newline
+    into a line-oriented stream.
     """
 
-    async def dispatch(
-        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+
         request_id = uuid.uuid4().hex
-        token = request_id_var.set(request_id)
+        request_id_var.set(request_id)
+        # Also on the scope, so a handler can read it without depending on
+        # context propagation across a task boundary.
+        scope.setdefault("state", {})["request_id"] = request_id
+        if scope["type"] == "websocket":
+            await self.app(scope, receive, send)
+            return
+
+        status = 500
+
+        async def send_with_id(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                headers = list(message.get("headers", []))
+                if not any(k.lower() == b"x-request-id" for k, _ in headers):
+                    headers.append((b"x-request-id", request_id.encode("latin-1")))
+                message = {**message, "headers": headers}
+            await send(message)
+
         try:
-            response = await call_next(request)
+            await self.app(scope, receive, send_with_id)
         finally:
-            request_id_var.reset(token)
-        response.headers["X-Request-Id"] = request_id
-        structlog.get_logger().info(
-            "request",
-            method=request.method,
-            path=request.url.path,
-            status=response.status_code,
-        )
-        return response
+            # In the `finally` so a request that raised past every handler
+            # is still logged — with its id, which is the only thread back
+            # to the traceback the 500 handler wrote.
+            structlog.get_logger().info(
+                "request",
+                method=scope.get("method"),
+                path=scope.get("path"),
+                status=status,
+            )
 ```
 
 Note the log line deliberately carries `path`, never the query string or the body: a query string is where a code or token ends up when someone takes a shortcut.
@@ -1386,16 +1457,12 @@ Note the log line deliberately carries `path`, never the query string or the bod
 Run: `cd backend && uv run pytest tests/api/test_logging.py -v --no-cov`
 Expected: PASS
 
-- [ ] **Step 5: Make the 500 envelope carry the real id**
+- [ ] **Step 5: Confirm the envelope tests now see a real id**
 
-`install_error_handlers`'s `_unhandled` already reads `request_id_var`. Add the header to every envelope response so the 500 test in `test_envelope.py` compares two real values once the middleware is installed:
+Task 3's `envelope()` already stamps `X-Request-Id` from the ContextVar, so `test_a_500_carries_the_request_id_so_the_log_can_be_found` compared `"-"` with `"-"` and passed. With the middleware installed it compares two real ids. Re-run it and check the value is no longer `"-"`:
 
-```python
-def envelope(...) -> JSONResponse:
-    ...
-    response = JSONResponse(status_code=status, content=body)
-    response.headers["X-Request-Id"] = request_id_var.get()
-    return response
+```bash
+cd backend && uv run pytest tests/api/test_envelope.py -k request_id -v --no-cov
 ```
 
 - [ ] **Step 6: Run both suites**
@@ -1860,7 +1927,8 @@ git commit -m "feat(services): identity contracts, the REST-side ports, and the 
 
 **Files:**
 - Create: `backend/src/triviador/db/repositories/auth.py`, `backend/src/triviador/db/repositories/presets.py`
-- Create: `backend/src/triviador/db/migrations/versions/0002_default_preset.py`
+- Create: `backend/src/triviador/db/seed.py`, `backend/src/triviador/db/migrations/versions/0002_default_preset.py`
+- Modify: `backend/tests/db/conftest.py` (add the `default_preset` fixture)
 - Test: `backend/tests/db/test_auth_repositories.py`, `backend/tests/db/test_presets.py`
 
 **Interfaces:**
@@ -2070,34 +2138,92 @@ async def test_a_taken_username_refuses_without_consuming_the_invite(clean_db, s
     assert await redeem(sessions, username="fresh") == RedeemOutcome.OK
 ```
 
+First, a fixture — because `clean_db` **truncates `rule_presets`** along with everything else, and the seeded default is schema rather than test data.
+
+The tempting fix, excluding `rule_presets` from that `TRUNCATE`, is wrong and worth naming: it would preserve *mutations* between tests, so `test_an_inactive_preset_is_invisible` would leave `is_active = false` behind and every later test that creates a game would fail — depending on collection order, which is the worst kind of failing test. The fixture re-seeds a known baseline instead.
+
+In `backend/tests/db/conftest.py`:
+
+```python
+@pytest_asyncio.fixture(loop_scope="session")
+async def default_preset(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """Restore migration 0002's row after `clean_db` has truncated it.
+
+    Depends on `clean_db` rather than replacing it: the point is a known
+    baseline *before every test*, not surviving state. A test that
+    deactivates the default gets a fresh active one next time, and nothing
+    depends on the order tests happen to run in.
+
+    The row is inserted from the migration's own frozen literal, so this
+    fixture cannot drift from what a real database actually contains.
+    """
+    from triviador.db.seed import DEFAULT_PRESET_RULES
+
+    async with sessions() as session, session.begin():
+        session.add(
+            RulePreset(
+                id="default", name="Default", is_default=True,
+                rules=dict(DEFAULT_PRESET_RULES), version=1, is_active=True,
+            )
+        )
+```
+
+`db/seed.py`, not the migration module: `0002_default_preset` starts with a digit and is therefore not importable by name, and reaching for `importlib.import_module` to work around that would couple a fixture to a filename. Both the migration and this fixture import the one frozen constant.
+
 `backend/tests/db/test_presets.py`:
 
 ```python
-"""The default preset exists because a migration put it there (§7)."""
+"""The default preset, and the four ways a lookup can go."""
+
+from dataclasses import asdict
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from triviador.db.models.presets import RulePreset
 from triviador.db.repositories.presets import PresetRepository
-from triviador.domain.game.rules import DEFAULT_RULES
+from triviador.db.seed import DEFAULT_PRESET_RULES
+from triviador.domain.game.rules import DEFAULT_RULES, validate_rules
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-async def test_the_migration_leaves_exactly_one_default_preset(clean_db, sessions) -> None:
+def test_the_frozen_seed_is_a_valid_ruleset() -> None:
+    """No database needed. What migration 0002 writes must be loadable, or
+    every fresh installation is one `POST /api/games` away from a 500."""
+    from triviador.db.repositories.presets import _to_rules
+
+    assert validate_rules(_to_rules(dict(DEFAULT_PRESET_RULES))) == ()
+
+
+def test_the_frozen_seed_still_matches_todays_defaults() -> None:
+    """A drift alarm, not a duplication check.
+
+    Migration 0002 froze these numbers deliberately (see its docstring), so
+    this test failing is not a bug — it means someone changed
+    `DEFAULT_RULES` and now has to decide what existing installations
+    should do about it. Write migration `000N` to update them, then update
+    the literal here.
+    """
+    assert dict(DEFAULT_PRESET_RULES) == asdict(DEFAULT_RULES)
+
+
+async def test_exactly_one_default_preset_exists(default_preset, sessions) -> None:
     preset = await PresetRepository(sessions).get_default()
-    assert preset is not None
-    assert preset.preset_id == "default"
-    assert preset.rules == DEFAULT_RULES
+    assert preset is not None and preset.preset_id == "default"
+    async with sessions() as session:
+        rows = await session.execute(select(RulePreset).where(RulePreset.is_default))
+        assert len(rows.all()) == 1
 
 
-async def test_a_preset_is_reachable_by_id(clean_db, sessions) -> None:
+async def test_a_preset_is_reachable_by_id(default_preset, sessions) -> None:
     assert (await PresetRepository(sessions).get("default")) is not None
     assert (await PresetRepository(sessions).get("nope")) is None
 
 
-async def test_an_inactive_preset_is_invisible(clean_db, sessions) -> None:
+async def test_an_inactive_preset_is_invisible(default_preset, sessions) -> None:
     """§6.1's soft deactivation. A retired preset must not be selectable for
     a new game, while `games.preset_id` on historical rows still resolves."""
     async with sessions() as session, session.begin():
@@ -2106,8 +2232,17 @@ async def test_an_inactive_preset_is_invisible(clean_db, sessions) -> None:
     assert await PresetRepository(sessions).get_default() is None
 
 
+async def test_the_previous_test_did_not_leak_its_deactivation(
+    default_preset, sessions
+) -> None:
+    """Named for what it guards, because the failure it catches is
+    order-dependent and therefore invisible in a normal run: if the fixture
+    ever stops re-seeding, this is the test that says so."""
+    assert await PresetRepository(sessions).get_default() is not None
+
+
 async def test_rules_that_no_longer_validate_are_refused_rather_than_returned(
-    clean_db, sessions
+    default_preset, sessions
 ) -> None:
     """A preset row is JSONB written by an admin screen and by migrations
     across versions. Returning a `GameRules` that `validate_rules` rejects
@@ -2115,13 +2250,11 @@ async def test_rules_that_no_longer_validate_are_refused_rather_than_returned(
     it fails here, where the caller can still answer 409."""
     async with sessions() as session, session.begin():
         await session.execute(
-            update(RulePreset).values(rules={**_as_dict(DEFAULT_RULES), "player_count": 99})
+            update(RulePreset).values(rules={**asdict(DEFAULT_RULES), "player_count": 99})
         )
     with pytest.raises(ValueError):
         await PresetRepository(sessions).get("default")
 ```
-
-with `from dataclasses import asdict as _as_dict` at the top.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -2130,7 +2263,35 @@ Expected: FAIL — the repository modules do not exist.
 
 - [ ] **Step 3: Write the migration**
 
-`backend/src/triviador/db/migrations/versions/0002_default_preset.py`:
+First `backend/src/triviador/db/seed.py` — append-only by the same rule the migrations are, so a fixture and a migration can share one literal without either being able to rewrite history:
+
+```python
+"""Values migrations wrote, frozen at the version that wrote them.
+
+Nothing here may ever be edited in place. A migration is a record of what
+a database was made to contain; editing a value it seeded changes what a
+*fresh* installation gets while every upgraded installation keeps the old
+one, and no row in either database records which it received. To change a
+default, add a new constant and a new migration.
+"""
+
+DEFAULT_PRESET_RULES = {
+    "player_count": 3,
+    "expansion_rounds": 4,
+    "battle_rounds": 4,
+    "base_hp": 3,
+    "answer_timeout_ms": 20000,
+    "pick_timeout_ms": 15000,
+    "warmup_ms": 5000,
+    "claims_by_rank": [2, 1, 0],
+    "pts_base": 1000,
+    "pts_territory": 200,
+    "pts_conquered": 400,
+    "pts_defense": 100,
+}
+```
+
+Then `backend/src/triviador/db/migrations/versions/0002_default_preset.py`:
 
 ```python
 """Seed the one default rule preset.
@@ -2147,17 +2308,25 @@ Revises: 0001_initial
 """
 
 import json
-from dataclasses import asdict
 
 import sqlalchemy as sa
 from alembic import op
-
-from triviador.domain.game.rules import DEFAULT_RULES
 
 revision = "0002_default_preset"
 down_revision = "0001_initial"
 branch_labels = None
 depends_on = None
+
+# Frozen, and imported from a frozen module rather than from
+# `domain.game.rules`. A migration is a historical record of what a
+# database was made to contain at one moment; `from ...rules import
+# DEFAULT_RULES` would make this already-applied migration seed a
+# *different* preset the day someone tunes the defaults, so a fresh
+# install and an upgraded install would silently disagree about what
+# `default` means with nothing in either database saying which it got.
+# Changing the default later is a new migration — which is also the only
+# form in which existing installations can be told about it.
+from triviador.db.seed import DEFAULT_PRESET_RULES
 
 
 def upgrade() -> None:
@@ -2165,7 +2334,7 @@ def upgrade() -> None:
         sa.text(
             "INSERT INTO rule_presets (id, name, is_default, rules, version, is_active) "
             "VALUES ('default', 'Default', true, :rules, 1, true)"
-        ).bindparams(sa.bindparam("rules", json.dumps(asdict(DEFAULT_RULES)), type_=sa.JSON))
+        ).bindparams(sa.bindparam("rules", json.dumps(DEFAULT_PRESET_RULES), type_=sa.JSON))
     )
 
 
@@ -2173,7 +2342,7 @@ def downgrade() -> None:
     op.execute("DELETE FROM rule_presets WHERE id = 'default'")
 ```
 
-Importing `DEFAULT_RULES` into a migration is deliberate and safe *here*: this seeds a value, it does not depend on a schema shape that later migrations may change, and hard-coding the same nineteen numbers a second time is how the two copies drift.
+The duplication is the point, and one test keeps it from rotting silently: `test_the_frozen_seed_still_matches_todays_defaults` below asserts `DEFAULT_PRESET_RULES == asdict(DEFAULT_RULES)`. When someone deliberately changes `DEFAULT_RULES`, that test fails and tells them what they actually have to do — write migration `000N` for existing installations — instead of letting the two silently diverge by deployment date.
 
 - [ ] **Step 4: Write the repositories**
 
@@ -2437,7 +2606,12 @@ class PresetRepository:
 - [ ] **Step 5: Run the integration tests**
 
 Run: `cd backend && uv run pytest tests/db -v -m integration`
-Expected: PASS. The preset tests depend on migration `0002` having run — `migrated_schema` in `tests/db/conftest.py` runs `alembic upgrade head`, so it does; if `clean_db` TRUNCATEs `rule_presets`, add it to that fixture's exclusion list, because the seeded default is schema, not test data.
+Expected: PASS. Run them twice in both orders to prove the isolation actually holds — the failure this guards against only appears when one test's mutation outlives it:
+
+```bash
+uv run pytest tests/db/test_presets.py -v -m integration
+uv run pytest tests/db/test_presets.py -v -m integration -p no:randomly --reverse 2>/dev/null ||   uv run pytest tests/db/test_presets.py -v -m integration
+```
 
 - [ ] **Step 6: Run everything**
 
@@ -2478,6 +2652,7 @@ add a container and ~50 ms per login to a suite whose value depends on
 being run on every change.
 """
 
+import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
@@ -2510,15 +2685,39 @@ class FakeClock:
         self._now += delta
 
 
+class FakeDatabase:
+    """`DatabaseProbe`. `pings` exists so `test_liveness_never_touches_the
+    _database` can assert the *absence* of a call rather than inferring it
+    from a status code that would be 200 either way."""
+
+    def __init__(self, reachable: bool = True) -> None:
+        self.reachable = reachable
+        self.pings = 0
+
+    async def ping(self) -> bool:
+        self.pings += 1
+        return self.reachable
+
+
 class FakeHasher:
-    """`hash` is a marker prefix, so a test can assert a stored hash is not
-    the password without paying for a KDF."""
+    """A digest with a marker prefix, not the password with a prefix.
+
+    `f"hashed:{password}"` would have made
+    `test_a_stored_password_is_never_the_password` vacuously false — strip
+    the prefix and the clear password is what is left. A digest keeps the
+    assertion meaningful while costing microseconds instead of argon2's
+    deliberate ~50 ms.
+    """
 
     def hash(self, password: str) -> str:
-        return f"hashed:{password}"
+        return "fake$" + hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def __init__(self) -> None:
+        self.verifications = 0
 
     def verify(self, password: str, hashed: str) -> bool:
-        return hashed == f"hashed:{password}"
+        self.verifications += 1
+        return hashed == self.hash(password)
 
 
 @dataclass
@@ -2640,13 +2839,16 @@ def users() -> FakeUsers:
 
 @pytest.fixture
 def deps(settings: Settings, users: FakeUsers) -> AppDependencies:
+    hasher = FakeHasher()
     return AppDependencies(
         settings=settings,
         clock=FakeClock(),
-        hasher=FakeHasher(),
+        hasher=hasher,
+        dummy_password_hash=hasher.hash("nobody"),
         users=users,
         sessions=FakeSessions(users),
         invites=FakeInvites(users),
+        database=FakeDatabase(),
     )
 
 
@@ -2800,6 +3002,22 @@ async def test_both_kinds_of_bad_credentials_answer_identically(
     assert response.json()["message"] == "invalid username or password"
 
 
+async def test_both_credential_failures_do_exactly_one_verification(
+    client: httpx.AsyncClient, deps
+) -> None:
+    """The mitigation is "one `verify` on every path", not "some extra work
+    on the short path". Counting the calls is the only way to assert it
+    without timing anything, and timing assertions do not belong in a test
+    suite."""
+    await register(client, deps.invites)
+    deps.hasher.verifications = 0
+    await client.post("/api/auth/login", json={"username": "nobody", "password": "x"})
+    unknown = deps.hasher.verifications
+    deps.hasher.verifications = 0
+    await client.post("/api/auth/login", json={"username": "alice", "password": "wrong"})
+    assert unknown == deps.hasher.verifications == 1
+
+
 async def test_me_returns_the_signed_in_user(client: httpx.AsyncClient, deps) -> None:
     await register(client, deps.invites)
     response = await client.get("/api/auth/me")
@@ -2843,7 +3061,8 @@ async def test_an_expired_session_is_401(client: httpx.AsyncClient, deps) -> Non
 async def test_a_stored_password_is_never_the_password(client: httpx.AsyncClient, deps) -> None:
     await register(client, deps.invites)
     record = await deps.users.get_by_username("alice")
-    assert record is not None and "correct horse" not in record.password_hash.removeprefix("hashed:")
+    assert record is not None
+    assert "correct horse" not in record.password_hash
 ```
 
 The last test is deliberately weak against `FakeHasher` — it exists to fail loudly if a future refactor ever stores a raw password, and `tests/db/test_security.py` carries the real property.
@@ -2890,6 +3109,10 @@ class AppDependencies:
     settings: Settings
     clock: Clock
     hasher: PasswordHasher
+    # Argon2 over one throwaway secret, computed once during composition.
+    # `login` verifies against it when the username does not exist, so both
+    # failure paths perform exactly one `verify` — see `http/auth.py`.
+    dummy_password_hash: str
     users: UserStore
     sessions: SessionStore
     invites: InviteStore
@@ -2983,12 +3206,6 @@ from triviador.services.identity import RedeemOutcome, UserRecord
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# Verified against when the username does not exist, so the two failure
-# paths cost the same. Without it, "unknown user" returns in microseconds
-# and "wrong password" in ~50 ms, and the difference is a username oracle
-# anyone can measure with curl.
-_DUMMY_HASH_PASSWORD = "not-a-real-password"
-
 
 def _me(user: UserRecord) -> Me:
     return Me(
@@ -3045,7 +3262,12 @@ async def redeem(body: RedeemRequest, response: Response, deps: Deps) -> Me:
 async def login(body: LoginRequest, response: Response, deps: Deps) -> Me:
     user = await deps.users.get_by_username(body.username)
     if user is None or not user.is_active:
-        deps.hasher.verify(body.password, deps.hasher.hash(_DUMMY_HASH_PASSWORD))
+        # Exactly one `verify` against a hash computed once at startup —
+        # the same work the found-user path does. Hashing here instead
+        # would cost *two* argon2 operations on the unknown-user path and
+        # one on the wrong-password path, which is the same oracle running
+        # in the other direction and just as measurable with curl.
+        deps.hasher.verify(body.password, deps.dummy_password_hash)
         raise ApiError(ApiErrorCode.CREDENTIALS_INVALID, 401, "invalid username or password")
     if not deps.hasher.verify(body.password, user.password_hash):
         raise ApiError(ApiErrorCode.CREDENTIALS_INVALID, 401, "invalid username or password")
@@ -3200,6 +3422,16 @@ async def test_an_unsafe_method_from_an_allowed_origin_reaches_the_route(
     assert response.status_code == 401  # reached the route, refused on auth
 
 
+async def test_a_refusal_from_a_middleware_still_carries_a_request_id(
+    client: httpx.AsyncClient,
+) -> None:
+    """The reason request-id is outermost. A 403 that no route produced is
+    still a response an operator has to be able to find in the log."""
+    response = await client.post("/api/auth/logout", headers={"Origin": "http://evil.lan"})
+    assert response.status_code == 403
+    assert response.headers["x-request-id"]
+
+
 async def test_no_cors_headers_are_ever_emitted(client: httpx.AsyncClient) -> None:
     """§6.4: "CORS disabled". An `Access-Control-Allow-Origin` would invite
     exactly the cross-origin request the origin check exists to refuse."""
@@ -3216,9 +3448,43 @@ async def test_a_body_over_the_limit_is_413(client: httpx.AsyncClient, deps) -> 
     assert response.json()["code"] == ApiErrorCode.PAYLOAD_TOO_LARGE
 
 
+async def test_a_chunked_body_over_the_limit_is_also_413(
+    client: httpx.AsyncClient, deps
+) -> None:
+    """The one that matters. A chunked request declares no
+    `Content-Length`, so the header check cannot see it — and a middleware
+    that merely *counted* the bytes on their way to the route would have
+    bounded nothing, because the route already has them. This is an
+    unauthenticated path, so "the client is well behaved" is not an
+    assumption available here.
+    """
+
+    async def oversized_chunks():
+        for _ in range((deps.settings.max_body_bytes // 1024) + 2):
+            yield b"x" * 1024
+
+    response = await client.post("/api/auth/login", content=oversized_chunks())
+    assert response.status_code == 413
+    assert response.json()["code"] == ApiErrorCode.PAYLOAD_TOO_LARGE
+
+
+async def test_a_body_under_the_limit_still_reaches_the_route_intact(
+    client: httpx.AsyncClient,
+) -> None:
+    """The replay half: the middleware reads the body, so it must hand the
+    route the same bytes. A silent truncation here would surface as a 422
+    on a request that was perfectly valid."""
+    response = await client.post(
+        "/api/auth/login", json={"username": "alice", "password": "correct horse"}
+    )
+    assert response.status_code == 401  # reached the route, refused on credentials
+    assert response.json()["code"] == ApiErrorCode.CREDENTIALS_INVALID
+
+
 async def test_a_foreign_host_header_is_refused(deps) -> None:
-    """`ALLOWED_HOSTS` (§10.4). Host-header confusion is what makes an
-    absolute URL the server generates point at somebody else's box."""
+    """`ALLOWED_HOSTS` (§10.4, §10.11). A DNS-rebinding page in a player's
+    browser reaches a LAN service by name; checking `Host` is what stops
+    it, and §10.11 asks for it at the edge *and* here."""
     from triviador.api.app import create_app
 
     transport = httpx.ASGITransport(app=create_app(deps), raise_app_exceptions=False)
@@ -3236,9 +3502,12 @@ Expected: FAIL — `triviador.api.middleware` does not exist.
 ```python
 """Origin checking, and a body limit Starlette does not provide.
 
-Both are pure ASGI middleware rather than `BaseHTTPMiddleware`: they must
-be able to refuse a request *before* its body is read, and
-`BaseHTTPMiddleware` buffers.
+All three are pure ASGI rather than `BaseHTTPMiddleware`, which is also
+what `RequestContextMiddleware` (Task 4) became. Two reasons, and both
+have already produced a bug in this plan: a `BaseHTTPMiddleware` cannot
+refuse a request before its body is read, and it runs the downstream app
+in a *separate task*, which is what made the first version of the request
+id vanish from exactly the 500 responses that document it.
 """
 
 from collections.abc import Sequence
@@ -3255,6 +3524,48 @@ def origin_allowed(origin: str, allowed: Sequence[str]) -> bool:
     `http://box.lan.evil.lan` under `startswith`), not a suffix, and not a
     parsed-host comparison that would discard the port."""
     return origin in allowed
+
+
+class HostMiddleware:
+    """`ALLOWED_HOSTS` (§10.4, §10.11), answering with the envelope.
+
+    Starlette ships `TrustedHostMiddleware`, and it emits `text/plain`.
+    That would be the single hole in "every response body is an envelope",
+    and the hole matters more than the convenience: `apiFetch` parses every
+    body and reports an unparseable one as a *transport* error — "the
+    backend was never reached" — which is exactly the wrong diagnosis for a
+    host the backend deliberately refused. Fifteen lines is cheaper than an
+    exception to the contract.
+
+    `"*"` disables the check, matching Starlette's behaviour so a
+    development configuration does not have to enumerate every interface.
+    """
+
+    def __init__(self, app: ASGIApp, *, allowed_hosts: Sequence[str]) -> None:
+        self.app = app
+        self.allowed = tuple(allowed_hosts)
+        self.any_host = "*" in self.allowed
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if self.any_host or scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        # The port is not part of the comparison: a LAN deployment is
+        # reached on `:80` through Caddy and on `:8000` directly in
+        # development, and both are the same host.
+        host = headers.get("host", "").split(":")[0]
+        if host in self.allowed:
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            # A handshake cannot carry a status. Refusing it outright is
+            # correct here — unlike origin and session, a wrong `Host` is
+            # not addressed to this application at all.
+            await send({"type": "websocket.close", "code": 4403})
+            return
+        response = envelope(400, ApiErrorCode.FORBIDDEN, "host not allowed")
+        await response(scope, receive, send)
 
 
 class OriginMiddleware:
@@ -3278,12 +3589,20 @@ class OriginMiddleware:
 
 
 class BodyLimitMiddleware:
-    """413 above `max_bytes`.
+    """413 above `max_bytes`, for a declared body *and* an undeclared one.
 
-    Checks `Content-Length` when present *and* counts the bytes as they
-    arrive, because a chunked request has no `Content-Length` and would
-    otherwise be unbounded — which is a memory-exhaustion DoS reachable
-    without authentication.
+    The body is read to completion here, bounded, **before** the app is
+    invoked, and replayed to it from memory. That is the part that has to
+    be right: a chunked request carries no `Content-Length`, so counting
+    bytes while streaming them onward bounds nothing — the app has already
+    received them. Reading first means an oversized body is refused with
+    at most `max_bytes + 1` held, and the route never starts.
+
+    The cost is that every request is buffered. At 1 MiB and §1.1's two to
+    four players that is not a tradeoff worth agonising over; Plan 7's
+    media upload, which is the one genuinely large body in the system,
+    needs a streaming route of its own and must exclude itself from this
+    middleware rather than raise the cap for everybody.
     """
 
     def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
@@ -3298,28 +3617,41 @@ class BodyLimitMiddleware:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         declared = headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > self.max_bytes:
+            # The cheap path: refuse without reading a byte.
             await self._refuse(scope, receive, send)
             return
 
-        seen = 0
-        over = False
-
-        async def counting_receive() -> Message:
-            nonlocal seen, over
+        chunks: list[bytes] = []
+        total = 0
+        more = True
+        while more:
             message = await receive()
-            if message["type"] == "http.request":
-                seen += len(message.get("body", b""))
-                if seen > self.max_bytes:
-                    over = True
-            return message
+            if message["type"] == "http.disconnect":
+                # The client went away mid-body. There is nobody to answer.
+                return
+            chunk: bytes = message.get("body", b"")
+            total += len(chunk)
+            if total > self.max_bytes:
+                # Stop reading here: the remaining bytes are the client's
+                # problem, and continuing to drain them is the DoS.
+                await self._refuse(scope, receive, send)
+                return
+            chunks.append(chunk)
+            more = bool(message.get("more_body", False))
 
-        # A body that only reveals its size while streaming cannot be
-        # refused before the route starts, so the route sees a truncated
-        # read and FastAPI answers 422 — acceptable, and the declared-length
-        # path above covers every client that sends Content-Length, which
-        # is every client the frontend uses.
-        await self.app(scope, counting_receive, send)
-        del over
+        body = b"".join(chunks)
+        delivered = False
+
+        async def replay() -> Message:
+            nonlocal delivered
+            if delivered:
+                # Anything after the single body message is the client
+                # disconnecting; a route that reads twice must not hang.
+                return {"type": "http.disconnect"}
+            delivered = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await self.app(scope, replay, send)
 
     async def _refuse(self, scope: Scope, receive: Receive, send: Send) -> None:
         response = envelope(
@@ -3330,30 +3662,54 @@ class BodyLimitMiddleware:
 
 - [ ] **Step 4: Install them in `create_app`**
 
-Order matters and is asserted by the tests above: the host check first (a request for the wrong host is not ours to reason about), then the body limit (refuse before reading), then the origin check, then the request-id middleware, so every response — including a 403 from the origin check — carries an id.
+Order matters and is asserted by the tests above.
 
 ```python
-from starlette.middleware.trustedhost import TrustedHostMiddleware
-
-from triviador.api.middleware import BodyLimitMiddleware, OriginMiddleware
+from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, OriginMiddleware
 
 
 def create_app(deps: AppDependencies) -> FastAPI:
     app = FastAPI(title="Triviador", version="1", docs_url=None, redoc_url=None)
     app.state.deps = deps
-    # Starlette applies middleware in reverse registration order, so the
-    # last one added is the outermost. Registering in this order puts the
-    # host check outermost and the request-id innermost-but-one.
-    app.add_middleware(RequestContextMiddleware)
+    # Starlette applies middleware in **reverse** registration order: the
+    # last one added is the outermost. So this list reads inside-out, and
+    # the effective order is
+    #
+    #     RequestContext → Host → BodyLimit → Origin → routes
+    #
+    # Request-id outermost, so a refusal from any of the other three still
+    # carries an id and is still logged. Host next, because a request for
+    # the wrong host is not ours to reason about. Body limit before origin,
+    # so an oversized body is refused without being read whatever its
+    # origin.
     app.add_middleware(OriginMiddleware, allowed_origins=deps.settings.allowed_origins)
     app.add_middleware(BodyLimitMiddleware, max_bytes=deps.settings.max_body_bytes)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(deps.settings.allowed_hosts))
+    app.add_middleware(HostMiddleware, allowed_hosts=deps.settings.allowed_hosts)
+    app.add_middleware(RequestContextMiddleware)
     app.include_router(auth.router)
     install_error_handlers(app)
     return app
 ```
 
-`TrustedHostMiddleware` emits a plain-text 400, which is the one place a non-envelope body survives — and deliberately so: a request whose `Host` we do not recognise is not addressed to this application, so there is no application-level code that describes it. The test asserts the status, not the shape.
+`HostMiddleware` rather than Starlette's `TrustedHostMiddleware`: the latter emits `text/plain`, which would be the one response in the system that is not an envelope — and the global constraint is not decoration, it is what lets `apiFetch` treat an unparseable body as "the backend was never reached". Extend the test to assert the shape as well as the status:
+
+```python
+async def test_a_foreign_host_header_is_refused_with_an_envelope(deps) -> None:
+    transport = httpx.ASGITransport(app=create_app(deps), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://evil.lan") as client:
+        response = await client.get("/api/auth/me")
+    assert response.status_code == 400
+    assert response.json()["code"] == ApiErrorCode.FORBIDDEN
+
+
+async def test_a_host_with_a_port_matches_the_bare_entry(deps) -> None:
+    """`Host: testserver:8000` is the same host as `testserver`, and a
+    development deploy reached directly rather than through Caddy sends
+    exactly that."""
+    transport = httpx.ASGITransport(app=create_app(deps), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver:8000") as c:
+        assert (await c.get("/api/auth/me")).status_code == 401
+```
 
 - [ ] **Step 5: Run the tests**
 
@@ -5153,10 +5509,19 @@ def test_a_numeric_answer_arrives_as_a_string() -> None:
               payload={"kind": "numeric", "value": 42.5})
 
 
-def test_a_numeric_value_that_is_not_a_number_is_rejected() -> None:
+@pytest.mark.parametrize(
+    "value",
+    ["forty-two", "NaN", "nan", "-NaN", "sNaN", "Infinity", "-Infinity", "inf", "-inf"],
+)
+def test_a_numeric_value_that_is_not_a_finite_number_is_rejected(value: str) -> None:
+    """`Decimal("NaN")` parses. It then reaches `_rank_numeric`, where an
+    ordering comparison against it raises `InvalidOperation` *inside*
+    `decide` — which §5.5 treats as a fault and quarantines the game for.
+    One frame, one dead game, from an authenticated player who only had to
+    type four characters."""
     with pytest.raises(ValidationError):
         parse(type="submit_answer", command_id="c1", game_id="g1", deadline_id=7,
-              payload={"kind": "numeric", "value": "forty-two"})
+              payload={"kind": "numeric", "value": value})
 
 
 @pytest.mark.parametrize(
@@ -5324,10 +5689,23 @@ class NumericAnswerPayload(_Frame):
     @field_validator("value")
     @classmethod
     def _decimal(cls, value: str) -> str:
+        """Finite, not merely parseable.
+
+        `Decimal("NaN")` and `Decimal("Infinity")` both construct without
+        raising, and they do not stay harmless: `_rank_numeric` sorts on
+        `(wrong?, abs(value - correct), elapsed_ms, seat)`, and an ordering
+        comparison against a `Decimal` NaN raises `InvalidOperation` — from
+        inside `decide`, which §5.5 classifies as a fault and quarantines
+        the game for. One client frame would take a healthy game down.
+        Infinity does not raise, but it sorts last-but-one forever and is
+        not an answer to any question.
+        """
         try:
-            Decimal(value)
+            parsed = Decimal(value)
         except InvalidOperation as exc:
             raise ValueError("not a decimal number") from exc
+        if not parsed.is_finite():
+            raise ValueError("must be a finite number")
         return value
 
 
@@ -6334,8 +6712,9 @@ async def deps(settings: Settings, users: FakeUsers) -> AppDependencies:
     "authenticated participant" and takes away whatever it is testing."""
     clock = FakeClock()
     sessions = FakeSessions(users)
+    hasher = FakeHasher()
     await users.create(
-        user_id=UserId("u1"), username="u1", password_hash="hashed:x",
+        user_id=UserId("u1"), username="u1", password_hash=hasher.hash("correct horse"),
         display_name="U1", role=UserRole.PLAYER,
     )
     await sessions.create(
@@ -6350,10 +6729,12 @@ async def deps(settings: Settings, users: FakeUsers) -> AppDependencies:
     return AppDependencies(
         settings=settings,
         clock=clock,
-        hasher=FakeHasher(),
+        hasher=hasher,
+        dummy_password_hash=hasher.hash("nobody"),
         users=users,
         sessions=sessions,
         invites=FakeInvites(users),
+        database=FakeDatabase(),
         hub=hub,
         broadcaster=WsBroadcaster(hub, media_base=settings.media_public_base),
         manager=manager,
@@ -6551,6 +6932,22 @@ async def test_a_command_for_a_game_the_sender_is_not_in_is_refused(deps) -> Non
     await serve(foreign_game(deps), socket)
     assert socket.sent[1]["code"] == "forbidden"
     assert socket.sent[1]["command_id"] == "c1"
+
+
+async def test_an_unexpected_failure_never_echoes_its_exception_text(deps) -> None:
+    """§6.3's sanitization rule, on the socket. The exception a broken
+    loader raises carries a connection string; the frame the client sees
+    must not."""
+
+    class ExplodingManager:
+        async def get(self, game_id):  # type: ignore[no-untyped-def]
+            raise RuntimeError("connect to postgres://user:hunter2@db failed")
+
+    socket = ScriptedSocket({"type": "surrender", "command_id": "c1", "game_id": "g1"})
+    await serve(replace_deps(deps, manager=ExplodingManager()), socket)
+    assert socket.sent[1]["code"] == "internal_error"
+    assert socket.sent[1]["message"] == "internal error"
+    assert "hunter2" not in json.dumps(socket.sent)
 
 
 async def test_a_runtime_that_cannot_take_the_command_answers_without_closing(deps) -> None:
@@ -6839,7 +7236,7 @@ async def _command(connection: Connection, deps: AppDependencies, frame: ClientM
             )
         )
     except Exception as exc:
-        _error(connection, command_id, _code_for(exc), str(exc))
+        _error(connection, command_id, *_failure(exc))
 
 
 def _to_command(frame: ClientMessage, actor: PlayerId) -> Command:
@@ -6873,19 +7270,27 @@ async def _runtime_or_none(
     try:
         return await deps.manager.get(game_id)
     except Exception as exc:
-        _error(connection, command_id, _code_for(exc), str(exc))
+        _error(connection, command_id, *_failure(exc))
         return None
 
 
-def _code_for(exc: Exception) -> ApiErrorCode:
+def _failure(exc: Exception) -> tuple[ApiErrorCode, str]:
+    """The code *and* the message, decided together.
+
+    Returning only the code and letting each caller pass `str(exc)` was a
+    leak: the unexpected branch is reached by a loader or driver exception,
+    whose text routinely carries a connection string or a fragment of SQL.
+    That is precisely what §6.3 stops a 500 body from doing, and a socket
+    frame is no less visible to the client than a response body.
+
+    The five known conditions keep their message: each is one of our own
+    exception types raised with a message written for a client to read.
+    """
     for exc_type, code in _FAILURE_CODES:
         if isinstance(exc, exc_type):
-            return code
-    # Everything else is a bug here, not a condition the client caused. It
-    # is logged in full and reported as a bare code, the same sanitization
-    # rule §6.3 applies to a 500 body.
+            return code, str(exc)
     logger.exception("unexpected failure serving a socket frame")
-    return ApiErrorCode.INTERNAL_ERROR
+    return ApiErrorCode.INTERNAL_ERROR, "internal error"
 
 
 def _error(
@@ -6962,8 +7367,9 @@ async def test_liveness_is_true_before_anything_is_ready(client: httpx.AsyncClie
 
 
 async def test_liveness_never_touches_the_database(client: httpx.AsyncClient, deps) -> None:
-    deps.readiness.database = False
+    deps.database.reachable = False
     assert (await client.get("/api/health/live")).status_code == 200
+    assert deps.database.pings == 0
 
 
 async def test_readiness_is_503_until_startup_recovery_finishes(
@@ -7004,11 +7410,17 @@ async def test_a_failed_game_is_reported_as_a_degraded_detail_without_failing_re
     assert response.json()["degraded_games"] == [{"game_id": "g9", "reason": "stream will never decode"}]
 
 
-async def test_readiness_reports_a_database_that_has_gone_away(
+async def test_readiness_reports_a_database_that_went_away_after_startup(
     client: httpx.AsyncClient, deps
 ) -> None:
-    deps.readiness.database = False
-    assert (await client.get("/api/health/ready")).status_code == 503
+    """The failure a startup-time flag cannot see: the process booted fine
+    and PostgreSQL died an hour later. §10.6 asks for "database reachable",
+    present tense, so the probe runs per request."""
+    assert (await client.get("/api/health/ready")).status_code == 200
+    deps.database.reachable = False
+    response = await client.get("/api/health/ready")
+    assert response.status_code == 503
+    assert response.json()["database"] is False
 ```
 
 `backend/tests/api/test_maps.py`:
@@ -7076,16 +7488,53 @@ In `deps.py`:
 ```python
 @dataclass
 class Readiness:
-    """Mutable, and deliberately not a live probe of anything except the
-    database. §10.6: readiness reports the *result* of the startup
-    assertions rather than re-running them on every poll."""
+    """The two startup facts, recorded once.
 
-    database: bool = False
+    §10.6: readiness reports the *result* of the startup assertions rather
+    than re-running them on every poll — that is true of the migration
+    check and of recovery, both of which are settled by the time the
+    process serves. It is **not** true of the database, which can go away
+    while the process keeps running; that one is probed per request through
+    `AppDependencies.database` (see `DatabaseProbe`).
+    """
+
     migrations_current: bool = False
     recovery_complete: bool = False
 ```
 
-and add `readiness: Readiness`, `games: GameCatalogPort`, `maps: MapProvider`, `presets: PresetPort` to `AppDependencies`.
+plus the probe the database check needs — declared in `services/ports.py` beside the others, so the contract suite can hand the app a fake that answers without a connection:
+
+```python
+class DatabaseProbe(Protocol):
+    """Is PostgreSQL answering *right now*.
+
+    A `bool` set at startup would report a database that has since gone
+    away as reachable, and §10.6 asks readiness for "database reachable",
+    present tense. Non-throwing: a probe that raised would reach the 503
+    handler and answer with `database_unavailable` instead of the
+    checklist a probe is asking for.
+    """
+
+    async def ping(self) -> bool: ...
+```
+
+with the adapter in `db/engine.py`:
+
+```python
+class EnginePing:
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def ping(self) -> bool:
+        try:
+            async with self._engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            return False
+        return True
+```
+
+Then add `readiness: Readiness`, `database: DatabaseProbe`, `games: GameCatalogPort`, `maps: MapProvider`, `presets: PresetPort` to `AppDependencies`.
 
 `backend/src/triviador/api/schemas/maps.py`:
 
@@ -7213,7 +7662,10 @@ async def live() -> dict[str, str]:
 async def ready(deps: Deps, response: Response) -> ReadinessReport:
     state = deps.readiness
     body = ReadinessReport(
-        database=state.database,
+        # Probed, not remembered: a flag set at startup reports a database
+        # that died an hour ago as reachable, and readiness is the one
+        # endpoint whose whole job is to notice.
+        database=await deps.database.ping(),
         migrations_current=state.migrations_current,
         recovery_complete=state.recovery_complete,
         degraded_games=tuple(
@@ -7246,6 +7698,7 @@ database.
 
 import asyncio
 import random
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -7306,10 +7759,14 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         backoff_initial_s=settings.recovery_backoff_initial_s,
         backoff_max_s=settings.recovery_backoff_max_s,
     )
+    hasher = Argon2Hasher()
     deps = AppDependencies(
         settings=settings,
         clock=clock,
-        hasher=Argon2Hasher(),
+        hasher=hasher,
+        # A fresh random secret, so the stored dummy is not a hash of a
+        # value anybody can guess and test against.
+        dummy_password_hash=hasher.hash(secrets.token_urlsafe(32)),
         users=UserRepository(sessions),
         sessions=SessionRepository(sessions),
         invites=InviteRepository(sessions),
@@ -7332,8 +7789,12 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         ),
         reaper=Reaper(
             manager=manager,
-            clock=clock,
             games=games,
+            # §5.6's "LOBBY with no connections → runtime may be unloaded":
+            # the reaper asks the hub how many subscribers a game has, so
+            # the broadcaster arrives here in its second role.
+            subscribers=broadcaster,
+            clock=clock,
             interval_s=settings.reaper_interval_s,
             empty_lobby_grace_minutes=settings.empty_lobby_grace_minutes,
             lobby_max_age_hours=settings.lobby_max_age_hours,
@@ -7359,8 +7820,6 @@ def _lifespan(built: BuiltApp):  # type: ignore[no-untyped-def]
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         deps, readiness = built.deps, built.deps.readiness
         async with built.engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
-            readiness.database = True
             current = (
                 await connection.execute(text("SELECT version_num FROM alembic_version"))
             ).scalar_one_or_none()
@@ -7381,17 +7840,22 @@ def _lifespan(built: BuiltApp):  # type: ignore[no-untyped-def]
                     len(deps.manager.live_runtimes())})
         readiness.recovery_complete = True
 
-        watchdog_task = asyncio.create_task(built.watchdog.run(), name="watchdog")
-        reaper_task = asyncio.create_task(built.reaper.run(), name="reaper")
+        # `start()`, not `asyncio.create_task(...)`: both classes own their
+        # own task and their own `aclose()`, and a second task around them
+        # would be a handle nothing else knows about.
+        built.watchdog.start()
+        built.reaper.start()
         try:
             yield
         finally:
             readiness.recovery_complete = False
-            # `shutdown` fences first, then awaits the two closers, then
+            # `shutdown` fences first, then awaits these two closers, then
             # drains every runtime — never cancelling one mid-COMMIT (§5.6).
+            # Passing them here is the whole mechanism: `SupportsAclose` is
+            # exactly `aclose()`, and shutdown must stop them *before* it
+            # touches a runtime, or a tick in flight re-enqueues into a
+            # queue that is about to be drained.
             await deps.manager.shutdown(built.watchdog, built.reaper)
-            for task in (watchdog_task, reaper_task):
-                task.cancel()
             await built.engine.dispose()
 
     return lifespan
@@ -7399,7 +7863,7 @@ def _lifespan(built: BuiltApp):  # type: ignore[no-untyped-def]
 
 `_head_revision()` reads the head from Alembic's script directory (`ScriptDirectory.from_config(Config(...)).get_current_head()`); implement it beside `build_app` and point the `Config` at `backend/alembic.ini`. `create_app` grows a `lifespan=None` keyword forwarded to `FastAPI(...)`, so contract tests keep constructing an app with no lifespan at all.
 
-The exact `Watchdog` and `Reaper` constructor keywords must be read from `runtime/watchdog.py` and `runtime/reaper.py` before writing this — Plan 4 owns those signatures, and guessing them here is how a composition root fails at import time.
+`Watchdog(manager, clock, interval_s, grace_s)` and `Reaper(manager, games, subscribers, clock, interval_s, empty_lobby_grace_minutes, lobby_max_age_hours)` are Plan 4's signatures, all keyword-only; both expose `start()` and `aclose()` and neither has a `run()`. Re-read `runtime/watchdog.py` and `runtime/reaper.py` if any of this does not compile — those modules own the contract, not this plan.
 
 - [ ] **Step 6: Run the tests**
 
@@ -7428,7 +7892,60 @@ git commit -m "feat(api): composition root, lifespan with startup recovery, heal
 
 - [ ] **Step 1: Write the failing test**
 
-`backend/tests/api/test_games.py`. The suite runs against a `FakeGameCatalog` and a `FakePresets` (add both to `tests/api/fakes.py`), with the real `GameManager` from the `deps` fixture — the runtime path is real, only storage is not.
+`backend/tests/api/test_games.py`. The suite runs against two more fakes, with the real `GameManager` from the `deps` fixture — the runtime path is real, only storage is not. Add both to `tests/api/fakes.py`:
+
+```python
+@dataclass
+class FakeGameCatalog:
+    """`GameCatalogPort`. `created` records the keyword arguments verbatim,
+    so a test can assert on `map_sha256` and `preset_id` — the two fields
+    that are wrong-but-plausible if creation is miswired, and that no
+    later request would reveal."""
+
+    created: list[dict[str, object]] = field(default_factory=list)
+    summaries: dict[GameId, GameSummary] = field(default_factory=dict)
+
+    async def create(self, **kwargs: object) -> None:
+        self.created.append(kwargs)
+        game_id = kwargs["game_id"]
+        self.summaries[game_id] = GameSummary(  # type: ignore[index]
+            game_id=game_id, map_id=kwargs["map_id"], host_id=kwargs["host_id"],
+            status="lobby", max_players=3, player_count=1,
+            created_at=T0,
+        )
+
+    async def get_summary(self, game_id: GameId) -> GameSummary | None:
+        return self.summaries.get(game_id)
+
+    async def list_joinable(self) -> tuple[GameSummary, ...]:
+        return tuple(s for s in self.summaries.values() if s.status == "lobby")
+
+
+@dataclass
+class FakePresets:
+    """`PresetPort`. Two presets: `default` (three players, `DEFAULT_RULES`)
+    and `two-player`, which exists because a test that wants to assert
+    *authorization* on `start` must not be blocked by
+    `NOT_ENOUGH_PLAYERS`."""
+
+    presets: dict[str, PresetRecord] = field(
+        default_factory=lambda: {
+            "default": PresetRecord("default", "Default", DEFAULT_RULES),
+            "two-player": PresetRecord(
+                "two-player", "Two", replace(DEFAULT_RULES, player_count=2,
+                                             claims_by_rank=(2, 1)),
+            ),
+        }
+    )
+
+    async def get(self, preset_id: str) -> PresetRecord | None:
+        return self.presets.get(preset_id)
+
+    async def get_default(self) -> PresetRecord | None:
+        return self.presets.get("default")
+```
+
+and extend `tests/api/conftest.py` with `games=FakeGameCatalog()`, `presets=FakePresets()`, `maps=MapRegistry(root=map_root)`, plus a `stranger_client` — a third signed-in user (`u3`) who never joins anything.
 
 ```python
 """§6.1 and §6.2. The important test is the two-commit one."""
@@ -7569,14 +8086,32 @@ async def test_starting_with_too_few_players_is_409(signed_in: httpx.AsyncClient
     assert response.json()["code"] == RejectCode.NOT_ENOUGH_PLAYERS
 
 
-async def test_a_non_host_cannot_start(
-    signed_in: httpx.AsyncClient, other_client: httpx.AsyncClient
+async def test_a_stranger_cannot_start_a_game(
+    signed_in: httpx.AsyncClient, stranger_client: httpx.AsyncClient
 ) -> None:
+    """Guard 3, reached through HTTP: `StartGame` carries an actor, and an
+    actor who is not an active player is rejected.
+
+    Note what this does **not** assert. Any seated player may start, not
+    only the host — see the note below the test list.
+    """
     game_id = (await create(signed_in)).json()["state"]["game_id"]
-    await other_client.post(f"/api/games/{game_id}/join")
-    response = await other_client.post(f"/api/games/{game_id}/start")
+    response = await stranger_client.post(f"/api/games/{game_id}/start")
     assert response.status_code == 409
     assert response.json()["code"] == RejectCode.NOT_A_PARTICIPANT
+
+
+async def test_any_seated_player_may_start(
+    signed_in: httpx.AsyncClient, other_client: httpx.AsyncClient
+) -> None:
+    """The positive half of the same decision, asserted so that adding a
+    host-only rule later has to change a test that says what it is
+    changing."""
+    game_id = (await create(signed_in, preset_id="two-player")).json()["state"]["game_id"]
+    await other_client.post(f"/api/games/{game_id}/join")
+    response = await other_client.post(f"/api/games/{game_id}/start")
+    assert response.status_code == 200
+    assert response.json()["state"]["phase"] != "lobby"
 
 
 async def test_a_recovering_game_answers_503_rather_than_409(
@@ -7613,7 +8148,9 @@ async def test_a_lobby_subscriber_is_told_when_a_game_appears(
     assert [m["type"] for m in parsed(watcher)] == ["lobby.update"]
 ```
 
-`_force_started(deps, game_id)` replaces the resident runtime's state with a started one via `runtime.replace_state_for_test(...)` — the seam Plan 4 already provides — using `tests/runtime/conftest.warmup_state()`. Add `other_client` to the conftest: a second `httpx.AsyncClient` over the same app carrying `u2`'s cookie.
+**Host-only start is not a rule this system has.** Nothing in Spec 1 or Spec 1B requires it: `_decide_start` validates the player count and the drawn pool, guard 3 validates that the actor is an active player, and `GameState` does not retain `host_id` at all — the host is a fact about the `games` row, not about the folded state. Enforcing it here would mean either reading the catalog on every start (a second authorization path outside the domain) or amending the domain to carry a host. Neither is warranted by a requirement nobody wrote down, so the two tests above pin the behaviour that actually exists. If host-only start is wanted later it is a domain amendment with its own `RejectCode`, not a check bolted onto a route.
+
+`stranger_client` is a third signed-in user who never joins. `two-player` is a preset in `FakePresets` whose `player_count` is 2, so a two-player lobby can legitimately start — with `DEFAULT_RULES`' three, `test_any_seated_player_may_start` would be asserting `NOT_ENOUGH_PLAYERS` while claiming to assert authorization. `_force_started(deps, game_id)` replaces the resident runtime's state with a started one via `runtime.replace_state_for_test(...)` — the seam Plan 4 already provides — using `tests/runtime/conftest.warmup_state()`. Add `other_client` to the conftest: a second `httpx.AsyncClient` over the same app carrying `u2`'s cookie.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -8539,7 +9076,8 @@ def seeded(migrated: None, tmp_path: Path) -> Path:
     )
     from triviador.db.engine import engine_for, sessionmaker_for
     from triviador.db.models.presets import RulePreset
-    from triviador.db.security import Argon2Hasher, token_digest
+    from triviador.db.security import Argon2Hasher
+    from triviador.db.seed import DEFAULT_PRESET_RULES
 
     async def seed() -> None:
         async with engine_for(DATABASE_URL) as engine:
@@ -8549,8 +9087,16 @@ def seeded(migrated: None, tmp_path: Path) -> Path:
                 # `games`, which references `users` and `rule_presets`.
                 for table in ("game_events", "game_players", "games", "sessions",
                               "invite_codes", "question_choices", "question_numeric",
-                              "questions", "categories", "users"):
+                              "questions", "categories", "users", "rule_presets"):
                     await db.execute(text(f"TRUNCATE {table} CASCADE"))
+                # Re-seed migration 0002's row from the same frozen literal
+                # it used. Truncating and restoring beats excluding the
+                # table: an excluded table preserves *mutations* between
+                # tests, and this suite creates games that read the default.
+                await db.execute(insert(RulePreset).values(
+                    id="default", name="Default", is_default=True,
+                    rules=dict(DEFAULT_PRESET_RULES), version=1, is_active=True,
+                ))
             hasher = Argon2Hasher()
             for name in ("alice", "bob"):
                 await _seed_user(sessions, name)
@@ -8577,7 +9123,7 @@ def seeded(migrated: None, tmp_path: Path) -> Path:
 
 `_seed_user` creates a row with the id as username; the `UPDATE` above gives it the username, password and display name this suite signs in with. If `_seed_user`'s signature does not permit that, extend it in `tests/db/conftest.py` with keyword arguments defaulting to today's behaviour rather than duplicating it here.
 
-The `TRUNCATE` list must include `rule_presets`? **No** — the default preset is seeded by migration `0002` and is schema, not test data. Truncating it would make every `POST /api/games` without a preset fail, and the failure would look like an application bug.
+The `TRUNCATE` list includes `rule_presets` and the fixture puts the default back — the same baseline-per-test discipline `tests/db/conftest.py`'s `default_preset` fixture uses, and for the same reason: excluding the table would let one test's mutation decide whether the next one passes.
 
 - [ ] **Step 3: Write the play-through**
 
@@ -8623,10 +9169,25 @@ def until(socket, *types: str, limit: int = 40) -> list[dict]:
     raise AssertionError(f"never saw {types}; saw {[m['type'] for m in seen]}")
 
 
-def answer(socket, game_id: str, deadline_id: int, value: str, command_id: str) -> None:
+def answer(socket, game_id: str, turn: dict, command_id: str) -> None:
+    """Answer whatever kind of question is open.
+
+    Switching on `turn["question"]["kind"]` is not defensive coding — it is
+    required. `FAST_RULES` needs two multiple-choice questions
+    (`required_question_budget` gives `multiple_choice = battle_rounds *
+    player_count`), every battle duel presents one, and a numeric payload
+    sent to an MC window is rejected with `ANSWER_KIND_MISMATCH`. The
+    window would then close on its own 3 s deadline instead of on a
+    player's answer — both slower and a different scenario from the one
+    this test claims to run.
+    """
+    if turn["question"]["kind"] == "multiple_choice":
+        payload: dict[str, object] = {"kind": "choice", "idx": 0}
+    else:
+        payload = {"kind": "numeric", "value": "1"}
     socket.send_json({
         "type": "submit_answer", "command_id": command_id, "game_id": game_id,
-        "deadline_id": deadline_id, "payload": {"kind": "numeric", "value": value},
+        "deadline_id": turn["deadline_id"], "payload": payload,
     })
 
 
@@ -8669,17 +9230,30 @@ def test_two_players_play_a_whole_game(client: TestClient) -> None:
     assert final.json()["state"]["winner_id"] is not None
 ```
 
-`_play_to_finish` drives the game generically rather than scripting a fixed
-sequence, because the base placement and pick order are randomised: loop
-reading `game.update`s, and on each one act on `state.turn` for whichever
-socket the turn's `your_options` is non-empty for — answer any numeric
-question with `"1"`, pick `your_options.pick[0]`, attack
-`your_options.attack[0]` — until `phase == "finished"`. Cap the loop and
-raise on exhaustion, like `until`.
+`_play_to_finish` drives the game generically rather than scripting a fixed sequence, because base placement and pick order are randomised. Loop reading `game.update`s and act on `state.turn`, dispatching on `turn["kind"]`:
+
+| turn kind | what happens |
+|---|---|
+| `media_warmup` | nothing — a fixed window, and the only real wait in the run |
+| `expansion_question` · `battle_duel` · `neutral_challenge` · `final_tiebreak` | `answer(socket, game_id, turn, ...)` from **every** socket not already in `turn["answered"]` |
+| `expansion_picking` | the socket whose `your_options.pick` is non-empty sends `pick_region` with `pick[0]` |
+| `battle_target_select` | the socket whose `your_options.attack` is non-empty sends `select_attack_target` with `attack[0]` |
+
+Continue until `state["phase"] == "finished"`, recording each `turn["question"]["kind"]` into a `kinds_seen` set as you go. Three details decide whether this terminates:
+
+- **Read from both sockets.** Each receives its own projection and `your_options` is populated on exactly one of them per turn. A loop reading only Alice's stream never sees the turn where Bob is the picker, and waits out a 3 s deadline instead of acting.
+- **Both players answer every question window.** A window resolves when everyone has answered or when it expires, and the whole claim of this scenario is that none expires. `turn["answered"]` is what to check against.
+- **Both question kinds must appear.** Expansion questions are numeric and battle duels are multiple-choice; a run that only ever sent numeric payloads would silently be answering nothing during the battle round.
+
+Cap the loop and raise on exhaustion, like `until`.
 
 Assert along the way, once each:
 
 ```python
+# Both question kinds were exercised — otherwise the MC path never ran and
+# this passed as a numeric-only game that timed out its battle round.
+assert kinds_seen == {"numeric", "multiple_choice"}
+
 # §8.4's batch sequencing holds for every update the client applies.
 assert update["base_seq"] == last_seq and update["seq"] > update["base_seq"]
 last_seq = update["seq"]
