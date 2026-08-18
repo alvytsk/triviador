@@ -14,6 +14,11 @@ import pytest
 from tests.conftest import mc_question, numeric_question
 from triviador.api.projection.events import project_event
 from triviador.api.projection.viewer import ViewerContext
+from triviador.api.schemas.events import (
+    PlayerAnsweredEvent,
+    QuestionPresentedEvent,
+    QuestionResolvedEvent,
+)
 from triviador.domain.game import events as ev
 from triviador.domain.game.events import GameEvent
 from triviador.domain.game.rules import DEFAULT_RULES
@@ -47,7 +52,7 @@ def test_an_answer_is_the_fact_to_everyone_else() -> None:
     one event, two different client events, decided per subscriber."""
     event = ev.AnswerSubmitted(PlayerId("p2"), SubmittedAnswer(NumericAnswer(Decimal(99)), 1200))
     projected = project_event(event, viewer("p1"))
-    assert projected is not None and projected.type == "player_answered"
+    assert isinstance(projected, PlayerAnsweredEvent)
     assert projected.player_id == "p2"
     assert "99" not in projected.model_dump_json()
 
@@ -55,7 +60,8 @@ def test_an_answer_is_the_fact_to_everyone_else() -> None:
 def test_an_answer_is_its_value_to_its_author() -> None:
     event = ev.AnswerSubmitted(PlayerId("p1"), SubmittedAnswer(NumericAnswer(Decimal(99)), 1200))
     projected = project_event(event, viewer("p1"))
-    assert projected is not None and projected.your_answer is not None
+    assert isinstance(projected, PlayerAnsweredEvent)
+    assert projected.your_answer is not None
     assert projected.your_answer.value == "99"
 
 
@@ -78,7 +84,7 @@ def test_resolution_reveals_everything_to_everyone() -> None:
     )
     for who in ("p1", "p2", None):
         projected = project_event(event, viewer(who))
-        assert projected is not None and projected.type == "question_resolved"
+        assert isinstance(projected, QuestionResolvedEvent)
         assert projected.correct_value == "42"
         assert projected.ranking == ("p1", "p2")
 
@@ -91,7 +97,7 @@ def test_a_presented_question_is_announced_without_being_repeated() -> None:
         DeadlineId(4), DeadlineKind.ANSWER, __import__("tests.conftest", fromlist=["NOW"]).NOW
     )
     projected = project_event(ev.QuestionPresented(numeric_question(1, 42), deadline), viewer())
-    assert projected is not None and projected.type == "question_presented"
+    assert isinstance(projected, QuestionPresentedEvent)
     assert projected.deadline_id == 4
     assert "42" not in projected.model_dump_json()
     assert "numeric 1?" not in projected.model_dump_json()
