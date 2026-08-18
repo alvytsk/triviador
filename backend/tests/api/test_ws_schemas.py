@@ -17,7 +17,9 @@ from pydantic import ValidationError
 from triviador.api.schemas.ws import (
     CLIENT_MESSAGE_ADAPTER,
     ClientMessage,
+    NumericAnswerPayload,
     ServerMessage,
+    SubmitAnswerFrame,
     game_topic,
 )
 
@@ -40,7 +42,9 @@ def test_a_valid_answer_frame_parses() -> None:
         deadline_id=7,
         payload={"kind": "numeric", "value": "42.5"},
     )
-    assert message.payload.value == "42.5"  # type: ignore[union-attr]
+    assert isinstance(message, SubmitAnswerFrame)
+    assert isinstance(message.payload, NumericAnswerPayload)
+    assert message.payload.value == "42.5"
 
 
 def test_a_numeric_answer_arrives_as_a_string() -> None:
@@ -78,38 +82,76 @@ def test_a_numeric_value_that_is_not_a_finite_number_is_rejected(value: str) -> 
 
 
 @pytest.mark.parametrize(
-    "kw",
+    "bad",
     [
-        {"type": "ping"},
-        {"type": "subscribe", "topic": "lobby"},
-        {"type": "surrender", "command_id": "c1", "game_id": "g1"},
+        {"type": "ping", "unexpected": "x"},
+        {"type": "subscribe", "topic": "lobby", "unexpected": "x"},
+        {"type": "surrender", "command_id": "c1", "game_id": "g1", "unexpected": "x"},
+        # Nested: the payload models (`NumericAnswerPayload`, `RegionPayload`)
+        # are separate classes from the frame that carries them — each has to
+        # inherit `extra="forbid"` on its own for this to hold.
+        {
+            "type": "submit_answer",
+            "command_id": "c1",
+            "game_id": "g1",
+            "deadline_id": 7,
+            "payload": {"kind": "numeric", "value": "1", "unexpected": "x"},
+        },
+        {
+            "type": "pick_region",
+            "command_id": "c1",
+            "game_id": "g1",
+            "deadline_id": 7,
+            "payload": {"region_id": "r3", "unexpected": "x"},
+        },
     ],
 )
-def test_an_extra_field_on_any_frame_is_rejected(kw: dict[str, object]) -> None:
-    """`extra="forbid"` everywhere. Omitting `actor_id` from a schema is
-    worth nothing if unknown keys are silently ignored (§6.5)."""
+def test_an_extra_field_on_any_frame_is_rejected(bad: dict[str, object]) -> None:
+    """`extra="forbid"` everywhere, including nested payload models — not
+    only the outer frame. Omitting `actor_id` from a schema is worth
+    nothing if unknown keys are silently ignored anywhere in the frame
+    (§6.5)."""
     with pytest.raises(ValidationError):
-        parse(**kw, unexpected="x")
+        parse(**bad)
 
 
 @pytest.mark.parametrize(
-    "kw",
+    "bad",
     [
-        {"type": "surrender", "command_id": "c1", "game_id": "g1"},
+        {"type": "surrender", "command_id": "c1", "game_id": "g1", "actor_id": "somebody-else"},
         {
             "type": "submit_answer",
             "command_id": "c1",
             "game_id": "g1",
             "deadline_id": 7,
             "payload": {"kind": "choice", "idx": 1},
+            "actor_id": "somebody-else",
+        },
+        # Nested: an actor named one level deeper, inside the payload
+        # rather than the frame, must be refused just as outright.
+        {
+            "type": "submit_answer",
+            "command_id": "c1",
+            "game_id": "g1",
+            "deadline_id": 7,
+            "payload": {"kind": "choice", "idx": 1, "actor_id": "somebody-else"},
+        },
+        {
+            "type": "pick_region",
+            "command_id": "c1",
+            "game_id": "g1",
+            "deadline_id": 7,
+            "payload": {"region_id": "r3", "actor_id": "somebody-else"},
         },
     ],
 )
-def test_a_frame_carrying_an_actor_is_rejected_outright(kw: dict[str, object]) -> None:
+def test_a_frame_carrying_an_actor_is_rejected_outright(bad: dict[str, object]) -> None:
     """The one that matters. Identity is derived from the session, and a
-    frame that even mentions an actor is refused rather than sanitized."""
+    frame that even mentions an actor is refused rather than sanitized —
+    whether the actor is named at the top level or inside a nested
+    payload."""
     with pytest.raises(ValidationError):
-        parse(**kw, actor_id="somebody-else")
+        parse(**bad)
 
 
 def test_only_the_windowed_commands_declare_a_deadline() -> None:
