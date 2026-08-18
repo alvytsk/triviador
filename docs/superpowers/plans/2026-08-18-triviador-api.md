@@ -3865,7 +3865,7 @@ git commit -m "feat(api): origin checking, trusted hosts, and a bounded request 
 
 **Interfaces:**
 - Consumes: `GameState`, `QuestionSnapshot`, `ChoiceSnapshot`, `QuestionKind`, `Difficulty`, `AuthenticatedPrincipal`, `UserRole`, `UserId`, `PlayerId`.
-- Produces: `ViewerContext(user_id, player_id, role)`; `viewer_for(state, principal) -> ViewerContext`; `ClientChoice`, `ClientQuestion`, `RevealedAnswer`; `project_question(question, media_base) -> ClientQuestion`; `reveal_answer(question) -> RevealedAnswer`.
+- Produces: `ViewerContext(user_id, player_id, role)`; `viewer_for(state, principal) -> ViewerContext`; `ClientChoice`, `ClientQuestion`, `RevealedAnswer`; `project_question(question, *, media_base) -> ClientQuestion`; `RevealedAnswer.of(question)` (a classmethod — there is no free `reveal_answer` function).
 
 - [ ] **Step 1: Write the failing test**
 
