@@ -6167,6 +6167,43 @@ async def test_closing_discards_whatever_was_still_queued() -> None:
     assert len(socket.sent) <= 1
 
 
+async def test_a_socket_that_raises_ends_the_sender_rather_than_spinning() -> None:
+    """§8.6's sender exits on any send failure, not only on the sentinel.
+
+    A socket that raised is a socket that is gone, and continuing to drain
+    into it is a task that never ends — which is the exact wedged-connection
+    failure the bounded queue exists to prevent, arriving by another door.
+    """
+
+    class BrokenSocket(FakeSocket):
+        async def send_text(self, text: str) -> None:
+            raise ConnectionResetError("peer went away")
+
+    connection = a_connection(BrokenSocket())
+    task = asyncio.create_task(run_sender(connection))
+    connection.send(HelloMessage(server_time=T0))
+    await asyncio.wait_for(task, timeout=1)
+    assert connection.close_code == 1011
+
+
+async def test_a_send_failure_does_not_overwrite_a_close_code_already_set() -> None:
+    """"First code wins" meeting the failure path. A connection already
+    closing with 4408 must not be relabelled 1011 on its way out, or the
+    client is told to reconnect with backoff when it should reconnect at
+    once."""
+
+    class BrokenSocket(FakeSocket):
+        async def send_text(self, text: str) -> None:
+            raise ConnectionResetError("peer went away")
+
+    connection = a_connection(BrokenSocket())
+    task = asyncio.create_task(run_sender(connection))
+    connection.send(HelloMessage(server_time=T0))
+    connection.close_code = 4408
+    await asyncio.wait_for(task, timeout=1)
+    assert connection.close_code == 4408
+
+
 def test_a_second_close_is_ignored() -> None:
     """Origins, the broadcaster and the read loop can all decide to close
     the same connection; the first code wins, as it does for origins."""
