@@ -3001,6 +3001,35 @@ async def test_the_session_cookie_is_httponly_lax_and_matches_cookie_secure(
     assert "secure" not in header  # cookie_secure=False in the fixture
 
 
+async def test_the_cookie_is_marked_secure_when_the_deployment_says_so(deps) -> None:
+    """The other half of the flag, and the half that fails silently.
+
+    With only the `cookie_secure=False` branch covered, `secure=False`
+    hardcoded would pass the whole suite — and a missing `Secure` sends the
+    session token in cleartext the moment the deployment moves to HTTPS.
+    §10.4 pairs `COOKIE_SECURE` with the origin scheme at startup for the
+    same reason: getting it wrong produces a login that appears to succeed
+    and then does nothing.
+    """
+    from triviador.api.app import create_app
+
+    secure_deps = replace_deps(
+        deps, settings=deps.settings.model_copy(update={"cookie_secure": True})
+    )
+    transport = httpx.ASGITransport(app=create_app(secure_deps), raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", headers={"Origin": ORIGIN}
+    ) as client:
+        response = await register(client, secure_deps.invites)
+
+    header = response.headers["set-cookie"].lower()
+    assert "secure" in header
+    # The three flags are set in one call, so a refactor that breaks one
+    # usually breaks the others — assert them together.
+    assert "httponly" in header
+    assert "samesite=lax" in header
+
+
 async def test_a_bad_invite_is_401_and_creates_nobody(client: httpx.AsyncClient, deps) -> None:
     response = await client.post(
         "/api/auth/redeem",
