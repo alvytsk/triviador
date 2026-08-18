@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "codegen": "node scripts/codegen.mjs",
-    "codegen:check": "node scripts/codegen.mjs && git diff --exit-code -- shared/api/generated"
+    "codegen:check": "node scripts/codegen.mjs && git diff --exit-code -- shared/api/generated && node --experimental-strip-types scripts/verify-generated.mjs"
   },
   "devDependencies": {
     "json-schema-to-zod": "^2.6.0",
