@@ -1,11 +1,14 @@
 """§6.1's auth surface, and the cookie that carries it."""
 
+from dataclasses import replace as dc_replace
 from datetime import timedelta
 
 import httpx
 import pytest
 
+from tests.api.conftest import ORIGIN
 from tests.api.fakes import FakeClock, FakeHasher, FakeInvites, FakeUsers
+from triviador.api.app import create_app
 from triviador.api.deps import AppDependencies
 from triviador.api.errors import ApiErrorCode
 from triviador.db.security import token_digest
@@ -61,6 +64,35 @@ async def test_the_session_cookie_is_httponly_lax_and_matches_cookie_secure(
     assert "httponly" in header
     assert "samesite=lax" in header
     assert "secure" not in header  # cookie_secure=False in the fixture
+
+
+async def test_the_secure_flag_is_set_when_cookie_secure_is_true(
+    deps: AppDependencies,
+) -> None:
+    """The sibling of the test above, and the half that actually matters:
+    a suite that only ever runs `cookie_secure=False` would pass just as
+    well with `secure=False` hardcoded in `_issue_session`. `Secure`'s
+    failure mode is silent and severe — drop it and, the moment the
+    deployment moves to HTTPS (§10.4 pairs `COOKIE_SECURE` with the origin
+    scheme for exactly this reason), the session cookie rides in cleartext
+    and a login looks like it worked while doing nothing.
+
+    `Settings` is a Pydantic model, so `model_copy`, not
+    `dataclasses.replace`; `AppDependencies` is a plain frozen dataclass, so
+    the reverse. A locally-built app and client, rather than a broad
+    `cookie_secure` fixture every other test would then have to opt out
+    of."""
+    secure_settings = deps.settings.model_copy(update={"cookie_secure": True})
+    secure_deps = dc_replace(deps, settings=secure_settings)
+    transport = httpx.ASGITransport(app=create_app(secure_deps), raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", headers={"Origin": ORIGIN}
+    ) as secure_client:
+        response = await register(secure_client, secure_deps.invites)
+    header = response.headers["set-cookie"].lower()
+    assert "secure" in header
+    assert "httponly" in header
+    assert "samesite=lax" in header
 
 
 async def test_a_bad_invite_is_401_and_creates_nobody(
