@@ -215,6 +215,42 @@ def test_a_comma_separated_origin_list_parses_into_a_tuple() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("http://localhost:5173", ("http://localhost:5173",)),
+        ("http://a.lan, http://b.lan", ("http://a.lan", "http://b.lan")),
+    ],
+    ids=["single-no-comma", "pair-with-whitespace"],
+)
+def test_origins_parse_from_a_real_environment_variable(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: tuple[str, ...]
+) -> None:
+    """Through `EnvSettingsSource`, not through kwargs.
+
+    `Settings(**overrides)` bypasses environment sourcing entirely, so a
+    suite that only ever does that cannot see the failure that actually
+    ships: pydantic-settings JSON-decodes a complex field's raw string
+    before any `mode="before"` validator runs, and a bare URL is not JSON.
+    The single-value case is the one that matters most — it is the exact
+    value committed in `.env.example`, and it has no comma, so nothing
+    about it looks like a list.
+    """
+    monkeypatch.setenv("TRIVIADOR_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("TRIVIADOR_ALLOWED_ORIGINS", raw)
+    assert Settings().allowed_origins == expected  # type: ignore[call-arg]
+
+
+def test_hosts_parse_from_a_real_environment_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`allowed_hosts` carries the same annotation and therefore the same
+    hazard; asserting only on origins would leave half the fix unproven."""
+    monkeypatch.setenv("TRIVIADOR_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("TRIVIADOR_ALLOWED_HOSTS", "localhost, 127.0.0.1")
+    assert Settings().allowed_hosts == ("localhost", "127.0.0.1")  # type: ignore[call-arg]
+
+
 def test_a_consistent_configuration_has_no_problems() -> None:
     assert startup_problems(settings()) == ()
 
@@ -336,8 +372,16 @@ class Settings(BaseSettings):
     ...  # existing fields unchanged
 
     # --- API (Spec 1B §6, §10.4) ------------------------------------------
-    allowed_origins: tuple[str, ...] = ()
-    allowed_hosts: tuple[str, ...] = ("*",)
+    # `NoDecode` is load-bearing, not decoration. Without it,
+    # `EnvSettingsSource` runs `json.loads()` on the raw environment string
+    # *before* any `mode="before"` validator sees it, and for a plain
+    # (non-Union) complex type it does not swallow the failure — so
+    # `TRIVIADOR_ALLOWED_ORIGINS=http://box.lan` raises `SettingsError` at
+    # startup even with no comma in it, because a bare URL is not JSON.
+    # `NoDecode` tells the source to hand the string over untouched, which
+    # is what makes `_split_csv` below reachable at all.
+    allowed_origins: Annotated[tuple[str, ...], NoDecode] = ()
+    allowed_hosts: Annotated[tuple[str, ...], NoDecode] = ("*",)
     cookie_secure: bool = False
     session_cookie_name: str = "triviador_session"
     session_ttl_days: int = 30
@@ -363,7 +407,8 @@ class Settings(BaseSettings):
 
         pydantic-settings parses a complex annotation from JSON by default,
         which would make the natural env-file form a startup crash with a
-        JSON decode error pointing at nothing useful.
+        JSON decode error pointing at nothing useful. Reachable only
+        because both fields are annotated `NoDecode` — see above.
         """
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
@@ -399,7 +444,7 @@ def startup_problems(settings: Settings) -> tuple[str, ...]:
     return tuple(problems)
 ```
 
-Add `import re`, `from pathlib import Path`, `from typing import Literal`, and `from pydantic import field_validator` to the imports.
+Add `import re`, `from pathlib import Path`, `from typing import Annotated, Literal`, `from pydantic import field_validator`, and `NoDecode` to the existing `pydantic_settings` import.
 
 `startup_problems` scans `settings.model_dump()`, so it can only see values `Settings` actually declares. `POSTGRES_PASSWORD` and `GARAGE_RPC_SECRET` appear in `.env.example` but are read by compose and by Garage, not by this process — they are covered when Plan 8 adds the S3 settings block, and the scan then covers them for free because it iterates every field rather than a hand-written list. That is the reason it iterates rather than naming `database_url`.
 
