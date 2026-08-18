@@ -3668,10 +3668,32 @@ class HostMiddleware:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
-            # A handshake cannot carry a status. Refusing it outright is
-            # correct here — unlike origin and session, a wrong `Host` is
-            # not addressed to this application at all.
-            await send({"type": "websocket.close", "code": 4403})
+            # A pre-accept refusal *can* carry a response: Starlette's
+            # `websocket.http.response` denial extension is exactly that,
+            # and it is how this branch keeps the envelope contract the
+            # class exists to uphold. A bare `websocket.close` here would
+            # not: uvicorn turns a close sent before `accept` into a
+            # hardcoded 403 with an empty `text/plain` body and discards
+            # the application's close code entirely — so the code would be
+            # unobservable and the body would be the one hole in "every
+            # response is an envelope".
+            #
+            # Accepting first and then closing would be worse still: it
+            # completes a handshake with a host we do not trust, purely to
+            # hang up on it. (Task 16 *does* accept first, but for origin
+            # and session — refusals that only make sense once we have
+            # decided to talk to this client at all.)
+            #
+            # The fallback uses 1008 rather than 4403: 4403 is our
+            # application-level "not authorized for topic" code and means
+            # something only after a handshake completes. Putting it where
+            # it is provably discarded would leave a number in the code
+            # that no client can ever see.
+            if "websocket.http.response" in scope.get("extensions", {}):
+                response = envelope(400, ApiErrorCode.FORBIDDEN, "host not allowed")
+                await response(scope, receive, send)
+            else:
+                await send({"type": "websocket.close", "code": 1008})
             return
         response = envelope(400, ApiErrorCode.FORBIDDEN, "host not allowed")
         await response(scope, receive, send)
