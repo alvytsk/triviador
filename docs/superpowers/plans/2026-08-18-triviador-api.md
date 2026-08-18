@@ -2953,12 +2953,16 @@ import pytest
 
 from tests.api.fakes import FakeInvites, FakeSessions, FakeUsers
 from triviador.api.errors import ApiErrorCode
+from triviador.db.security import token_digest
 from triviador.domain.ids import UserId
 from triviador.services.identity import UserRole
 
 
 async def register(client: httpx.AsyncClient, invites: FakeInvites, **kw: str) -> httpx.Response:
-    invites.valid["hashed-code"] = True
+    # Keyed by the digest, not the literal: the route hashes the submitted
+    # code before it reaches the store, so seeding a raw string here would
+    # never match and every registration would fail as an invalid invite.
+    invites.valid[token_digest(kw.get("code", "raw-code"))] = True
     return await client.post(
         "/api/auth/redeem",
         json={
@@ -3010,7 +3014,7 @@ async def test_a_bad_invite_is_401_and_creates_nobody(client: httpx.AsyncClient,
 
 async def test_a_taken_username_is_409(client: httpx.AsyncClient, deps) -> None:
     await register(client, deps.invites)
-    deps.invites.valid["hashed-code"] = True
+    deps.invites.valid[token_digest("raw-code")] = True
     response = await register(client, deps.invites)
     assert response.status_code == 409
     assert response.json()["code"] == ApiErrorCode.USERNAME_TAKEN
@@ -3035,7 +3039,7 @@ async def test_a_registration_carrying_a_role_is_rejected_outright(
 ) -> None:
     """`extra="forbid"`, and the reason it is not optional: the field the
     request must never be able to set is the one that grants admin."""
-    deps.invites.valid["hashed-code"] = True
+    deps.invites.valid[token_digest("raw-code")] = True
     response = await client.post(
         "/api/auth/redeem",
         json={"code": "raw-code", "username": "mallory", "password": "correct horse",
