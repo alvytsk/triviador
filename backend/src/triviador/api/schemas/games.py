@@ -5,9 +5,11 @@ plain JSON types, and the domain is frozen dataclasses over `Decimal`,
 `send_json(event.model_dump())` fail to typecheck.
 """
 
+from datetime import datetime
 from decimal import Decimal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from triviador.domain.questions.types import Difficulty, QuestionKind, QuestionSnapshot
 
@@ -86,3 +88,97 @@ def project_question(question: QuestionSnapshot, *, media_base: str) -> ClientQu
         unit=question.unit,
         media_url=media_url(media_base, question.media_asset_id),
     )
+
+
+class SubmittedValue(BaseModel):
+    """A player's own answer, echoed back to its author only.
+
+    `value` is a string even for a numeric answer: JSON has one number type
+    and it is a float, so `Decimal("0.1")` round-trips through it wrong.
+    Every numeric value on this API is a decimal string for that reason.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["choice", "numeric"]
+    idx: int | None = None
+    value: str | None = None
+
+
+class YourOptions(BaseModel):
+    """§8.8's `your_options`, per viewer. Both lists empty is the normal
+    case — it is not this viewer's move."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pick: tuple[str, ...] = ()
+    attack: tuple[str, ...] = ()
+
+
+class _TurnBase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    deadline_id: int
+    deadline_at: datetime
+    your_options: YourOptions = YourOptions()
+
+
+class WarmupTurn(_TurnBase):
+    kind: Literal["media_warmup"] = "media_warmup"
+
+
+class QuestionTurn(_TurnBase):
+    kind: Literal["expansion_question"] = "expansion_question"
+    question: ClientQuestion
+    answered: tuple[str, ...]
+    your_answer: SubmittedValue | None = None
+
+
+class PickingTurn(_TurnBase):
+    kind: Literal["expansion_picking"] = "expansion_picking"
+    pick_order: tuple[str, ...]
+    grants_remaining: dict[str, int]
+    current_picker: str
+
+
+class TargetSelectTurn(_TurnBase):
+    kind: Literal["battle_target_select"] = "battle_target_select"
+    attacker_id: str
+
+
+class DuelTurn(_TurnBase):
+    """`BattleDuel` and `BattleTiebreak` share this shape; `tiebreak`
+    distinguishes them. Two models would be two identical field lists and
+    two Zod schemas for one screen."""
+
+    kind: Literal["battle_duel"] = "battle_duel"
+    tiebreak: bool
+    attacker_id: str
+    defender_id: str
+    region_id: str
+    question: ClientQuestion
+    answered: tuple[str, ...]
+    your_answer: SubmittedValue | None = None
+
+
+class NeutralTurn(_TurnBase):
+    kind: Literal["neutral_challenge"] = "neutral_challenge"
+    attacker_id: str
+    region_id: str
+    question: ClientQuestion
+    answered: tuple[str, ...]
+    your_answer: SubmittedValue | None = None
+
+
+class FinalTurn(_TurnBase):
+    kind: Literal["final_tiebreak"] = "final_tiebreak"
+    contenders: tuple[str, ...]
+    question: ClientQuestion
+    answered: tuple[str, ...]
+    your_answer: SubmittedValue | None = None
+
+
+ClientTurn = Annotated[
+    WarmupTurn | QuestionTurn | PickingTurn | TargetSelectTurn | DuelTurn | NeutralTurn | FinalTurn,
+    Field(discriminator="kind"),
+]
