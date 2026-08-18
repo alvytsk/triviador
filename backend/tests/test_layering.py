@@ -226,3 +226,46 @@ def test_a_legitimate_domain_import_is_not_flagged(source: str) -> None:
         assert not any(_is_forbidden(m) for m in _imported_modules(module))
     finally:
         module.unlink()
+
+
+SERVICES = SRC / "triviador" / "services"
+RUNTIME = SRC / "triviador" / "runtime"
+
+
+def test_services_does_not_import_adapters() -> None:
+    """`services/` is the contract layer. It may name `domain` and
+    `triviador.maps` (both pure); naming `db`, `runtime`, or `api` would
+    make the contract depend on an implementation of itself."""
+    forbidden = (
+        "triviador.db",
+        "triviador.runtime",
+        "triviador.api",
+        "sqlalchemy",
+        "asyncpg",
+        "alembic",
+    )
+    violations = [
+        f"{path.relative_to(SRC)}: {module}"
+        for path in sorted(SERVICES.rglob("*.py"))
+        for module in sorted(_imported_modules(path))
+        if _is_forbidden(module, forbidden)
+    ]
+    assert violations == [], violations
+
+
+def test_runtime_does_not_import_persistence_or_api() -> None:
+    """Every capability the runtime uses arrives through `services.ports`.
+    One `from triviador.db...` here and the port layer is decoration.
+
+    `runtime/` does not exist yet (it lands in Tasks 2-16 of this plan), so
+    this passes vacuously today — `rglob` over a missing directory yields no
+    files. The gate is written now so the first file added under `runtime/`
+    is already covered."""
+    forbidden = ("triviador.db", "triviador.api", "sqlalchemy", "asyncpg", "alembic")
+    violations = [
+        f"{path.relative_to(SRC)}: {module}"
+        for path in sorted(RUNTIME.rglob("*.py"))
+        for module in sorted(_imported_modules(path))
+        if _is_forbidden(module, forbidden)
+    ]
+    assert violations == [], violations

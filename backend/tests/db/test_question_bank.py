@@ -25,16 +25,15 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tests.db.conftest import wait_until_a_backend_is_blocked_on
-from triviador.db.errors import InsufficientQuestions, MalformedQuestion
-from triviador.db.models.auth import User
-from triviador.db.models.content import (
-    Category,
-    MediaAsset,
-    Question,
-    QuestionChoice,
-    QuestionNumeric,
+from tests.db.conftest import (
+    _seed_category,
+    _seed_mc_question,
+    _seed_numeric_question,
+    _seed_user,
+    wait_until_a_backend_is_blocked_on,
 )
+from triviador.db.errors import InsufficientQuestions, MalformedQuestion
+from triviador.db.models.content import MediaAsset
 from triviador.db.repositories.questions import QuestionBank
 from triviador.domain.questions.types import QuestionBudget, QuestionKind
 
@@ -44,32 +43,14 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 # --------------------------------------------------------------------------
 # seed helpers
 # --------------------------------------------------------------------------
-
-
-async def _seed_category(
-    sessionmaker: async_sessionmaker[AsyncSession],
-    category_id: str = "cat-1",
-    *,
-    slug: str = "general",
-    name: str = "General",
-) -> None:
-    async with sessionmaker() as session:
-        session.add(Category(id=category_id, slug=slug, name=name))
-        await session.commit()
-
-
-async def _seed_user(sessionmaker: async_sessionmaker[AsyncSession], user_id: str) -> None:
-    async with sessionmaker() as session:
-        session.add(
-            User(
-                id=user_id,
-                username=user_id,
-                password_hash="hash",
-                display_name=user_id,
-                role="admin",
-            )
-        )
-        await session.commit()
+#
+# `_seed_category`, `_seed_user`, `_seed_mc_question` and `_seed_numeric_question`
+# now live in `tests/db/conftest.py`, shared with
+# `tests/runtime/integration/conftest.py` — they already get every column
+# right, including `prompt_hash` and the `question_numeric` child row, so
+# this module imports rather than re-derives them. `_seed_media_asset`
+# stays here: it is used only by this module's fully-materialized-snapshot
+# test.
 
 
 async def _seed_media_asset(
@@ -87,85 +68,6 @@ async def _seed_media_asset(
                 created_by=created_by,
             )
         )
-        await session.commit()
-
-
-async def _seed_mc_question(
-    sessionmaker: async_sessionmaker[AsyncSession],
-    question_id: str,
-    *,
-    category_id: str = "cat-1",
-    is_active: bool = True,
-    prompt: str = "prompt",
-    difficulty: str = "easy",
-    version: int = 1,
-    media_asset_id: str | None = None,
-    choices: tuple[tuple[str, bool, str | None], ...] = (
-        ("A", False, None),
-        ("B", True, None),
-    ),
-) -> None:
-    async with sessionmaker() as session:
-        session.add(
-            Question(
-                id=question_id,
-                version=version,
-                kind="multiple_choice",
-                prompt=prompt,
-                category_id=category_id,
-                difficulty=difficulty,
-                media_asset_id=media_asset_id,
-                is_active=is_active,
-                prompt_hash=f"hash-{question_id}",
-            )
-        )
-        for idx, (choice_text, is_correct, choice_media_asset_id) in enumerate(choices):
-            session.add(
-                QuestionChoice(
-                    question_id=question_id,
-                    idx=idx,
-                    text=choice_text,
-                    is_correct=is_correct,
-                    media_asset_id=choice_media_asset_id,
-                )
-            )
-        await session.commit()
-
-
-async def _seed_numeric_question(
-    sessionmaker: async_sessionmaker[AsyncSession],
-    question_id: str,
-    *,
-    category_id: str = "cat-1",
-    is_active: bool = True,
-    prompt: str = "how many?",
-    difficulty: str = "medium",
-    version: int = 1,
-    correct_value: Decimal = Decimal("42.5"),
-    unit: str | None = "km",
-    with_numeric_row: bool = True,
-) -> None:
-    """`with_numeric_row=False` seeds the bare `questions` row with
-    `kind='numeric'` but no matching `question_numeric` row — the malformed
-    shape `_materialize` must catch (F4): a row that passes `_select_kind`'s
-    count check but has no child row for `_materialize` to read."""
-    async with sessionmaker() as session:
-        session.add(
-            Question(
-                id=question_id,
-                version=version,
-                kind="numeric",
-                prompt=prompt,
-                category_id=category_id,
-                difficulty=difficulty,
-                is_active=is_active,
-                prompt_hash=f"hash-{question_id}",
-            )
-        )
-        if with_numeric_row:
-            session.add(
-                QuestionNumeric(question_id=question_id, correct_value=correct_value, unit=unit)
-            )
         await session.commit()
 
 

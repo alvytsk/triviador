@@ -15,6 +15,21 @@ class Settings(BaseSettings):
     # one from here.
     database_url: str
 
+    # Runtime tunables (Spec 1B §5.6). Every one has a default because,
+    # unlike `database_url`, a wrong-but-plausible value here degrades
+    # behaviour rather than pointing the process at the wrong data — and a
+    # deployment that must set nine environment variables to boot is a
+    # deployment that will set one of them wrong.
+    command_queue_maxsize: int = 256
+    commit_max_attempts: int = 3
+    watchdog_interval_s: float = 5.0
+    watchdog_grace_s: float = 5.0
+    reaper_interval_s: float = 60.0
+    empty_lobby_grace_minutes: int = 5
+    lobby_max_age_hours: int = 6
+    recovery_backoff_initial_s: float = 1.0
+    recovery_backoff_max_s: float = 60.0
+
 
 @lru_cache
 def get_settings() -> Settings:
