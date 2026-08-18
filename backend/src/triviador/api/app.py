@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.errors import install_error_handlers
-from triviador.api.http import auth, health, maps
+from triviador.api.http import auth, games, health, maps
 from triviador.api.logging import RequestContextMiddleware, configure_logging
 from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, OriginMiddleware
 from triviador.api.ws import endpoint
@@ -71,6 +71,7 @@ def create_app(
     app.add_middleware(RequestContextMiddleware)
     app.include_router(auth.router)
     app.include_router(maps.router)
+    app.include_router(games.router)
     app.include_router(health.router)
     app.include_router(endpoint.router)
     install_error_handlers(app)

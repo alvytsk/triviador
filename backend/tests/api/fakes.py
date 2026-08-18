@@ -11,7 +11,7 @@ import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
-from triviador.domain.game.rules import GameRules
+from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.services.identity import (
     AuthenticatedPrincipal,
@@ -177,53 +177,57 @@ class FakeInvites:
 
 @dataclass
 class FakeGameCatalog:
-    """`GameCatalogPort`, in memory. No contract test in this suite drives
-    `/api/games` yet (Task 18) — this exists only so `AppDependencies.games`
-    has something to hold that is not the real, database-backed
-    `GameRepository`."""
+    """`GameCatalogPort`. `created` records the keyword arguments verbatim,
+    so a test can assert on `map_sha256` and `preset_id` — the two fields
+    that are wrong-but-plausible if creation is miswired, and that no
+    later request would reveal."""
 
+    created: list[dict[str, object]] = field(default_factory=list)
     summaries: dict[GameId, GameSummary] = field(default_factory=dict)
 
-    async def create(
-        self,
-        *,
-        game_id: GameId,
-        map_id: MapId,
-        rules: GameRules,
-        host_id: PlayerId,
-        map_sha256: str,
-        preset_id: str | None,
-        operation_id: str,
-    ) -> None:
-        self.summaries[game_id] = GameSummary(
-            game_id=game_id,
-            map_id=map_id,
-            host_id=host_id,
+    async def create(self, **kwargs: object) -> None:
+        self.created.append(kwargs)
+        game_id, map_id, host_id = kwargs["game_id"], kwargs["map_id"], kwargs["host_id"]
+        assert isinstance(game_id, str)
+        assert isinstance(map_id, str)
+        assert isinstance(host_id, str)
+        self.summaries[GameId(game_id)] = GameSummary(
+            game_id=GameId(game_id),
+            map_id=MapId(map_id),
+            host_id=PlayerId(host_id),
             status="lobby",
-            max_players=rules.player_count,
+            max_players=3,
             player_count=1,
-            created_at=datetime.now(UTC),
+            created_at=T0,
         )
 
     async def get_summary(self, game_id: GameId) -> GameSummary | None:
         return self.summaries.get(game_id)
 
     async def list_joinable(self) -> tuple[GameSummary, ...]:
-        return tuple(self.summaries.values())
+        return tuple(s for s in self.summaries.values() if s.status == "lobby")
 
 
 @dataclass
 class FakePresets:
-    """`PresetPort`, in memory. Empty by default: nothing in this task's
-    suite resolves a preset id."""
+    """`PresetPort`. Two presets: `default` (three players, `DEFAULT_RULES`)
+    and `two-player`, which exists because a test that wants to assert
+    *authorization* on `start` must not be blocked by
+    `NOT_ENOUGH_PLAYERS`."""
 
-    records: dict[str, PresetRecord] = field(default_factory=dict)
-    default_id: str | None = None
+    presets: dict[str, PresetRecord] = field(
+        default_factory=lambda: {
+            "default": PresetRecord("default", "Default", DEFAULT_RULES),
+            "two-player": PresetRecord(
+                "two-player",
+                "Two",
+                replace(DEFAULT_RULES, player_count=2, claims_by_rank=(2, 1)),
+            ),
+        }
+    )
 
     async def get(self, preset_id: str) -> PresetRecord | None:
-        return self.records.get(preset_id)
+        return self.presets.get(preset_id)
 
     async def get_default(self) -> PresetRecord | None:
-        if self.default_id is None:
-            return None
-        return self.records.get(self.default_id)
+        return self.presets.get("default")

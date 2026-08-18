@@ -17,7 +17,7 @@ from fastapi import Depends, Request
 from starlette.requests import HTTPConnection
 
 from triviador.api.errors import ApiError, ApiErrorCode
-from triviador.api.schemas.ws import LobbyMessage
+from triviador.api.schemas.ws import LobbyGame, LobbyMessage
 from triviador.config import Settings
 from triviador.db.security import token_digest
 from triviador.services.identity import (
@@ -75,9 +75,20 @@ class AppDependencies:
     async def lobby_message(
         self, kind: Literal["lobby.snapshot", "lobby.update"]
     ) -> "LobbyMessage":
-        """Overridden in Task 18, when there is a catalog to read. Until
-        then an empty lobby is honest: nothing can create a game yet."""
-        return LobbyMessage(type=kind, games=())
+        return LobbyMessage(
+            type=kind,
+            games=tuple(
+                LobbyGame(
+                    game_id=str(s.game_id),
+                    map_id=str(s.map_id),
+                    host_id=str(s.host_id),
+                    status=s.status,
+                    player_count=s.player_count,
+                    max_players=s.max_players,
+                )
+                for s in await self.games.list_joinable()
+            ),
+        )
 
 
 def deps_of(request: HTTPConnection) -> AppDependencies:

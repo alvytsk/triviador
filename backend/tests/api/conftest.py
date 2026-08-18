@@ -16,7 +16,9 @@ whatever `test_logging.py`'s own `json_logging` fixture did.
 """
 
 import logging
+import random
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from dataclasses import replace as _replace
 from datetime import timedelta
 from pathlib import Path
@@ -37,19 +39,52 @@ from tests.api.fakes import (
     FakeUsers,
 )
 from tests.conftest import lobby_state
-from tests.runtime.conftest import manager_with_resident
-from tests.runtime.fakes import T0
+from tests.runtime.conftest import StubExecutor, _NoGameQueries, a_manager
+from tests.runtime.fakes import T0, FakeBroadcaster
 from tests.runtime.fakes import FakeClock as RuntimeFakeClock
 from tests.runtime.integration.conftest import write_grid_map
+from tests.runtime.test_commit import FakeUnitOfWork
 from triviador.api.app import create_app
 from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.ws.broadcaster import WsBroadcaster
 from triviador.api.ws.hub import Hub
 from triviador.config import Settings
 from triviador.db.security import token_digest
-from triviador.domain.ids import SessionId, UserId
+from triviador.domain.game.rules import GameRules
+from triviador.domain.game.state import GameState
+from triviador.domain.ids import GameId, SessionId, UserId
 from triviador.maps.registry import MapRegistry
+from triviador.runtime.errors import PermanentReplayFailure
+from triviador.runtime.manager import Live
+from triviador.runtime.materialiser import Materialiser
+from triviador.runtime.runtime import GameRuntime
 from triviador.services.identity import UserRole
+
+
+@dataclass
+class _GenesisLoader:
+    """Stands in for `runtime.loader.GameLoader`, for a game this suite's
+    `FakeGameCatalog` created directly (§6.2's `tx1`) rather than through a
+    real event log the loader could replay.
+
+    Returns the same *shape* one folded `GameCreated` event produces — an
+    empty `Phase.LOBBY` at `seq=1`, under the map and rules `create()` was
+    called with — using the map+rules the catalog recorded. `g1`, the
+    fixture's own pre-seeded live game, never reaches this: it is inserted
+    into the manager's registry directly, and `get()` returns that cached
+    `Live` entry before ever asking a loader.
+    """
+
+    games: FakeGameCatalog
+
+    async def load(self, game_id: GameId) -> GameState:
+        for created in self.games.created:
+            if created["game_id"] == game_id:
+                rules = created["rules"]
+                if not isinstance(rules, GameRules):
+                    raise AssertionError("games.create called without rules")
+                return _replace(lobby_state(players={}, rules=rules), game_id=game_id, seq=1)
+        raise PermanentReplayFailure(f"no such game: {game_id}")
 
 
 @pytest.fixture(autouse=True)
@@ -118,15 +153,41 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         expires_at=clock.now() + timedelta(days=30),
     )
     hub = Hub()
-    # `start=False`: this suite is about the endpoint's own authorization and
-    # frame-to-command translation, not the runtime's execution pipeline
-    # (Task 8/9's job) — a started runtime races its own consumer task
-    # against `queued_commands()`'s peek the moment `serve_connection`
-    # awaits anything (its `finally` always does), and `StubExecutor([])`'s
-    # empty outcome list turns that race into a logged consumer failure.
-    manager, _ = manager_with_resident(
-        lobby_state({"u1": 0, "u2": 1}), RuntimeFakeClock(T0), start=False
+    games = FakeGameCatalog()
+    runtime_clock = RuntimeFakeClock(T0)
+    # A `GameManager` whose `_load` path (Task 18's `/api/games` routes) can
+    # actually commit: `_GenesisLoader` plays the genesis event `tx1` wrote
+    # directly rather than through the (real, database-backed) `GameLoader`,
+    # and `FakeUnitOfWork` + a real `Materialiser` are `tests/runtime/
+    # test_commit.py`'s own in-memory `CommandExecutor` collaborators — the
+    # runtime path is real, only storage is not (Task 18's brief).
+    manager = a_manager(
+        _GenesisLoader(games),
+        uow=FakeUnitOfWork(),
+        materialiser=Materialiser(clock=runtime_clock, rng=random.Random(0)),
+        clock=runtime_clock,
+        games=_NoGameQueries(),
     )
+    # `g1`, inserted directly rather than through the manager's own loader:
+    # a pre-existing live game `u1` is already seated in, for every socket
+    # test that starts from "authenticated participant" and takes away
+    # whatever it is testing. Not started: this suite is about the
+    # endpoint's own authorization and frame-to-command translation, not
+    # the runtime's execution pipeline (Task 8/9's job) — a started runtime
+    # races its own consumer task against `queued_commands()`'s peek the
+    # moment `serve_connection` awaits anything (its `finally` always
+    # does), and `StubExecutor([])`'s empty outcome list turns that race
+    # into a logged consumer failure.
+    resident = GameRuntime(
+        state=lobby_state({"u1": 0, "u2": 1}),
+        executor=StubExecutor([]),
+        clock=runtime_clock,
+        broadcaster=FakeBroadcaster(),
+        on_fault=lambda rt, exc: None,
+        generation=1,
+        rng=random.Random(0),
+    )
+    manager._entries[resident.game_id] = Live(resident)
     return AppDependencies(
         settings=settings,
         clock=clock,
@@ -140,7 +201,7 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         broadcaster=WsBroadcaster(hub, media_base=settings.media_public_base),
         manager=manager,
         readiness=Readiness(migrations_current=True, recovery_complete=True),
-        games=FakeGameCatalog(),
+        games=games,
         maps=MapRegistry(root=map_root),
         presets=FakePresets(),
     )
@@ -167,3 +228,52 @@ async def signed_in(
     docstring: `"tok"` resolves to `u1` via `FakeSessions`)."""
     client.cookies.set(settings.session_cookie_name, "tok")
     yield client
+
+
+async def _second_client(
+    deps: AppDependencies,
+    settings: Settings,
+    *,
+    user_id: str,
+    token: str,
+) -> AsyncIterator[httpx.AsyncClient]:
+    """A second `httpx.AsyncClient` over the same `deps` (and so the same
+    app, manager and hub) carrying a *different* user's session cookie —
+    the shape `other_client` and `stranger_client` share."""
+    await deps.users.create(
+        user_id=UserId(user_id),
+        username=user_id,
+        password_hash=deps.hasher.hash("correct horse"),
+        display_name=user_id.upper(),
+        role=UserRole.PLAYER,
+    )
+    await deps.sessions.create(
+        session_id=SessionId(f"s-{user_id}"),
+        user_id=UserId(user_id),
+        token_hash=token_digest(token),
+        expires_at=deps.clock.now() + timedelta(days=30),
+    )
+    transport = httpx.ASGITransport(app=create_app(deps), raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", headers={"Origin": ORIGIN}
+    ) as second:
+        second.cookies.set(settings.session_cookie_name, token)
+        yield second
+
+
+@pytest_asyncio.fixture
+async def other_client(
+    deps: AppDependencies, settings: Settings
+) -> AsyncIterator[httpx.AsyncClient]:
+    """A second signed-in user, `u2`, over the same `deps` as `client`."""
+    async for c in _second_client(deps, settings, user_id="u2", token="tok2"):
+        yield c
+
+
+@pytest_asyncio.fixture
+async def stranger_client(
+    deps: AppDependencies, settings: Settings
+) -> AsyncIterator[httpx.AsyncClient]:
+    """A third signed-in user, `u3`, who never joins anything."""
+    async for c in _second_client(deps, settings, user_id="u3", token="tok3"):
+        yield c

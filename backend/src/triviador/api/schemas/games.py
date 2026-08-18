@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from triviador.domain.game.state import AcquisitionKind, Phase, TerritoryKind
 from triviador.domain.questions.types import Difficulty, QuestionKind, QuestionSnapshot
 from triviador.services.identity import UserRole
+from triviador.services.ports import GameSummary
 
 
 def media_url(media_base: str, asset_id: str | None) -> str | None:
@@ -265,3 +266,34 @@ class GameSnapshot(BaseModel):
 
     seq: int
     state: ClientGameState
+
+
+class CreateGameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    map_id: str = Field(min_length=1, max_length=64)
+    # Optional: absent means the default preset (§7's "never zero" is a
+    # migration, so absent is the ordinary case, not the fallback).
+    preset_id: str | None = None
+
+
+class LobbyGameSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    game_id: str
+    map_id: str
+    host_id: str
+    status: str
+    player_count: int
+    max_players: int
+
+    @classmethod
+    def of(cls, summary: GameSummary) -> "LobbyGameSummary":
+        return cls(
+            game_id=str(summary.game_id),
+            map_id=str(summary.map_id),
+            host_id=str(summary.host_id),
+            status=summary.status,
+            player_count=summary.player_count,
+            max_players=summary.max_players,
+        )
