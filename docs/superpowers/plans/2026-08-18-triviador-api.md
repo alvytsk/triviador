@@ -6370,20 +6370,31 @@ class Connection:
     def close(self, code: int) -> None:
         """First code wins, like an origin's first outcome.
 
-        The queue is full by definition in the 4408 case, so it is drained
-        before the sentinel is queued — otherwise the close itself would
-        raise `QueueFull` and the connection would stay open forever with
-        nobody reading it.
+        The sentinel is enqueued the ordinary way first, and the queue is
+        drained **only** if that fails. Draining unconditionally would be
+        simpler and is wrong: a graceful close would then discard whatever
+        was already queued — a `hello` a short-lived connection never got
+        to send, say — and the caller would have to reach for a scheduling
+        yield to get it delivered, which is a guarantee no amount of
+        `sleep(0)` actually provides once the socket suspends mid-write.
+
+        The 4408 path still reaches the drain by definition: the queue
+        being full is *why* we are closing, so `put_nowait` raises and the
+        sentinel must displace something, or the connection stays open
+        forever with nobody reading it.
         """
         if self.close_code is not None:
             return
         self.close_code = code
-        while True:
-            try:
-                self._outbound.get_nowait()
-            except QueueEmpty:
-                break
-        self._outbound.put_nowait(_Close(code))
+        try:
+            self._outbound.put_nowait(_Close(code))
+        except QueueFull:
+            while True:
+                try:
+                    self._outbound.get_nowait()
+                except QueueEmpty:
+                    break
+            self._outbound.put_nowait(_Close(code))
 
     async def next_outbound(self) -> "ServerMessage | _Close":
         return await self._outbound.get()
@@ -7368,6 +7379,11 @@ async def serve_connection(
             t.removeprefix("game:") for t in connection.topics if t.startswith("game:")
         ]
         deps.hub.remove(connection)
+        # One close path, unconditionally. Closing a socket the client has
+        # already hung up on is safe: Starlette raises, and `run_sender`'s
+        # own `except Exception` logs it and ends. A special case here for
+        # "the client is gone" would have to cancel the sender, and a
+        # cancel can land inside an in-flight write.
         connection.close(connection.close_code or 1000)
         for game_id in subscribed_games:
             # After removal, so the departing tab is already absent from the
