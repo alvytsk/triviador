@@ -20,14 +20,29 @@ depends on client readiness), so the preset sets it to the 1 s floor. Spec
 
 import asyncio
 import os
+import warnings
 from collections.abc import Coroutine, Iterator
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from fastapi.testclient import TestClient
 from sqlalchemy import text
+
+# `fastapi.testclient` re-exports Starlette's `TestClient`, which warns
+# once at import time that httpx (rather than httpx2) is in use. That
+# warning fires from this, the first import of `starlette.testclient`
+# anywhere in this suite — collection time, before any per-test
+# `filterwarnings` marker is active — so it is suppressed narrowly, right
+# here, rather than through a project-wide ini setting or a blanket
+# ignore. Nothing else in this repository imports `fastapi.testclient`
+# (grep confirms it), so this is the one place it can fire.
+with warnings.catch_warnings():
+    warnings.filterwarnings(
+        "ignore",
+        message=r"Using `httpx` with `starlette\.testclient` is deprecated",
+    )
+    from fastapi.testclient import TestClient
 
 from tests.runtime.integration.conftest import write_grid_map
 from triviador.config import Settings

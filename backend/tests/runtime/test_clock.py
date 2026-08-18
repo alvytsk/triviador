@@ -5,6 +5,8 @@ due one asleep, a dozen downstream tests become quietly meaningless."""
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from tests.runtime.fakes import FakeClock
 from triviador.runtime.clock import SystemClock
 
@@ -27,22 +29,63 @@ async def test_system_clock_sleep_until_a_past_instant_returns_immediately() -> 
 
 
 async def test_system_clock_sleep_until_never_returns_early() -> None:
-    """R-24: `asyncio.sleep` schedules on the loop's monotonic clock while
-    the delay handed to it is computed from the wall clock — those two
-    clocks can drift, and a single sleep can return a few microseconds
-    *before* `now()` reaches `when`. That is not harmless downstream: a
-    deadline task that wakes early submits an `ExpireDeadline` the reducer
-    correctly ignores as premature, but the watchdog's fence latches
-    anyway and the game stalls on that window forever.
-
-    A handful of milliseconds is enough to give any early-wake race a
-    chance to show up, and short enough that this stays fast and
-    deterministic rather than a real wall-clock wait."""
+    """R-24, documentation-level: repeatedly race a short real sleep and
+    check the outcome from outside. This is **not** the regression test —
+    the reviewer reproduced the pre-fix single-`asyncio.sleep` formula
+    standalone and ran this exact external-check pattern against it
+    34,000 times without a single failure, because real wall/monotonic
+    clock drift is too rare to hit by chance in a test process. Kept
+    anyway because it documents the intended behaviour under real
+    scheduling; `test_system_clock_sleep_until_survives_a_monotonic_wall_clock_disagreement`
+    below is the one that actually discriminates the fix from the bug."""
     clock = SystemClock()
     for _ in range(200):
         when = clock.now() + timedelta(milliseconds=1)
         await clock.sleep_until(when)
         assert clock.now() >= when
+
+
+async def test_system_clock_sleep_until_survives_a_monotonic_wall_clock_disagreement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R-24's actual regression coverage. The bug was a *clock
+    disagreement*: `asyncio.sleep` schedules on the loop's monotonic
+    clock while `sleep_until`'s delay is computed from the wall clock, so
+    a sleep can resolve before wall time has genuinely reached `when`.
+    Rather than hope to observe that disagreement by luck (the test
+    above does, and doesn't), inject it directly: a wall clock that
+    advances by *less* than the delay `asyncio.sleep` is asked to wait
+    for on its first call, standing in for a monotonic wake landing
+    early. `sleep_until`'s loop must sleep again rather than trust that
+    first wake; a single-sleep formula cannot, and returns early instead
+    — proved by deliberately reverting to it (see the task report).
+    """
+    calls = 0
+
+    class DriftingClock(SystemClock):
+        wall: datetime = T0
+
+        def now(self) -> datetime:
+            return self.wall
+
+    clock = DriftingClock()
+
+    async def fake_sleep(delay: float) -> None:
+        nonlocal calls
+        calls += 1
+        # The first "wake" lands early relative to wall time: only half
+        # of the requested delay actually elapses on the wall clock.
+        # Every later call is honest, so a correct loop still terminates.
+        advance = delay / 2 if calls == 1 else delay
+        clock.wall = clock.wall + timedelta(seconds=advance)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    when = clock.wall + timedelta(seconds=1)
+    await clock.sleep_until(when)
+
+    assert clock.now() >= when
+    assert calls >= 2, "a single sleep cannot have reached `when` after an early wake"
 
 
 async def test_fake_clock_does_not_move_on_its_own() -> None:

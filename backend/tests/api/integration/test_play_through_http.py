@@ -200,6 +200,12 @@ def _play_to_finish(
 
         if kind in QUESTION_TURN_KINDS:
             kinds_seen.add(turn["question"]["kind"])
+            # `your_answer` reflects the last update *this* socket has
+            # applied, which can lag a player's own already-submitted
+            # answer landing in a later batch — that can send the same
+            # answer twice. Harmless only because `_record_answer`
+            # (reducer.py) treats an identical resubmission as a no-op
+            # rather than `ALREADY_ANSWERED`; this loop relies on that.
             if alice_update["state"]["turn"]["your_answer"] is None:
                 answer(alice_ws, game_id, turn, _command_id())
             if bob_update["state"]["turn"]["your_answer"] is None:
@@ -244,9 +250,18 @@ def test_two_players_play_a_whole_game(client: TestClient) -> None:
     assert joined.status_code == 200, joined.text
     assert len(joined.json()["state"]["players"]) == 2
 
-    with client.websocket_connect("/ws", cookies=bob_cookies) as bob_ws:
+    # `websocket_connect` uses the client's own persistent cookie jar
+    # (`client.cookies`), the same as any other request through this
+    # client — passing `cookies=` per call is redundant with that jar and
+    # is what httpx's `DeprecationWarning` about per-request cookies is
+    # about. `client.cookies` already holds bob's session cookie here
+    # (nothing has touched it since he signed in and joined above); the
+    # explicit `.update()` calls below make each socket's identity
+    # unambiguous at the point it opens, matching Alice's below.
+    client.cookies.update(bob_cookies)
+    with client.websocket_connect("/ws") as bob_ws:
         client.cookies.update(alice_cookies)
-        with client.websocket_connect("/ws", cookies=alice_cookies) as alice_ws:
+        with client.websocket_connect("/ws") as alice_ws:
             for socket in (alice_ws, bob_ws):
                 assert json.loads(socket.receive_text())["type"] == "hello"
                 socket.send_json({"type": "subscribe", "topic": f"game:{game_id}"})
