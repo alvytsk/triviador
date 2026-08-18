@@ -1,0 +1,37 @@
+{
+  "api_error_code": [
+    "credentials_invalid",
+    "database_unavailable",
+    "forbidden",
+    "game_recovering",
+    "game_unrecoverable",
+    "internal_error",
+    "invite_invalid",
+    "map_unknown",
+    "method_not_allowed",
+    "no_default_preset",
+    "not_found",
+    "payload_too_large",
+    "preset_unknown",
+    "server_busy",
+    "server_restarting",
+    "unauthenticated",
+    "username_taken",
+    "validation_failed"
+  ],
+  "reject_code": [
+    "already_answered",
+    "already_joined",
+    "answer_kind_mismatch",
+    "game_full",
+    "not_a_participant",
+    "not_adjacent",
+    "not_enough_players",
+    "not_your_turn",
+    "own_territory",
+    "question_pool_insufficient",
+    "region_not_free",
+    "unknown_region",
+    "wrong_turn_state"
+  ]
+}

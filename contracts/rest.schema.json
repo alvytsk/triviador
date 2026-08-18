@@ -1,0 +1,1283 @@
+{
+  "$defs": {
+    "AcquisitionKind": {
+      "enum": [
+        "claimed",
+        "conquest",
+        "base"
+      ],
+      "title": "AcquisitionKind",
+      "type": "string"
+    },
+    "ApiErrorCode": {
+      "description": "Every value here and every value in `RejectCode` share one namespace.\nThe four `RuntimeCode` values are repeated verbatim rather than\nimported, so this enum is the single closed list codegen exports; a\ntest asserts the two sets agree.",
+      "enum": [
+        "validation_failed",
+        "unauthenticated",
+        "forbidden",
+        "not_found",
+        "method_not_allowed",
+        "payload_too_large",
+        "credentials_invalid",
+        "invite_invalid",
+        "username_taken",
+        "map_unknown",
+        "preset_unknown",
+        "no_default_preset",
+        "server_busy",
+        "server_restarting",
+        "game_recovering",
+        "game_unrecoverable",
+        "database_unavailable",
+        "internal_error"
+      ],
+      "title": "ApiErrorCode",
+      "type": "string"
+    },
+    "ClientChoice": {
+      "additionalProperties": false,
+      "description": "No `is_correct`. \u00a712.3 rejects byte-scanning as the test for this,\nbecause the correct answer's *text* is legitimate content \u2014 so the\nguarantee has to be that the flag has nowhere to live.",
+      "properties": {
+        "idx": {
+          "title": "Idx",
+          "type": "integer"
+        },
+        "media_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Url"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idx",
+        "text"
+      ],
+      "title": "ClientChoice",
+      "type": "object"
+    },
+    "ClientGameState": {
+      "additionalProperties": false,
+      "properties": {
+        "game_id": {
+          "title": "Game Id",
+          "type": "string"
+        },
+        "map_id": {
+          "title": "Map Id",
+          "type": "string"
+        },
+        "media_prefetch": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Media Prefetch",
+          "type": "array"
+        },
+        "phase": {
+          "$ref": "#/$defs/Phase"
+        },
+        "players": {
+          "items": {
+            "$ref": "#/$defs/ClientPlayer"
+          },
+          "title": "Players",
+          "type": "array"
+        },
+        "round_no": {
+          "title": "Round No",
+          "type": "integer"
+        },
+        "rules": {
+          "$ref": "#/$defs/ClientRules"
+        },
+        "territories": {
+          "items": {
+            "$ref": "#/$defs/ClientTerritory"
+          },
+          "title": "Territories",
+          "type": "array"
+        },
+        "turn": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "battle_duel": "#/$defs/DuelTurn",
+                  "battle_target_select": "#/$defs/TargetSelectTurn",
+                  "expansion_picking": "#/$defs/PickingTurn",
+                  "expansion_question": "#/$defs/QuestionTurn",
+                  "final_tiebreak": "#/$defs/FinalTurn",
+                  "media_warmup": "#/$defs/WarmupTurn",
+                  "neutral_challenge": "#/$defs/NeutralTurn"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/WarmupTurn"
+                },
+                {
+                  "$ref": "#/$defs/QuestionTurn"
+                },
+                {
+                  "$ref": "#/$defs/PickingTurn"
+                },
+                {
+                  "$ref": "#/$defs/TargetSelectTurn"
+                },
+                {
+                  "$ref": "#/$defs/DuelTurn"
+                },
+                {
+                  "$ref": "#/$defs/NeutralTurn"
+                },
+                {
+                  "$ref": "#/$defs/FinalTurn"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Turn"
+        },
+        "turn_order": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Turn Order",
+          "type": "array"
+        },
+        "winner_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Winner Id"
+        },
+        "you": {
+          "$ref": "#/$defs/ClientYou"
+        }
+      },
+      "required": [
+        "game_id",
+        "map_id",
+        "phase",
+        "round_no",
+        "rules",
+        "turn_order",
+        "players",
+        "territories",
+        "turn",
+        "winner_id",
+        "media_prefetch",
+        "you"
+      ],
+      "title": "ClientGameState",
+      "type": "object"
+    },
+    "ClientPlayer": {
+      "additionalProperties": false,
+      "properties": {
+        "base_region": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Base Region"
+        },
+        "bonus_score": {
+          "title": "Bonus Score",
+          "type": "integer"
+        },
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "is_eliminated": {
+          "title": "Is Eliminated",
+          "type": "boolean"
+        },
+        "player_id": {
+          "title": "Player Id",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "integer"
+        },
+        "seat": {
+          "title": "Seat",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "player_id",
+        "display_name",
+        "seat",
+        "score",
+        "bonus_score",
+        "base_region",
+        "is_eliminated"
+      ],
+      "title": "ClientPlayer",
+      "type": "object"
+    },
+    "ClientQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "title": "Category",
+          "type": "string"
+        },
+        "choices": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ClientChoice"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Choices"
+        },
+        "difficulty": {
+          "$ref": "#/$defs/Difficulty"
+        },
+        "kind": {
+          "$ref": "#/$defs/QuestionKind"
+        },
+        "media_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Media Url"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "question_id": {
+          "title": "Question Id",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "question_id",
+        "kind",
+        "prompt",
+        "category",
+        "difficulty",
+        "choices",
+        "unit",
+        "media_url"
+      ],
+      "title": "ClientQuestion",
+      "type": "object"
+    },
+    "ClientRules": {
+      "additionalProperties": false,
+      "description": "`GameRules`, verbatim. Public by construction: it is frozen into the\n`GameCreated` event at creation and every player is playing under it.",
+      "properties": {
+        "answer_timeout_ms": {
+          "title": "Answer Timeout Ms",
+          "type": "integer"
+        },
+        "base_hp": {
+          "title": "Base Hp",
+          "type": "integer"
+        },
+        "battle_rounds": {
+          "title": "Battle Rounds",
+          "type": "integer"
+        },
+        "claims_by_rank": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Claims By Rank",
+          "type": "array"
+        },
+        "expansion_rounds": {
+          "title": "Expansion Rounds",
+          "type": "integer"
+        },
+        "pick_timeout_ms": {
+          "title": "Pick Timeout Ms",
+          "type": "integer"
+        },
+        "player_count": {
+          "title": "Player Count",
+          "type": "integer"
+        },
+        "pts_base": {
+          "title": "Pts Base",
+          "type": "integer"
+        },
+        "pts_conquered": {
+          "title": "Pts Conquered",
+          "type": "integer"
+        },
+        "pts_defense": {
+          "title": "Pts Defense",
+          "type": "integer"
+        },
+        "pts_territory": {
+          "title": "Pts Territory",
+          "type": "integer"
+        },
+        "warmup_ms": {
+          "title": "Warmup Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "player_count",
+        "expansion_rounds",
+        "battle_rounds",
+        "base_hp",
+        "answer_timeout_ms",
+        "pick_timeout_ms",
+        "warmup_ms",
+        "claims_by_rank",
+        "pts_base",
+        "pts_territory",
+        "pts_conquered",
+        "pts_defense"
+      ],
+      "title": "ClientRules",
+      "type": "object"
+    },
+    "ClientTerritory": {
+      "additionalProperties": false,
+      "properties": {
+        "acquisition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AcquisitionKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "base_hp": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Base Hp"
+        },
+        "base_owner_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Base Owner Id"
+        },
+        "kind": {
+          "$ref": "#/$defs/TerritoryKind"
+        },
+        "owner_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Owner Id"
+        },
+        "region_id": {
+          "title": "Region Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region_id",
+        "owner_id",
+        "kind",
+        "base_owner_id",
+        "base_hp",
+        "acquisition"
+      ],
+      "title": "ClientTerritory",
+      "type": "object"
+    },
+    "ClientYou": {
+      "additionalProperties": false,
+      "description": "Who the recipient is *in this game*. Present so the client never has\nto correlate its `/api/auth/me` id against the player list itself and\nget it wrong for a spectating admin.",
+      "properties": {
+        "player_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Player Id"
+        },
+        "role": {
+          "$ref": "#/$defs/UserRole"
+        }
+      },
+      "required": [
+        "player_id",
+        "role"
+      ],
+      "title": "ClientYou",
+      "type": "object"
+    },
+    "CreateGameRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "map_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Map Id",
+          "type": "string"
+        },
+        "preset_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preset Id"
+        }
+      },
+      "required": [
+        "map_id"
+      ],
+      "title": "CreateGameRequest",
+      "type": "object"
+    },
+    "Difficulty": {
+      "enum": [
+        "easy",
+        "medium",
+        "hard"
+      ],
+      "title": "Difficulty",
+      "type": "string"
+    },
+    "DuelTurn": {
+      "additionalProperties": false,
+      "description": "`BattleDuel` and `BattleTiebreak` share this shape; `tiebreak`\ndistinguishes them. Two models would be two identical field lists and\ntwo Zod schemas for one screen.",
+      "properties": {
+        "answered": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Answered",
+          "type": "array"
+        },
+        "attacker_id": {
+          "title": "Attacker Id",
+          "type": "string"
+        },
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "deadline_id": {
+          "title": "Deadline Id",
+          "type": "integer"
+        },
+        "defender_id": {
+          "title": "Defender Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "battle_duel",
+          "default": "battle_duel",
+          "title": "Kind",
+          "type": "string"
+        },
+        "question": {
+          "$ref": "#/$defs/ClientQuestion"
+        },
+        "region_id": {
+          "title": "Region Id",
+          "type": "string"
+        },
+        "tiebreak": {
+          "title": "Tiebreak",
+          "type": "boolean"
+        },
+        "your_answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubmittedValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "your_options": {
+          "$ref": "#/$defs/YourOptions",
+          "default": {
+            "attack": [],
+            "pick": []
+          }
+        }
+      },
+      "required": [
+        "deadline_id",
+        "deadline_at",
+        "tiebreak",
+        "attacker_id",
+        "defender_id",
+        "region_id",
+        "question",
+        "answered"
+      ],
+      "title": "DuelTurn",
+      "type": "object"
+    },
+    "ErrorEnvelope": {
+      "additionalProperties": false,
+      "description": "`code` is a closed union of two disjoint enums.\n\n`ApiErrorCode` is \"the server could not, or would not, do this\";\n`RejectCode` is \"the domain refused this command\". Keeping both in one\nfield means a client switches once. `test_envelope.py` asserts the two\nvalue sets never overlap.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ApiErrorCode"
+            },
+            {
+              "$ref": "#/$defs/RejectCode"
+            }
+          ],
+          "title": "Code"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ErrorEnvelope",
+      "type": "object"
+    },
+    "FinalTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "answered": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Answered",
+          "type": "array"
+        },
+        "contenders": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Contenders",
+          "type": "array"
+        },
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "deadline_id": {
+          "title": "Deadline Id",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "final_tiebreak",
+          "default": "final_tiebreak",
+          "title": "Kind",
+          "type": "string"
+        },
+        "question": {
+          "$ref": "#/$defs/ClientQuestion"
+        },
+        "your_answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubmittedValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "your_options": {
+          "$ref": "#/$defs/YourOptions",
+          "default": {
+            "attack": [],
+            "pick": []
+          }
+        }
+      },
+      "required": [
+        "deadline_id",
+        "deadline_at",
+        "contenders",
+        "question",
+        "answered"
+      ],
+      "title": "FinalTurn",
+      "type": "object"
+    },
+    "GameSnapshot": {
+      "additionalProperties": false,
+      "description": "One projection, two transports (\u00a79.3): the body of\n`GET /api/games/{id}` and the payload of `game.snapshot`.",
+      "properties": {
+        "seq": {
+          "title": "Seq",
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/ClientGameState"
+        }
+      },
+      "required": [
+        "seq",
+        "state"
+      ],
+      "title": "GameSnapshot",
+      "type": "object"
+    },
+    "LobbyGameSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "game_id": {
+          "title": "Game Id",
+          "type": "string"
+        },
+        "host_id": {
+          "title": "Host Id",
+          "type": "string"
+        },
+        "map_id": {
+          "title": "Map Id",
+          "type": "string"
+        },
+        "max_players": {
+          "title": "Max Players",
+          "type": "integer"
+        },
+        "player_count": {
+          "title": "Player Count",
+          "type": "integer"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "game_id",
+        "map_id",
+        "host_id",
+        "status",
+        "player_count",
+        "max_players"
+      ],
+      "title": "LobbyGameSummary",
+      "type": "object"
+    },
+    "LoginRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "password": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Password",
+          "type": "string"
+        },
+        "username": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "username",
+        "password"
+      ],
+      "title": "LoginRequest",
+      "type": "object"
+    },
+    "MapDetail": {
+      "additionalProperties": false,
+      "description": "No adjacency field, for the same structural reason `ClientQuestion`\nhas no `is_correct`: a field that does not exist cannot be serialized\nby accident.",
+      "properties": {
+        "map_id": {
+          "title": "Map Id",
+          "type": "string"
+        },
+        "regions": {
+          "items": {
+            "$ref": "#/$defs/MapRegion"
+          },
+          "title": "Regions",
+          "type": "array"
+        },
+        "svg_url": {
+          "title": "Svg Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "map_id",
+        "svg_url",
+        "regions"
+      ],
+      "title": "MapDetail",
+      "type": "object"
+    },
+    "MapRegion": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "region_id": {
+          "title": "Region Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "region_id",
+        "display_name"
+      ],
+      "title": "MapRegion",
+      "type": "object"
+    },
+    "MapSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "map_id": {
+          "title": "Map Id",
+          "type": "string"
+        },
+        "region_count": {
+          "title": "Region Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "map_id",
+        "region_count"
+      ],
+      "title": "MapSummary",
+      "type": "object"
+    },
+    "Me": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/UserRole"
+        },
+        "user_id": {
+          "title": "User Id",
+          "type": "string"
+        },
+        "username": {
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "user_id",
+        "username",
+        "display_name",
+        "role"
+      ],
+      "title": "Me",
+      "type": "object"
+    },
+    "NeutralTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "answered": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Answered",
+          "type": "array"
+        },
+        "attacker_id": {
+          "title": "Attacker Id",
+          "type": "string"
+        },
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "deadline_id": {
+          "title": "Deadline Id",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "neutral_challenge",
+          "default": "neutral_challenge",
+          "title": "Kind",
+          "type": "string"
+        },
+        "question": {
+          "$ref": "#/$defs/ClientQuestion"
+        },
+        "region_id": {
+          "title": "Region Id",
+          "type": "string"
+        },
+        "your_answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubmittedValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "your_options": {
+          "$ref": "#/$defs/YourOptions",
+          "default": {
+            "attack": [],
+            "pick": []
+          }
+        }
+      },
+      "required": [
+        "deadline_id",
+        "deadline_at",
+        "attacker_id",
+        "region_id",
+        "question",
+        "answered"
+      ],
+      "title": "NeutralTurn",
+      "type": "object"
+    },
+    "Phase": {
+      "enum": [
+        "lobby",
+        "expansion",
+        "battle",
+        "finished",
+        "aborted"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "PickingTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "current_picker": {
+          "title": "Current Picker",
+          "type": "string"
+        },
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "deadline_id": {
+          "title": "Deadline Id",
+          "type": "integer"
+        },
+        "grants_remaining": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Grants Remaining",
+          "type": "object"
+        },
+        "kind": {
+          "const": "expansion_picking",
+          "default": "expansion_picking",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pick_order": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Pick Order",
+          "type": "array"
+        },
+        "your_options": {
+          "$ref": "#/$defs/YourOptions",
+          "default": {
+            "attack": [],
+            "pick": []
+          }
+        }
+      },
+      "required": [
+        "deadline_id",
+        "deadline_at",
+        "pick_order",
+        "grants_remaining",
+        "current_picker"
+      ],
+      "title": "PickingTurn",
+      "type": "object"
+    },
+    "QuestionKind": {
+      "enum": [
+        "multiple_choice",
+        "numeric"
+      ],
+      "title": "QuestionKind",
+      "type": "string"
+    },
+    "QuestionTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "answered": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Answered",
+          "type": "array"
+        },
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "deadline_id": {
+          "title": "Deadline Id",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "expansion_question",
+          "default": "expansion_question",
+          "title": "Kind",
+          "type": "string"
+        },
+        "question": {
+          "$ref": "#/$defs/ClientQuestion"
+        },
+        "your_answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubmittedValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "your_options": {
+          "$ref": "#/$defs/YourOptions",
+          "default": {
+            "attack": [],
+            "pick": []
+          }
+        }
+      },
+      "required": [
+        "deadline_id",
+        "deadline_at",
+        "question",
+        "answered"
+      ],
+      "title": "QuestionTurn",
+      "type": "object"
+    },
+    "RedeemRequest": {
+      "additionalProperties": false,
+      "description": "`extra=\"forbid\"` is load-bearing rather than tidy: the field this\nbody must never be able to carry is `role`.",
+      "properties": {
+        "code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "display_name": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Display Name",
+          "type": "string"
+        },
+        "password": {
+          "maxLength": 256,
+          "minLength": 8,
+          "title": "Password",
+          "type": "string"
+        },
+        "username": {
+          "maxLength": 32,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "username",
+        "password",
+        "display_name"
+      ],
+      "title": "RedeemRequest",
+      "type": "object"
+    },
+    "RejectCode": {
+      "enum": [
+        "not_a_participant",
+        "wrong_turn_state",
+        "not_your_turn",
+        "already_answered",
+        "already_joined",
+        "game_full",
+        "not_enough_players",
+        "question_pool_insufficient",
+        "unknown_region",
+        "region_not_free",
+        "own_territory",
+        "not_adjacent",
+        "answer_kind_mismatch"
+      ],
+      "title": "RejectCode",
+      "type": "string"
+    },
+    "SubmittedValue": {
+      "additionalProperties": false,
+      "description": "A player's own answer, echoed back to its author only.\n\n`value` is a string even for a numeric answer: JSON has one number type\nand it is a float, so `Decimal(\"0.1\")` round-trips through it wrong.\nEvery numeric value on this API is a decimal string for that reason.",
+      "properties": {
+        "idx": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idx"
+        },
+        "kind": {
+          "enum": [
+            "choice",
+            "numeric"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "SubmittedValue",
+      "type": "object"
+    },
+    "TargetSelectTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "attacker_id": {
+          "title": "Attacker Id",
+          "type": "string"
+        },
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "deadline_id": {
+          "title": "Deadline Id",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "battle_target_select",
+          "default": "battle_target_select",
+          "title": "Kind",
+          "type": "string"
+        },
+        "your_options": {
+          "$ref": "#/$defs/YourOptions",
+          "default": {
+            "attack": [],
+            "pick": []
+          }
+        }
+      },
+      "required": [
+        "deadline_id",
+        "deadline_at",
+        "attacker_id"
+      ],
+      "title": "TargetSelectTurn",
+      "type": "object"
+    },
+    "TerritoryKind": {
+      "enum": [
+        "normal",
+        "base"
+      ],
+      "title": "TerritoryKind",
+      "type": "string"
+    },
+    "UserRole": {
+      "enum": [
+        "player",
+        "admin"
+      ],
+      "title": "UserRole",
+      "type": "string"
+    },
+    "WarmupTurn": {
+      "additionalProperties": false,
+      "properties": {
+        "deadline_at": {
+          "format": "date-time",
+          "title": "Deadline At",
+          "type": "string"
+        },
+        "deadline_id": {
+          "title": "Deadline Id",
+          "type": "integer"
+        },
+        "kind": {
+          "const": "media_warmup",
+          "default": "media_warmup",
+          "title": "Kind",
+          "type": "string"
+        },
+        "your_options": {
+          "$ref": "#/$defs/YourOptions",
+          "default": {
+            "attack": [],
+            "pick": []
+          }
+        }
+      },
+      "required": [
+        "deadline_id",
+        "deadline_at"
+      ],
+      "title": "WarmupTurn",
+      "type": "object"
+    },
+    "YourOptions": {
+      "additionalProperties": false,
+      "description": "\u00a78.8's `your_options`, per viewer. Both lists empty is the normal\ncase \u2014 it is not this viewer's move.",
+      "properties": {
+        "attack": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Attack",
+          "type": "array"
+        },
+        "pick": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Pick",
+          "type": "array"
+        }
+      },
+      "title": "YourOptions",
+      "type": "object"
+    }
+  },
+  "title": "TriviadorRest"
+}

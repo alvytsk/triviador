@@ -10,8 +10,9 @@ collaborators `api/ws/endpoint.py` drives. Later tasks add `games`,
 `maps`, `presets` the same way, as the things that fill them exist.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import Depends, Request
 from starlette.requests import HTTPConnection
@@ -33,6 +34,27 @@ if TYPE_CHECKING:
     from triviador.api.ws.broadcaster import WsBroadcaster
     from triviador.api.ws.hub import Hub
     from triviador.runtime.manager import GameManager
+
+
+class _Unusable:
+    """A structural stand-in for every port `AppDependencies` declares as a
+    `Protocol`. `__getattr__` hands back a callable for any name — `ping`,
+    `get_by_username`, `find_unfinished`, whichever attribute a Protocol
+    method the caller reaches for — and that callable raises the moment it
+    is actually invoked, rather than returning `None` or silently
+    no-op'ing. Existing only for `AppDependencies.placeholder()` (below):
+    enough to satisfy every port's shape so `create_app` can build its
+    router table, and nothing that could pass for a real answer.
+    """
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        def _raise(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError(
+                f"AppDependencies.placeholder() has no working {name}() — "
+                "export_contracts builds an app but touches no database"
+            )
+
+        return _raise
 
 
 @dataclass
@@ -88,6 +110,58 @@ class AppDependencies:
                 )
                 for s in await self.games.list_joinable()
             ),
+        )
+
+    @classmethod
+    def placeholder(cls) -> "AppDependencies":
+        """Enough to build the router table and nothing more.
+
+        `export_contracts` needs an app but no database (§7): `create_app`
+        only wires routers and middleware around a dependency bundle — it
+        never calls a port method — so this classmethod hands it one built
+        from `_Unusable()` wherever a field is a `Protocol`, plus the
+        handful of concrete collaborators (`Hub`, `WsBroadcaster`,
+        `GameManager`, `Materialiser`) that construct without touching a
+        database themselves. Kept out of `build_dependencies`'s path on
+        purpose: that function builds an `AsyncEngine`; this one never does.
+        """
+        import random
+
+        from triviador.api.ws.broadcaster import WsBroadcaster
+        from triviador.api.ws.hub import Hub
+        from triviador.runtime.manager import GameManager
+        from triviador.runtime.materialiser import Materialiser
+
+        settings = Settings(database_url="postgresql+asyncpg://placeholder/placeholder")
+        hub = Hub()
+        broadcaster = WsBroadcaster(hub, media_base=settings.media_public_base)
+        unusable = _Unusable()
+        manager = GameManager(
+            loader=unusable,
+            uow=unusable,
+            materialiser=Materialiser(clock=unusable, rng=random.Random()),
+            clock=unusable,
+            broadcaster=broadcaster,
+            subscribers=broadcaster,
+            games=unusable,
+            rng=random.Random(),
+        )
+        return cls(
+            settings=settings,
+            clock=unusable,
+            hasher=unusable,
+            dummy_password_hash="",
+            users=unusable,
+            sessions=unusable,
+            invites=unusable,
+            database=unusable,
+            hub=hub,
+            broadcaster=broadcaster,
+            manager=manager,
+            readiness=Readiness(),
+            games=unusable,
+            maps=unusable,
+            presets=unusable,
         )
 
 
