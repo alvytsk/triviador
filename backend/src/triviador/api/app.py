@@ -13,11 +13,26 @@ from triviador.api.deps import AppDependencies
 from triviador.api.errors import install_error_handlers
 from triviador.api.http import auth
 from triviador.api.logging import RequestContextMiddleware
+from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, OriginMiddleware
 
 
 def create_app(deps: AppDependencies) -> FastAPI:
     app = FastAPI(title="Triviador", version="1", docs_url=None, redoc_url=None)
     app.state.deps = deps
+    # Starlette applies middleware in **reverse** registration order: the
+    # last one added is the outermost. So this list reads inside-out, and
+    # the effective order is
+    #
+    #     RequestContext → Host → BodyLimit → Origin → routes
+    #
+    # Request-id outermost, so a refusal from any of the other three still
+    # carries an id and is still logged. Host next, because a request for
+    # the wrong host is not ours to reason about. Body limit before origin,
+    # so an oversized body is refused without being read whatever its
+    # origin.
+    app.add_middleware(OriginMiddleware, allowed_origins=deps.settings.allowed_origins)
+    app.add_middleware(BodyLimitMiddleware, max_bytes=deps.settings.max_body_bytes)
+    app.add_middleware(HostMiddleware, allowed_hosts=deps.settings.allowed_hosts)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(auth.router)
     install_error_handlers(app)
