@@ -5,15 +5,17 @@ from another site sends a Lax cookie — so an unsafe method with a foreign
 or missing `Origin` is refused before it reaches a route.
 """
 
+import json
 from collections.abc import AsyncIterator
 
 import httpx
 import pytest
+from starlette.types import Message, Receive, Scope, Send
 
 from tests.api.conftest import ORIGIN
 from triviador.api.deps import AppDependencies
 from triviador.api.errors import ApiErrorCode
-from triviador.api.middleware import origin_allowed
+from triviador.api.middleware import HostMiddleware, origin_allowed
 
 
 @pytest.mark.parametrize(
@@ -93,6 +95,9 @@ async def test_a_body_over_the_limit_is_413(
     response = await client.post("/api/auth/login", json={"username": "a", "password": oversized})
     assert response.status_code == 413
     assert response.json()["code"] == ApiErrorCode.PAYLOAD_TOO_LARGE
+    # Request-id outermost applies to BodyLimit's refusal too, not only
+    # Origin's — see test_a_refusal_from_a_middleware_still_carries_a_request_id.
+    assert response.headers["x-request-id"]
 
 
 async def test_a_chunked_body_over_the_limit_is_also_413(
@@ -147,6 +152,9 @@ async def test_a_foreign_host_header_is_refused_with_an_envelope(deps: AppDepend
         response = await client.get("/api/auth/me")
     assert response.status_code == 400
     assert response.json()["code"] == ApiErrorCode.FORBIDDEN
+    # Request-id outermost applies to Host's refusal too, not only Origin's
+    # — see test_a_refusal_from_a_middleware_still_carries_a_request_id.
+    assert response.headers["x-request-id"]
 
 
 async def test_a_host_with_a_port_matches_the_bare_entry(deps: AppDependencies) -> None:
@@ -158,3 +166,70 @@ async def test_a_host_with_a_port_matches_the_bare_entry(deps: AppDependencies) 
     transport = httpx.ASGITransport(app=create_app(deps), raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver:8000") as c:
         assert (await c.get("/api/auth/me")).status_code == 401
+
+
+async def test_a_host_refused_websocket_uses_the_denial_extension_when_available() -> None:
+    """A pre-accept refusal *can* carry a real response: when the server
+    advertises `websocket.http.response`, `envelope()`'s `JSONResponse`
+    called against a websocket scope translates `http.response.*` into
+    `websocket.http.response.*` (Starlette's `_wrap_websocket_denial_send`)
+    and a real client sees the JSON envelope with a real status — not a
+    dropped close code and not a bare `text/plain` 403.
+
+    No test client here drives a real websocket handshake, so this drives
+    the ASGI callable directly, which is all `HostMiddleware` is.
+    """
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    async def receive() -> Message:
+        raise AssertionError("the middleware must not read from the socket")
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError("a refused host must never reach the app")
+
+    scope: Scope = {
+        "type": "websocket",
+        "headers": [(b"host", b"evil.lan")],
+        "extensions": {"websocket.http.response": {}},
+    }
+    middleware = HostMiddleware(app, allowed_hosts=("box.lan",))
+    await middleware(scope, receive, send)
+
+    assert [m["type"] for m in sent] == [
+        "websocket.http.response.start",
+        "websocket.http.response.body",
+    ]
+    assert sent[0]["status"] == 400
+    body = json.loads(sent[1]["body"])
+    assert body["code"] == ApiErrorCode.FORBIDDEN
+
+
+async def test_a_host_refused_websocket_falls_back_to_close_without_the_extension() -> None:
+    """Where the server does not advertise the denial extension,
+    `websocket.close` is the only thing left — and the code is the
+    generic 1008 ("policy violation"), not the application-level 4403,
+    because uvicorn renders a pre-accept close as a bare `text/plain` 403
+    and drops the code before any client observes it."""
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    async def receive() -> Message:
+        raise AssertionError("the middleware must not read from the socket")
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError("a refused host must never reach the app")
+
+    scope: Scope = {
+        "type": "websocket",
+        "headers": [(b"host", b"evil.lan")],
+        "extensions": {},
+    }
+    middleware = HostMiddleware(app, allowed_hosts=("box.lan",))
+    await middleware(scope, receive, send)
+
+    assert sent == [{"type": "websocket.close", "code": 1008}]

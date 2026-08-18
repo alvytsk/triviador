@@ -37,6 +37,19 @@ class HostMiddleware:
 
     `"*"` disables the check, matching Starlette's behaviour so a
     development configuration does not have to enumerate every interface.
+
+    A websocket refusal is not exempt from the envelope either. Starlette's
+    denial-response extension lets a *pre-accept* refusal carry a real
+    response: when the server advertises `websocket.http.response` in
+    `scope["extensions"]`, calling the same `envelope()` response against
+    the websocket scope translates `http.response.start`/`.body` into
+    `websocket.http.response.start`/`.body` and a real client sees the
+    JSON envelope with a real status. Only where that extension is absent
+    does this fall back to `websocket.close` — and even then a status-4xx
+    application code would be meaningless, because uvicorn turns a
+    pre-accept close sent without the extension into a bare HTTP 403 with
+    a `text/plain` body and drops the close code on the floor; nothing
+    ever observes it.
     """
 
     def __init__(self, app: ASGIApp, *, allowed_hosts: Sequence[str]) -> None:
@@ -57,10 +70,21 @@ class HostMiddleware:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
-            # A handshake cannot carry a status. Refusing it outright is
-            # correct here — unlike origin and session, a wrong `Host` is
-            # not addressed to this application at all.
-            await send({"type": "websocket.close", "code": 4403})
+            # Starlette's denial extension lets a *pre-accept* refusal
+            # carry a real response. Accepting first and closing with a
+            # code would be worse: it completes a handshake with a host
+            # we do not trust just to hang up on it. Where the server
+            # does not advertise the extension, `websocket.close` is the
+            # only thing left — uvicorn renders it as a bare 403 and
+            # discards the code, which is why this is the fallback and
+            # not the primary path, and why the code is the generic 1008
+            # ("policy violation") rather than an application-level one
+            # that nothing can ever observe.
+            if "websocket.http.response" in scope.get("extensions", {}):
+                response = envelope(400, ApiErrorCode.FORBIDDEN, "host not allowed")
+                await response(scope, receive, send)
+            else:
+                await send({"type": "websocket.close", "code": 1008})
             return
         response = envelope(400, ApiErrorCode.FORBIDDEN, "host not allowed")
         await response(scope, receive, send)
