@@ -5,16 +5,19 @@
 and every route wants the same instances. `Depends` is used only where a
 *request* is the input — `current_principal` is the whole list.
 
-Tasks 12 and 15 add fields (`hub`, `manager`, `games`, `maps`, `presets`)
-as the things that fill them come into existence.
+Task 16 adds `hub`, `broadcaster` and `manager` — the socket-side
+collaborators `api/ws/endpoint.py` drives. Later tasks add `games`,
+`maps`, `presets` the same way, as the things that fill them exist.
 """
 
 from dataclasses import dataclass
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from fastapi import Depends, Request
+from starlette.requests import HTTPConnection
 
 from triviador.api.errors import ApiError, ApiErrorCode
+from triviador.api.schemas.ws import LobbyMessage
 from triviador.config import Settings
 from triviador.db.security import token_digest
 from triviador.services.identity import (
@@ -25,6 +28,11 @@ from triviador.services.identity import (
     UserStore,
 )
 from triviador.services.ports import Clock, DatabaseProbe
+
+if TYPE_CHECKING:
+    from triviador.api.ws.broadcaster import WsBroadcaster
+    from triviador.api.ws.hub import Hub
+    from triviador.runtime.manager import GameManager
 
 
 @dataclass(frozen=True)
@@ -40,9 +48,23 @@ class AppDependencies:
     sessions: SessionStore
     invites: InviteStore
     database: DatabaseProbe
+    hub: "Hub"
+    broadcaster: "WsBroadcaster"
+    manager: "GameManager"
+
+    async def lobby_message(
+        self, kind: Literal["lobby.snapshot", "lobby.update"]
+    ) -> "LobbyMessage":
+        """Overridden in Task 18, when there is a catalog to read. Until
+        then an empty lobby is honest: nothing can create a game yet."""
+        return LobbyMessage(type=kind, games=())
 
 
-def deps_of(request: Request) -> AppDependencies:
+def deps_of(request: HTTPConnection) -> AppDependencies:
+    """`HTTPConnection`, not `Request`: `Request` and `WebSocket` are
+    siblings under it (neither is a subtype of the other), and the `/ws`
+    endpoint calls this the same way a route's `Depends(deps_of)` does —
+    `app.state` is reachable from both."""
     deps: AppDependencies = request.app.state.deps
     return deps
 

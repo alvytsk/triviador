@@ -17,6 +17,8 @@ whatever `test_logging.py`'s own `json_logging` fixture did.
 
 import logging
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import replace as _replace
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -31,9 +33,18 @@ from tests.api.fakes import (
     FakeSessions,
     FakeUsers,
 )
+from tests.conftest import lobby_state
+from tests.runtime.conftest import manager_with_resident
+from tests.runtime.fakes import T0
+from tests.runtime.fakes import FakeClock as RuntimeFakeClock
 from triviador.api.app import create_app
 from triviador.api.deps import AppDependencies
+from triviador.api.ws.broadcaster import WsBroadcaster
+from triviador.api.ws.hub import Hub
 from triviador.config import Settings
+from triviador.db.security import token_digest
+from triviador.domain.ids import SessionId, UserId
+from triviador.services.identity import UserRole
 
 
 @pytest.fixture(autouse=True)
@@ -66,18 +77,53 @@ def users() -> FakeUsers:
     return FakeUsers()
 
 
-@pytest.fixture
-def deps(settings: Settings, users: FakeUsers) -> AppDependencies:
+def replace_deps(deps: AppDependencies, **overrides: object) -> AppDependencies:
+    return _replace(deps, **overrides)  # type: ignore[arg-type]
+
+
+@pytest_asyncio.fixture
+async def deps(settings: Settings, users: FakeUsers) -> AppDependencies:
+    """One signed-in user, `u1`, whose cookie value is the literal `"tok"`,
+    and one live game they are a player in. Every socket test starts from
+    "authenticated participant" and takes away whatever it is testing."""
+    clock = FakeClock()
+    sessions = FakeSessions(users)
     hasher = FakeHasher()
+    await users.create(
+        user_id=UserId("u1"),
+        username="u1",
+        password_hash=hasher.hash("correct horse"),
+        display_name="U1",
+        role=UserRole.PLAYER,
+    )
+    await sessions.create(
+        session_id=SessionId("s1"),
+        user_id=UserId("u1"),
+        token_hash=token_digest("tok"),
+        expires_at=clock.now() + timedelta(days=30),
+    )
+    hub = Hub()
+    # `start=False`: this suite is about the endpoint's own authorization and
+    # frame-to-command translation, not the runtime's execution pipeline
+    # (Task 8/9's job) — a started runtime races its own consumer task
+    # against `queued_commands()`'s peek the moment `serve_connection`
+    # awaits anything (its `finally` always does), and `StubExecutor([])`'s
+    # empty outcome list turns that race into a logged consumer failure.
+    manager, _ = manager_with_resident(
+        lobby_state({"u1": 0, "u2": 1}), RuntimeFakeClock(T0), start=False
+    )
     return AppDependencies(
         settings=settings,
-        clock=FakeClock(),
+        clock=clock,
         hasher=hasher,
         dummy_password_hash=hasher.hash("nobody"),
         users=users,
-        sessions=FakeSessions(users),
+        sessions=sessions,
         invites=FakeInvites(users),
         database=FakeDatabase(),
+        hub=hub,
+        broadcaster=WsBroadcaster(hub, media_base=settings.media_public_base),
+        manager=manager,
     )
 
 

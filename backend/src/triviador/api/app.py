@@ -14,6 +14,7 @@ from triviador.api.errors import install_error_handlers
 from triviador.api.http import auth
 from triviador.api.logging import RequestContextMiddleware
 from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, OriginMiddleware
+from triviador.api.ws import endpoint
 
 
 def create_app(deps: AppDependencies) -> FastAPI:
@@ -35,5 +36,6 @@ def create_app(deps: AppDependencies) -> FastAPI:
     app.add_middleware(HostMiddleware, allowed_hosts=deps.settings.allowed_hosts)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(auth.router)
+    app.include_router(endpoint.router)
     install_error_handlers(app)
     return app
