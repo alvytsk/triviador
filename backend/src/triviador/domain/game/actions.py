@@ -20,10 +20,13 @@ class StartGame:
 
 @dataclass(frozen=True)
 class SubmitAnswer:
+    """No `elapsed_ms`. How long an answer took is a fact about the server's
+    clock and the window it opened, and a client that reports its own would
+    be reporting the tiebreak key it wants to win (`_rank_numeric`)."""
+
     actor_id: PlayerId
     deadline_id: DeadlineId
     value: AnswerValue
-    elapsed_ms: int
 
 
 @dataclass(frozen=True)

@@ -37,7 +37,7 @@ def challenging() -> GameState:
 
 def answer(state: GameState, idx: int) -> SubmitAnswer:
     assert isinstance(state.turn, NeutralChallenge)
-    return SubmitAnswer(P1, state.turn.deadline.id, ChoiceAnswer(idx), 400)
+    return SubmitAnswer(P1, state.turn.deadline.id, ChoiceAnswer(idx))
 
 
 def test_correct_answer_captures_the_region() -> None:
@@ -97,7 +97,7 @@ def test_only_the_attacker_may_answer_a_neutral_challenge() -> None:
 def test_a_bystander_cannot_answer_someone_elses_neutral_challenge() -> None:
     state = challenging()
     assert isinstance(state.turn, NeutralChallenge)
-    bystander_answer = SubmitAnswer(P2, state.turn.deadline.id, ChoiceAnswer(0), 200)
+    bystander_answer = SubmitAnswer(P2, state.turn.deadline.id, ChoiceAnswer(0))
     with pytest.raises(RejectedCommand) as exc:
         decide(state, bystander_answer, CTX)
     assert exc.value.code is RejectCode.NOT_YOUR_TURN

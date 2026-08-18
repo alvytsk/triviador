@@ -169,9 +169,8 @@ class GameMachine(RuleBasedStateMachine):
         player_index=st.integers(0, 3),
         choice=st.integers(0, 3),
         guess=st.integers(0, 300),
-        elapsed=st.integers(0, 20_000),
     )
-    def answer(self, player_index: int, choice: int, guess: int, elapsed: int) -> None:
+    def answer(self, player_index: int, choice: int, guess: int) -> None:
         from decimal import Decimal
 
         from triviador.domain.game.actions import SubmitAnswer
@@ -190,7 +189,7 @@ class GameMachine(RuleBasedStateMachine):
         )
         window = self.state.current_deadline()
         assert window is not None
-        self._apply(SubmitAnswer(player, window.id, value, elapsed))
+        self._apply(SubmitAnswer(player, window.id, value))
 
     @precondition(
         lambda self: (

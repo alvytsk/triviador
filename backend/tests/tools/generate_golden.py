@@ -134,6 +134,24 @@ def _start_ctx() -> DecisionContext:
     )
 
 
+def _answer_ctx(traj: Trajectory, elapsed_ms: int) -> DecisionContext:
+    """A `DecisionContext.now` that lands `elapsed_ms` into the currently
+    open ANSWER window.
+
+    `SubmitAnswer` no longer carries `elapsed_ms` — the server derives it
+    from `ctx.now` against the window (`elapsed_ms_for`). Three submissions
+    sharing one `DecisionContext` would therefore all derive the *same*
+    elapsed time and break ties by seat instead of by speed, silently
+    changing what these trajectories mean. Each submission gets its own
+    context here, staggered so the recorded order matches the original
+    300/400/500-style intent.
+    """
+    deadline = traj.state.current_deadline()
+    assert deadline is not None
+    opened_at = deadline.deadline_at - timedelta(milliseconds=traj.state.rules.answer_timeout_ms)
+    return DecisionContext(now=opened_at + timedelta(milliseconds=elapsed_ms))
+
+
 def _expire_open_window(traj: Trajectory) -> None:
     """`ExpireDeadline` the turn's current window, at a time guaranteed to
     be past its deadline."""
@@ -165,9 +183,9 @@ def build_expansion_to_battle() -> Trajectory:
     # Expansion round 1: p1 guesses closest, p2 next, p3 last.
     assert isinstance(traj.state.turn, ExpansionQuestion)
     window = traj.state.turn.deadline.id
-    _step(traj, SubmitAnswer(P1, window, NumericAnswer(Decimal(100)), 300), ctx)
-    _step(traj, SubmitAnswer(P2, window, NumericAnswer(Decimal(110)), 400), ctx)
-    _step(traj, SubmitAnswer(P3, window, NumericAnswer(Decimal(120)), 500), ctx)
+    _step(traj, SubmitAnswer(P1, window, NumericAnswer(Decimal(100))), _answer_ctx(traj, 300))
+    _step(traj, SubmitAnswer(P2, window, NumericAnswer(Decimal(110))), _answer_ctx(traj, 400))
+    _step(traj, SubmitAnswer(P3, window, NumericAnswer(Decimal(120))), _answer_ctx(traj, 500))
 
     # claims_by_rank=(2, 1, 0): p1 picks twice, p2 once.
     assert isinstance(traj.state.turn, ExpansionPicking)
@@ -181,9 +199,9 @@ def build_expansion_to_battle() -> Trajectory:
     # the map (9 regions, 3 bases) is now full, so this is the last round.
     assert isinstance(traj.state.turn, ExpansionQuestion)
     window = traj.state.turn.deadline.id
-    _step(traj, SubmitAnswer(P1, window, NumericAnswer(Decimal(101)), 300), ctx)
-    _step(traj, SubmitAnswer(P2, window, NumericAnswer(Decimal(111)), 400), ctx)
-    _step(traj, SubmitAnswer(P3, window, NumericAnswer(Decimal(121)), 500), ctx)
+    _step(traj, SubmitAnswer(P1, window, NumericAnswer(Decimal(101))), _answer_ctx(traj, 300))
+    _step(traj, SubmitAnswer(P2, window, NumericAnswer(Decimal(111))), _answer_ctx(traj, 400))
+    _step(traj, SubmitAnswer(P3, window, NumericAnswer(Decimal(121))), _answer_ctx(traj, 500))
 
     assert isinstance(traj.state.turn, ExpansionPicking)
     _step(traj, PickRegion(P1, traj.state.turn.deadline.id, R5), ctx)
@@ -201,8 +219,8 @@ def build_expansion_to_battle() -> Trajectory:
     _step(traj, SelectAttackTarget(P1, traj.state.turn.deadline.id, R4), ctx)
     assert isinstance(traj.state.turn, BattleDuel)
     window = traj.state.turn.deadline.id
-    _step(traj, SubmitAnswer(P1, window, ChoiceAnswer(0), 300), ctx)
-    _step(traj, SubmitAnswer(P2, window, ChoiceAnswer(1), 400), ctx)
+    _step(traj, SubmitAnswer(P1, window, ChoiceAnswer(0)), _answer_ctx(traj, 300))
+    _step(traj, SubmitAnswer(P2, window, ChoiceAnswer(1)), _answer_ctx(traj, 400))
 
     # Turn 2: p2 attacks p1's r5 and fails (wrong vs correct) — defense held.
     assert isinstance(traj.state.turn, BattleTargetSelect)
@@ -210,8 +228,8 @@ def build_expansion_to_battle() -> Trajectory:
     _step(traj, SelectAttackTarget(P2, traj.state.turn.deadline.id, R5), ctx)
     assert isinstance(traj.state.turn, BattleDuel)
     window = traj.state.turn.deadline.id
-    _step(traj, SubmitAnswer(P2, window, ChoiceAnswer(1), 400), ctx)
-    _step(traj, SubmitAnswer(P1, window, ChoiceAnswer(0), 300), ctx)
+    _step(traj, SubmitAnswer(P2, window, ChoiceAnswer(1)), _answer_ctx(traj, 400))
+    _step(traj, SubmitAnswer(P1, window, ChoiceAnswer(0)), _answer_ctx(traj, 300))
 
     # Turn 3: p3 attacks p1's r3, both wrong — nothing changes hands.
     assert isinstance(traj.state.turn, BattleTargetSelect)
@@ -219,8 +237,8 @@ def build_expansion_to_battle() -> Trajectory:
     _step(traj, SelectAttackTarget(P3, traj.state.turn.deadline.id, R3), ctx)
     assert isinstance(traj.state.turn, BattleDuel)
     window = traj.state.turn.deadline.id
-    _step(traj, SubmitAnswer(P3, window, ChoiceAnswer(1), 400), ctx)
-    _step(traj, SubmitAnswer(P1, window, ChoiceAnswer(1), 300), ctx)
+    _step(traj, SubmitAnswer(P3, window, ChoiceAnswer(1)), _answer_ctx(traj, 400))
+    _step(traj, SubmitAnswer(P1, window, ChoiceAnswer(1)), _answer_ctx(traj, 300))
 
     assert traj.state.phase is Phase.BATTLE
     assert traj.state.round_no == 2
@@ -258,9 +276,9 @@ def build_surrender_ends_game() -> Trajectory:
 
     assert isinstance(traj.state.turn, ExpansionQuestion)
     window = traj.state.turn.deadline.id
-    _step(traj, SubmitAnswer(P1, window, NumericAnswer(Decimal(100)), 300), ctx)
-    _step(traj, SubmitAnswer(P2, window, NumericAnswer(Decimal(110)), 400), ctx)
-    _step(traj, SubmitAnswer(P3, window, NumericAnswer(Decimal(120)), 500), ctx)
+    _step(traj, SubmitAnswer(P1, window, NumericAnswer(Decimal(100))), _answer_ctx(traj, 300))
+    _step(traj, SubmitAnswer(P2, window, NumericAnswer(Decimal(110))), _answer_ctx(traj, 400))
+    _step(traj, SubmitAnswer(P3, window, NumericAnswer(Decimal(120))), _answer_ctx(traj, 500))
 
     assert isinstance(traj.state.turn, ExpansionPicking)
     _step(traj, Surrender(P2), ctx)

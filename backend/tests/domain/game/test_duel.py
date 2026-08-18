@@ -36,9 +36,9 @@ def dueling() -> GameState:
     return fold(state, decide(state, SelectAttackTarget(P1, state.turn.deadline.id, TARGET), CTX))
 
 
-def mc(state: GameState, player: PlayerId, idx: int, elapsed: int = 300) -> SubmitAnswer:
+def mc(state: GameState, player: PlayerId, idx: int) -> SubmitAnswer:
     assert isinstance(state.turn, BattleDuel | BattleTiebreak)
-    return SubmitAnswer(player, state.turn.deadline.id, ChoiceAnswer(idx), elapsed)
+    return SubmitAnswer(player, state.turn.deadline.id, ChoiceAnswer(idx))
 
 
 def both(
@@ -94,9 +94,9 @@ def test_both_right_opens_a_numeric_tiebreak() -> None:
     assert not any(isinstance(e, ev.DuelResolved) for e in events)
 
 
-def numeric(state: GameState, player: PlayerId, value: int, elapsed: int) -> SubmitAnswer:
+def numeric(state: GameState, player: PlayerId, value: int) -> SubmitAnswer:
     assert isinstance(state.turn, BattleTiebreak)
-    return SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(value)), elapsed)
+    return SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(value)))
 
 
 def test_closer_tiebreak_guess_wins_the_region() -> None:
@@ -104,8 +104,8 @@ def test_closer_tiebreak_guess_wins_the_region() -> None:
     assert isinstance(state.turn, BattleTiebreak)
     correct = state.turn.question.numeric_answer
     assert correct is not None
-    state = fold(state, decide(state, numeric(state, P1, int(correct), 300), CTX))
-    events = decide(state, numeric(state, P2, int(correct) + 50, 200), CTX)
+    state = fold(state, decide(state, numeric(state, P1, int(correct)), CTX))
+    events = decide(state, numeric(state, P2, int(correct) + 50), CTX)
     assert any(isinstance(e, ev.TerritoryCaptured) for e in events)
     assert fold(state, events).territories[TARGET].owner_id == P1
 
@@ -116,15 +116,20 @@ def test_equal_distance_is_broken_by_speed() -> None:
     numeric_answer = state.turn.question.numeric_answer
     assert numeric_answer is not None
     correct = int(numeric_answer)
-    state = fold(state, decide(state, numeric(state, P1, correct + 10, 900), CTX))
-    events = decide(state, numeric(state, P2, correct - 10, 100), CTX)
+    opened_at = state.turn.deadline.deadline_at - timedelta(
+        milliseconds=state.rules.answer_timeout_ms
+    )
+    slow = DecisionContext(now=opened_at + timedelta(milliseconds=900))
+    fast = DecisionContext(now=opened_at + timedelta(milliseconds=100))
+    state = fold(state, decide(state, numeric(state, P1, correct + 10), slow))
+    events = decide(state, numeric(state, P2, correct - 10), fast)
     assert any(isinstance(e, ev.DefenseHeld) for e in events), "faster defender holds"
 
 
 def test_repeating_the_same_tiebreak_answer_is_ignored() -> None:
     state, _ = both(dueling(), CORRECT, CORRECT)
     assert isinstance(state.turn, BattleTiebreak)
-    cmd = numeric(state, P1, 123, 300)
+    cmd = numeric(state, P1, 123)
     state = fold(state, decide(state, cmd, CTX))
     assert isinstance(state.turn, BattleTiebreak)  # still waiting on p2
     assert decide(state, cmd, CTX) == ()
@@ -168,7 +173,7 @@ def test_non_combatant_cannot_submit_into_a_tiebreak() -> None:
     state, _ = both(dueling(), CORRECT, CORRECT)
     assert isinstance(state.turn, BattleTiebreak)
     with pytest.raises(RejectedCommand) as exc:
-        decide(state, numeric(state, P3, 0, 300), CTX)
+        decide(state, numeric(state, P3, 0), CTX)
     assert exc.value.code is RejectCode.NOT_YOUR_TURN
 
 
