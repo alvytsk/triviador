@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from triviador.db.engine import create_engine, sessionmaker_for
 from triviador.db.models.auth import User
 from triviador.db.models.content import Category, Question, QuestionChoice, QuestionNumeric
+from triviador.db.models.presets import RulePreset
 from triviador.db.repositories.games import GameRepository
 from triviador.db.unit_of_work import UnitOfWork
 from triviador.domain.game.rules import DEFAULT_RULES
@@ -394,6 +395,33 @@ async def clean_db(migrated_schema: None, engine: AsyncEngine) -> AsyncIterator[
 @pytest_asyncio.fixture(loop_scope="session")
 async def sessions(migrated_schema: None, engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return sessionmaker_for(engine)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def default_preset(clean_db: None, sessions: async_sessionmaker[AsyncSession]) -> None:
+    """Restore migration 0002's row after `clean_db` has truncated it.
+
+    Depends on `clean_db` rather than replacing it: the point is a known
+    baseline *before every test*, not surviving state. A test that
+    deactivates the default gets a fresh active one next time, and nothing
+    depends on the order tests happen to run in.
+
+    The row is inserted from the migration's own frozen literal, so this
+    fixture cannot drift from what a real database actually contains.
+    """
+    from triviador.db.seed import DEFAULT_PRESET_RULES
+
+    async with sessions() as session, session.begin():
+        session.add(
+            RulePreset(
+                id="default",
+                name="Default",
+                is_default=True,
+                rules=dict(DEFAULT_PRESET_RULES),
+                version=1,
+                is_active=True,
+            )
+        )
 
 
 @dataclass(frozen=True)
