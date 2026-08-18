@@ -110,19 +110,64 @@ async def test_a_full_outbound_queue_closes_that_subscriber_with_4408() -> None:
 async def test_closing_discards_whatever_was_still_queued() -> None:
     """The queue is full by definition when 4408 fires, so the close
     sentinel has to displace something. Delivering a partial backlog to a
-    connection that is being closed helps nobody and the sentinel must not
-    itself raise `QueueFull`."""
+    connection that is being closed helps nobody, the sentinel must not
+    itself raise `QueueFull`, and nothing queued before the close survives
+    it — the queue holds only the sentinel afterwards, and the socket never
+    receives any of the discarded backlog."""
     socket = FakeSocket()
     socket.blocked.clear()
     connection = a_connection(socket, queue_size=1)
     task = asyncio.create_task(run_sender(connection))
     connection.send(HelloMessage(server_time=T0))
-    connection.send(PongMessage(server_time=T0))
-    connection.send(PongMessage(server_time=T0))
+    connection.send(PongMessage(server_time=T0))  # queue full -> close(4408)
+    connection.send(PongMessage(server_time=T0))  # already closed: a no-op
+    assert queued(connection) == []  # the Hello queued before the close is gone
     socket.blocked.set()
     await task
     assert socket.closed_with == 4408
-    assert len(socket.sent) <= 1
+    assert socket.sent == []
+
+
+class FailingSocket:
+    """A socket whose write raises — proves `run_sender` exits rather than
+    looping. §8.6: a socket that raised is a socket that is gone, and
+    continuing to drain into it is a task that never ends."""
+
+    def __init__(self) -> None:
+        self.closed_with: int | None = None
+
+    async def accept(self) -> None:
+        pass
+
+    async def receive_text(self) -> str:
+        raise NotImplementedError
+
+    async def send_text(self, text: str) -> None:
+        raise RuntimeError("the socket is gone")
+
+    async def close(self, code: int) -> None:
+        self.closed_with = code
+
+
+async def test_run_sender_exits_and_sets_1011_when_the_socket_send_fails() -> None:
+    """The failure branch must not be a mere log line: it has to end the
+    task promptly, or a dead socket is drained into forever. `wait_for`
+    turns "loops forever" into a failing test rather than a hang."""
+    connection = Connection(id="c1", principal=principal("u1"), socket=FailingSocket())
+    connection.send(HelloMessage(server_time=T0))
+    await asyncio.wait_for(run_sender(connection), timeout=1)
+    assert connection.close_code == 1011
+
+
+async def test_run_sender_preserves_an_existing_close_code_on_send_failure() -> None:
+    """First code wins even here: a close that raced ahead of the failing
+    send (e.g. a concurrent `close(4408)` that closed after this message
+    was already dequeued) must not be overwritten by the generic `1011`."""
+    connection = Connection(id="c1", principal=principal("u1"), socket=FailingSocket())
+    connection.send(HelloMessage(server_time=T0))
+    connection.close_code = 4408  # simulates a close that already won the race
+    await asyncio.wait_for(run_sender(connection), timeout=1)
+    assert connection.close_code == 4408
 
 
 def test_a_second_close_is_ignored() -> None:
