@@ -29,6 +29,47 @@ def test_a_comma_separated_origin_list_parses_into_a_tuple() -> None:
     )
 
 
+def test_a_single_origin_from_the_environment_parses_without_a_json_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `.env.example` value, read the way a real process reads it: via
+    `TRIVIADOR_ALLOWED_ORIGINS` and a bare `Settings()`, not via kwargs.
+
+    `Settings(**overrides)` above never touches `EnvSettingsSource` — Python
+    kwargs bypass it entirely — so it cannot catch a regression in the
+    `NoDecode` annotation. Before that annotation was added,
+    `EnvSettingsSource` tried `json.loads("http://localhost:5173")` before
+    `_split_csv` ever ran, and that is not valid JSON even with no comma in
+    sight: the process refused to boot on the one value `.env.example`
+    actually ships.
+    """
+    monkeypatch.setenv("TRIVIADOR_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("TRIVIADOR_ALLOWED_ORIGINS", "http://localhost:5173")
+    assert Settings().allowed_origins == ("http://localhost:5173",)  # type: ignore[call-arg]
+
+
+def test_a_comma_separated_origin_list_from_the_environment_parses_with_whitespace_stripped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same environment path as above, with the comma-and-whitespace form
+    `test_a_comma_separated_origin_list_parses_into_a_tuple` already covers
+    through kwargs — this confirms it also survives `EnvSettingsSource`."""
+    monkeypatch.setenv("TRIVIADOR_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("TRIVIADOR_ALLOWED_ORIGINS", "http://a.lan, http://b.lan")
+    assert Settings().allowed_origins == ("http://a.lan", "http://b.lan")  # type: ignore[call-arg]
+
+
+def test_allowed_hosts_from_the_environment_parses_the_same_way(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`allowed_hosts` carries the same `NoDecode` annotation as
+    `allowed_origins` and the same failure mode without it — this is that
+    field's sibling regression test."""
+    monkeypatch.setenv("TRIVIADOR_DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
+    monkeypatch.setenv("TRIVIADOR_ALLOWED_HOSTS", "localhost,127.0.0.1")
+    assert Settings().allowed_hosts == ("localhost", "127.0.0.1")  # type: ignore[call-arg]
+
+
 def test_a_consistent_configuration_has_no_problems() -> None:
     assert startup_problems(settings()) == ()
 

@@ -1,10 +1,10 @@
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PLACEHOLDER = "CHANGE_ME"
 
@@ -42,8 +42,15 @@ class Settings(BaseSettings):
     recovery_backoff_max_s: float = 60.0
 
     # --- API (Spec 1B §6, §10.4) ------------------------------------------
-    allowed_origins: tuple[str, ...] = ()
-    allowed_hosts: tuple[str, ...] = ("*",)
+    # `NoDecode`: without it, `EnvSettingsSource` tries `json.loads()` on the
+    # raw env string *before* `_split_csv` below ever sees it, and a plain
+    # (non-Union) complex type has `allow_parse_failure=False` — so
+    # `TRIVIADOR_ALLOWED_ORIGINS=http://localhost:5173` fails to parse as
+    # JSON and the process refuses to boot on the one value `.env.example`
+    # actually ships. `NoDecode` hands the source's raw string straight to
+    # the validator instead of decoding it first.
+    allowed_origins: Annotated[tuple[str, ...], NoDecode] = ()
+    allowed_hosts: Annotated[tuple[str, ...], NoDecode] = ("*",)
     cookie_secure: bool = False
     session_cookie_name: str = "triviador_session"
     session_ttl_days: int = 30
@@ -69,7 +76,11 @@ class Settings(BaseSettings):
 
         pydantic-settings parses a complex annotation from JSON by default,
         which would make the natural env-file form a startup crash with a
-        JSON decode error pointing at nothing useful.
+        JSON decode error pointing at nothing useful. The `NoDecode` marker
+        on both fields is what makes this validator reachable at all: it
+        stops `EnvSettingsSource` from attempting that JSON decode itself
+        and handing this function the raw string instead — remove it and
+        the JSON decode error is back, silently.
         """
         if isinstance(value, str):
             return tuple(part.strip() for part in value.split(",") if part.strip())
