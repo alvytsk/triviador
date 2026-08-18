@@ -3406,7 +3406,7 @@ async def me(deps: Deps, principal: Principal) -> Me:
 
 ```python
 """The app factory. The *composition root* — which builds the real
-adapters — is `build_app` in Task 15; this half only assembles routers,
+adapters — is `build_app` in Task 17; this half only assembles routers,
 handlers and middleware around a dependency bundle it is handed.
 
 Split that way on purpose: every contract test in `tests/api/` constructs
