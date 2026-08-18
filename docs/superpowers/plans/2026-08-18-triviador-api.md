@@ -1827,13 +1827,18 @@ class InviteStore(Protocol):
     ) -> RedeemOutcome:
         """Claim the invite and create the user, or neither.
 
-        These are one method because they must be one transaction. Claiming
-        first and creating second burns an invite when the username turns
-        out to be taken; creating first and claiming second hands an account
-        to whoever loses the race for the code. The implementation claims
-        with a conditional `UPDATE ... WHERE used_by IS NULL RETURNING id`,
-        which is also the concurrency check — two simultaneous redemptions
-        of one code cannot both match it.
+        These are one method because they must be one transaction. Doing
+        them in separate transactions burns an invite when the username
+        turns out to be taken, or hands an account to whoever loses the
+        race for the code.
+
+        The implementation inserts the user, then claims with a conditional
+        `UPDATE ... WHERE used_by IS NULL RETURNING id` — that order is
+        forced, because `invite_codes.used_by` is a non-deferrable foreign
+        key and a claim naming an absent user is rejected outright. The
+        conditional UPDATE remains the concurrency check: two simultaneous
+        redemptions of one code cannot both match it, and the loser's
+        transaction takes its own user row down with it.
         """
         ...
 ```
@@ -2535,6 +2540,14 @@ class SessionRepository:
             return tuple(SessionId(i) for i in result.scalars().all())
 
 
+class _InviteUnavailable(Exception):
+    """The conditional claim matched no row.
+
+    Private, and it never escapes `redeem`. It exists so the
+    `IntegrityError` handler beside it can mean exactly one thing.
+    """
+
+
 class InviteRepository:
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
         self._sessionmaker = sessionmaker
@@ -2549,18 +2562,46 @@ class InviteRepository:
         display_name: str,
         now: datetime,
     ) -> RedeemOutcome:
-        """Claim and create, or neither.
+        """Create and claim, or neither.
 
-        The `UPDATE ... WHERE used_by IS NULL RETURNING id` is both the
-        business rule and the concurrency control: two simultaneous
-        redemptions of one code contend on that row, and exactly one gets a
-        returned id. The `INSERT` follows inside the same transaction, so a
-        `UNIQUE` violation on `username` rolls the claim back with it —
-        which is the property a typo must not be able to cost an invite.
+        **Insert first, claim second, and the order is forced.**
+        `invite_codes.used_by` is a plain (non-deferrable) foreign key to
+        `users.id`, so an `UPDATE` that names a user who does not exist yet
+        is rejected by PostgreSQL the moment it runs — claiming first
+        cannot work at all, whatever its other merits.
+
+        The conditional `UPDATE ... WHERE used_by IS NULL RETURNING id` is
+        still both the business rule and the concurrency control: two
+        simultaneous redemptions of one code each insert their own user,
+        then contend on that row, and exactly one gets a returned id. The
+        loser raises `_InviteUnavailable`, which rolls its whole
+        transaction back — its user row included, so no orphan account
+        survives a lost race.
+
+        A sentinel exception rather than an early `return`: `session.begin()`
+        commits on a clean exit, so returning from inside it would commit
+        the very user row we are trying to discard. Raising leaves the
+        rollback to the context manager.
+
+        The `flush()` is what keeps the `IntegrityError` handler honest. It
+        forces the `INSERT` at a known point, so the only violation that
+        handler can see is `users.username`'s UNIQUE constraint — which is
+        why a typo costs a username and never an invite.
         """
         async with self._sessionmaker() as db:
             try:
                 async with db.begin():
+                    db.add(
+                        User(
+                            id=user_id,
+                            username=username,
+                            password_hash=password_hash,
+                            display_name=display_name,
+                            role=str(UserRole.PLAYER),
+                            is_active=True,
+                        )
+                    )
+                    await db.flush()
                     claimed = await db.execute(
                         update(InviteCode)
                         .where(
@@ -2573,20 +2614,10 @@ class InviteRepository:
                         .returning(InviteCode.id)
                     )
                     if claimed.scalar_one_or_none() is None:
-                        return RedeemOutcome.INVITE_INVALID
-                    db.add(
-                        User(
-                            id=user_id,
-                            username=username,
-                            password_hash=password_hash,
-                            display_name=display_name,
-                            role=str(UserRole.PLAYER),
-                            is_active=True,
-                        )
-                    )
+                        raise _InviteUnavailable
+            except _InviteUnavailable:
+                return RedeemOutcome.INVITE_INVALID
             except IntegrityError:
-                # `users.username` is UNIQUE. The transaction is already
-                # rolled back, so the invite is untouched and claimable.
                 return RedeemOutcome.USERNAME_TAKEN
         return RedeemOutcome.OK
 ```
