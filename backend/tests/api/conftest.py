@@ -19,6 +19,7 @@ import logging
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace as _replace
 from datetime import timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -28,8 +29,10 @@ import structlog
 from tests.api.fakes import (
     FakeClock,
     FakeDatabase,
+    FakeGameCatalog,
     FakeHasher,
     FakeInvites,
+    FakePresets,
     FakeSessions,
     FakeUsers,
 )
@@ -37,13 +40,15 @@ from tests.conftest import lobby_state
 from tests.runtime.conftest import manager_with_resident
 from tests.runtime.fakes import T0
 from tests.runtime.fakes import FakeClock as RuntimeFakeClock
+from tests.runtime.integration.conftest import write_grid_map
 from triviador.api.app import create_app
-from triviador.api.deps import AppDependencies
+from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.ws.broadcaster import WsBroadcaster
 from triviador.api.ws.hub import Hub
 from triviador.config import Settings
 from triviador.db.security import token_digest
 from triviador.domain.ids import SessionId, UserId
+from triviador.maps.registry import MapRegistry
 from triviador.services.identity import UserRole
 
 
@@ -77,12 +82,22 @@ def users() -> FakeUsers:
     return FakeUsers()
 
 
+@pytest.fixture
+def map_root(tmp_path: Path) -> Path:
+    """Reuses `tests/runtime/integration/conftest.write_grid_map` so
+    `deps.maps` is a real `MapRegistry` over a real `map.json`, not a
+    fake — `MapRegistry` is a thin, direct-to-filesystem adapter with no
+    port of its own worth faking (Task 17)."""
+    write_grid_map(tmp_path / "grid")
+    return tmp_path
+
+
 def replace_deps(deps: AppDependencies, **overrides: object) -> AppDependencies:
     return _replace(deps, **overrides)  # type: ignore[arg-type]
 
 
 @pytest_asyncio.fixture
-async def deps(settings: Settings, users: FakeUsers) -> AppDependencies:
+async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDependencies:
     """One signed-in user, `u1`, whose cookie value is the literal `"tok"`,
     and one live game they are a player in. Every socket test starts from
     "authenticated participant" and takes away whatever it is testing."""
@@ -124,6 +139,10 @@ async def deps(settings: Settings, users: FakeUsers) -> AppDependencies:
         hub=hub,
         broadcaster=WsBroadcaster(hub, media_base=settings.media_public_base),
         manager=manager,
+        readiness=Readiness(migrations_current=True, recovery_complete=True),
+        games=FakeGameCatalog(),
+        maps=MapRegistry(root=map_root),
+        presets=FakePresets(),
     )
 
 
@@ -138,3 +157,13 @@ async def client(deps: AppDependencies) -> AsyncIterator[httpx.AsyncClient]:
         transport=transport, base_url="http://testserver", headers={"Origin": ORIGIN}
     ) as client:
         yield client
+
+
+@pytest_asyncio.fixture
+async def signed_in(
+    client: httpx.AsyncClient, settings: Settings
+) -> AsyncIterator[httpx.AsyncClient]:
+    """`client`, carrying `u1`'s session cookie (see `deps`'s fixture
+    docstring: `"tok"` resolves to `u1` via `FakeSessions`)."""
+    client.cookies.set(settings.session_cookie_name, "tok")
+    yield client

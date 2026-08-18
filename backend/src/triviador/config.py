@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     session_ttl_days: int = 30
     maps_root: Path = Path("/data/maps")
     media_public_base: str = "/media"
+    # Where Caddy serves `data/maps/<id>/map.svg` from (§10.2). The API
+    # names the URL; it never serves the bytes.
+    maps_public_base: str = "/maps"
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     # 413 above this. Spec 1's largest player-facing body is a login form;

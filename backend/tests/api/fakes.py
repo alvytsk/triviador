@@ -11,13 +11,15 @@ import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
-from triviador.domain.ids import SessionId, UserId
+from triviador.domain.game.rules import GameRules
+from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     RedeemOutcome,
     UserRecord,
     UserRole,
 )
+from triviador.services.ports import GameSummary, PresetRecord
 
 T0 = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
@@ -171,3 +173,57 @@ class FakeInvites:
             role=UserRole.PLAYER,
         )
         return RedeemOutcome.OK
+
+
+@dataclass
+class FakeGameCatalog:
+    """`GameCatalogPort`, in memory. No contract test in this suite drives
+    `/api/games` yet (Task 18) — this exists only so `AppDependencies.games`
+    has something to hold that is not the real, database-backed
+    `GameRepository`."""
+
+    summaries: dict[GameId, GameSummary] = field(default_factory=dict)
+
+    async def create(
+        self,
+        *,
+        game_id: GameId,
+        map_id: MapId,
+        rules: GameRules,
+        host_id: PlayerId,
+        map_sha256: str,
+        preset_id: str | None,
+        operation_id: str,
+    ) -> None:
+        self.summaries[game_id] = GameSummary(
+            game_id=game_id,
+            map_id=map_id,
+            host_id=host_id,
+            status="lobby",
+            max_players=rules.player_count,
+            player_count=1,
+            created_at=datetime.now(UTC),
+        )
+
+    async def get_summary(self, game_id: GameId) -> GameSummary | None:
+        return self.summaries.get(game_id)
+
+    async def list_joinable(self) -> tuple[GameSummary, ...]:
+        return tuple(self.summaries.values())
+
+
+@dataclass
+class FakePresets:
+    """`PresetPort`, in memory. Empty by default: nothing in this task's
+    suite resolves a preset id."""
+
+    records: dict[str, PresetRecord] = field(default_factory=dict)
+    default_id: str | None = None
+
+    async def get(self, preset_id: str) -> PresetRecord | None:
+        return self.records.get(preset_id)
+
+    async def get_default(self) -> PresetRecord | None:
+        if self.default_id is None:
+            return None
+        return self.records.get(self.default_id)

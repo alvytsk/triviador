@@ -27,12 +27,28 @@ from triviador.services.identity import (
     SessionStore,
     UserStore,
 )
-from triviador.services.ports import Clock, DatabaseProbe
+from triviador.services.ports import Clock, DatabaseProbe, GameCatalogPort, MapProvider, PresetPort
 
 if TYPE_CHECKING:
     from triviador.api.ws.broadcaster import WsBroadcaster
     from triviador.api.ws.hub import Hub
     from triviador.runtime.manager import GameManager
+
+
+@dataclass
+class Readiness:
+    """The two startup facts, recorded once.
+
+    §10.6: readiness reports the *result* of the startup assertions rather
+    than re-running them on every poll — that is true of the migration
+    check and of recovery, both of which are settled by the time the
+    process serves. It is **not** true of the database, which can go away
+    while the process keeps running; that one is probed per request through
+    `AppDependencies.database` (see `DatabaseProbe`).
+    """
+
+    migrations_current: bool = False
+    recovery_complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,6 +67,10 @@ class AppDependencies:
     hub: "Hub"
     broadcaster: "WsBroadcaster"
     manager: "GameManager"
+    readiness: Readiness
+    games: GameCatalogPort
+    maps: MapProvider
+    presets: PresetPort
 
     async def lobby_message(
         self, kind: Literal["lobby.snapshot", "lobby.update"]
