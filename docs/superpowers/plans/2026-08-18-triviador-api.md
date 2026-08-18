@@ -5632,6 +5632,13 @@ def test_a_valid_answer_frame_parses() -> None:
         deadline_id=7,
         payload={"kind": "numeric", "value": "42.5"},
     )
+    # Two narrowing steps, not one: `AnswerPayload` is itself a
+    # `ChoiceAnswerPayload | NumericAnswerPayload` union and the choice
+    # variant has no `.value`. Narrowing rather than suppressing also makes
+    # this assert *which* frame the parser produced, not merely that
+    # something with a `.value` came back.
+    assert isinstance(message, SubmitAnswerFrame)
+    assert isinstance(message.payload, NumericAnswerPayload)
     assert message.payload.value == "42.5"
 
 
@@ -5667,11 +5674,46 @@ def test_a_numeric_value_that_is_not_a_finite_number_is_rejected(value: str) -> 
         {"type": "surrender", "command_id": "c1", "game_id": "g1"},
     ],
 )
-def test_an_extra_field_on_any_frame_is_rejected(kw: dict) -> None:
+def test_an_extra_field_on_any_frame_is_rejected(kw: dict[str, object]) -> None:
     """`extra="forbid"` everywhere. Omitting `actor_id` from a schema is
     worth nothing if unknown keys are silently ignored (§6.5)."""
     with pytest.raises(ValidationError):
         parse(**kw, unexpected="x")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"kind": "numeric", "value": "1", "unexpected": "x"},
+        {"kind": "choice", "idx": 1, "unexpected": "x"},
+    ],
+    ids=["numeric-payload", "choice-payload"],
+)
+def test_an_extra_field_inside_a_payload_is_rejected(payload: dict[str, object]) -> None:
+    """The nested half, and the one that actually gets missed.
+
+    A strict outer frame wrapping a permissive `payload` would accept an
+    unknown key one level down — which is where an actor would go if
+    anybody tried. Testing only the top level leaves every payload model
+    free to extend bare `BaseModel` with nothing failing.
+    """
+    with pytest.raises(ValidationError):
+        parse(
+            type="submit_answer", command_id="c1", game_id="g1", deadline_id=7, payload=payload
+        )
+
+
+def test_an_extra_field_inside_a_region_payload_is_rejected() -> None:
+    """`RegionPayload` is a separate model from the answer payloads, so a
+    regression could hit it alone."""
+    with pytest.raises(ValidationError):
+        parse(
+            type="pick_region",
+            command_id="c1",
+            game_id="g1",
+            deadline_id=7,
+            payload={"region_id": "r3", "unexpected": "x"},
+        )
 
 
 @pytest.mark.parametrize(
@@ -5682,11 +5724,24 @@ def test_an_extra_field_on_any_frame_is_rejected(kw: dict) -> None:
          "payload": {"kind": "choice", "idx": 1}},
     ],
 )
-def test_a_frame_carrying_an_actor_is_rejected_outright(kw: dict) -> None:
+def test_a_frame_carrying_an_actor_is_rejected_outright(kw: dict[str, object]) -> None:
     """The one that matters. Identity is derived from the session, and a
     frame that even mentions an actor is refused rather than sanitized."""
     with pytest.raises(ValidationError):
         parse(**kw, actor_id="somebody-else")
+
+
+def test_an_actor_hidden_inside_a_payload_is_rejected_too() -> None:
+    """Where an actor would actually be smuggled, once the top level is
+    known to be strict — one level deeper than the test above looks."""
+    with pytest.raises(ValidationError):
+        parse(
+            type="submit_answer",
+            command_id="c1",
+            game_id="g1",
+            deadline_id=7,
+            payload={"kind": "numeric", "value": "1", "actor_id": "somebody-else"},
+        )
 
 
 def test_only_the_windowed_commands_declare_a_deadline() -> None:
