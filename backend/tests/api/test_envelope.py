@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import OperationalError
 
 from triviador.api.errors import ApiError, ApiErrorCode, install_error_handlers
+from triviador.api.logging import RequestContextMiddleware
 from triviador.domain.game.actions import RejectCode, RejectedCommand
 from triviador.runtime.errors import GameRecovering, GameUnrecoverable, ServerBusy
 from triviador.services.ports import RuntimeCode
@@ -65,6 +66,10 @@ def probe_app() -> FastAPI:
         raise ApiError(ApiErrorCode.PAYLOAD_TOO_LARGE, 413, "body exceeds 1048576 bytes")
 
     app.include_router(router)
+    # Task 4's middleware, so the request id `envelope()` reads out of
+    # `request_id_var` is a real one rather than the ContextVar's `"-"`
+    # default — see `test_a_500_carries_the_request_id_so_the_log_can_be_found`.
+    app.add_middleware(RequestContextMiddleware)
     install_error_handlers(app)
     return app
 
