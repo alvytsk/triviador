@@ -87,6 +87,17 @@ def test_errors_exports_both_enums_and_they_stay_disjoint(
     assert not set(errors["api_error_code"]) & set(errors["reject_code"])
 
 
+def test_the_committed_contracts_match_a_fresh_export(tmp_path: Path) -> None:
+    """The other half of the drift gate, on the side that can run without
+    node: the files under `contracts/` are what this backend produces
+    right now. CI runs both; a developer who changes a schema and forgets
+    to export sees it here first."""
+    root = Path(__file__).resolve().parents[3] / "contracts"
+    export_contracts(tmp_path)
+    for produced in sorted(tmp_path.glob("*.json")):
+        assert produced.read_text() == (root / produced.name).read_text(), produced.name
+
+
 def _refs(node: object) -> list[str]:
     if isinstance(node, dict):
         found = [node["$ref"]] if "$ref" in node else []

@@ -1,0 +1,14 @@
+{
+  "name": "triviador-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "codegen": "node scripts/codegen.mjs",
+    "codegen:check": "node scripts/codegen.mjs && git diff --exit-code -- shared/api/generated"
+  },
+  "devDependencies": {
+    "json-schema-to-zod": "^2.6.0",
+    "zod": "^3.24.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
