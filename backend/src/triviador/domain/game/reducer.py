@@ -9,7 +9,7 @@ Replay is therefore fold(evolve, events) and needs no context at all.
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from triviador.domain.game import events as ev
@@ -29,7 +29,7 @@ from triviador.domain.game.actions import (
     Surrender,
 )
 from triviador.domain.game.genesis import GenesisEventNotFoldable
-from triviador.domain.game.rules import required_question_budget
+from triviador.domain.game.rules import GameRules, required_question_budget
 from triviador.domain.game.scoring import expected_score, holding_value
 from triviador.domain.game.state import (
     TERMINAL_PHASES,
@@ -234,13 +234,34 @@ def _open_expansion_question(
     return (event,), evolve(state, event)
 
 
+def elapsed_ms_for(deadline: Deadline, rules: GameRules, now: datetime) -> int:
+    """How far into its window this answer landed, clamped to it.
+
+    The window opened at `deadline_at - answer_timeout_ms`: every ANSWER
+    deadline in the ruleset is allocated that way (`_open_expansion_question`,
+    `_decide_target`, `_open_tiebreak`, `_open_final_tiebreak`), so the
+    opening instant needs no new state to reconstruct.
+
+    Clamped at both ends. Below zero the value would sort ahead of every
+    honest answer, which is the cheat this exists to remove; above the
+    timeout it would not be comparable with answers from other windows,
+    since `_rank_numeric` compares elapsed values across a single window
+    only after the window length has already bounded them.
+    """
+    opened_at = deadline.deadline_at - timedelta(milliseconds=rules.answer_timeout_ms)
+    elapsed = (now - opened_at) // timedelta(milliseconds=1)
+    return max(0, min(rules.answer_timeout_ms, elapsed))
+
+
 def _record_answer(
     turn: ExpansionQuestion | BattleDuel | BattleTiebreak | NeutralChallenge | FinalTiebreak,
     command: SubmitAnswer,
+    rules: GameRules,
+    ctx: DecisionContext,
 ) -> ev.AnswerSubmitted | None:
     """None means 'ignore' — an identical resubmission."""
     existing = turn.answers.get(command.actor_id)
-    submitted = SubmittedAnswer(command.value, command.elapsed_ms)
+    submitted = SubmittedAnswer(command.value, elapsed_ms_for(turn.deadline, rules, ctx.now))
     if existing is not None:
         if existing.value == submitted.value:
             return None
@@ -261,7 +282,7 @@ def _decide_expansion_answer(
 ) -> tuple[ev.GameEvent, ...]:
     turn = state.turn
     assert isinstance(turn, ExpansionQuestion)
-    recorded = _record_answer(turn, command)
+    recorded = _record_answer(turn, command, state.rules, ctx)
     if recorded is None:
         return ()
     after = evolve(state, recorded)
@@ -512,7 +533,7 @@ def _decide_neutral_answer(
     assert isinstance(turn, NeutralChallenge)
     if command.actor_id != turn.attacker_id:
         raise RejectedCommand(RejectCode.NOT_YOUR_TURN, f"{turn.attacker_id!r} is attacking")
-    recorded = _record_answer(turn, command)
+    recorded = _record_answer(turn, command, state.rules, ctx)
     if recorded is None:
         return ()
     after = evolve(state, recorded)
@@ -561,7 +582,7 @@ def _decide_duel_answer(
         raise RejectedCommand(
             RejectCode.NOT_YOUR_TURN, f"{command.actor_id!r} is not part of this duel"
         )
-    recorded = _record_answer(turn, command)
+    recorded = _record_answer(turn, command, state.rules, ctx)
     if recorded is None:
         return ()
     after = evolve(state, recorded)
@@ -631,7 +652,7 @@ def _decide_tiebreak_answer(
         raise RejectedCommand(
             RejectCode.NOT_YOUR_TURN, f"{command.actor_id!r} is not part of this tiebreak"
         )
-    recorded = _record_answer(turn, command)
+    recorded = _record_answer(turn, command, state.rules, ctx)
     if recorded is None:
         return ()
     after = evolve(state, recorded)
@@ -892,7 +913,7 @@ def _decide_final_tiebreak_answer(
         raise RejectedCommand(
             RejectCode.NOT_YOUR_TURN, f"{command.actor_id!r} is not part of this tiebreak"
         )
-    recorded = _record_answer(turn, command)
+    recorded = _record_answer(turn, command, state.rules, ctx)
     if recorded is None:
         return ()
     after = evolve(state, recorded)

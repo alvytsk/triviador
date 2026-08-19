@@ -32,6 +32,7 @@ FORBIDDEN = (
     "pydantic",
     "pydantic_settings",
     "fastapi",
+    "starlette",
 )
 
 # `db/codec/` legitimately imports `triviador.db.errors` (its exception
@@ -243,6 +244,8 @@ def test_services_does_not_import_adapters() -> None:
         "sqlalchemy",
         "asyncpg",
         "alembic",
+        "fastapi",
+        "starlette",
     )
     violations = [
         f"{path.relative_to(SRC)}: {module}"
@@ -265,6 +268,41 @@ def test_runtime_does_not_import_persistence_or_api() -> None:
     violations = [
         f"{path.relative_to(SRC)}: {module}"
         for path in sorted(RUNTIME.rglob("*.py"))
+        for module in sorted(_imported_modules(path))
+        if _is_forbidden(module, forbidden)
+    ]
+    assert violations == [], violations
+
+
+PROJECTION = SRC / "triviador" / "api" / "projection"
+
+
+def test_projection_stays_a_pure_function_of_state_and_viewer() -> None:
+    """`api/` as a whole is the composition root and may import anything.
+    `api/projection/` may not: it is where §8.7's per-viewer withholding
+    lives, and it is called from inside the synchronous broadcaster, on the
+    consumer task's own stack (§8.6). A projection module that can open a
+    session is a projection module that will eventually await one there —
+    which is the one thing `Broadcaster` being a `def` exists to prevent.
+
+    Empty today (the package lands in Tasks 8-10); `rglob` over a directory
+    with only `__init__.py` yields no violations, and the gate is written
+    now so the first projection module is already covered.
+    """
+    forbidden = (
+        "triviador.db",
+        "triviador.runtime",
+        "triviador.api.http",
+        "triviador.api.ws",
+        "sqlalchemy",
+        "asyncpg",
+        "alembic",
+        "fastapi",
+        "starlette",
+    )
+    violations = [
+        f"{path.relative_to(SRC)}: {module}"
+        for path in sorted(PROJECTION.rglob("*.py"))
         for module in sorted(_imported_modules(path))
         if _is_forbidden(module, forbidden)
     ]

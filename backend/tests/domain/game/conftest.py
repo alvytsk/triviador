@@ -141,7 +141,6 @@ def commands() -> dict[str, CommandBuilder]:
             _actor(s),
             _window(s),
             NumericAnswer(Decimal(100)) if _is_numeric(s) else ChoiceAnswer(0),
-            300,
         ),
         "pick": lambda s: PickRegion(_actor(s), _window(s), _free_or_any(s)),
         "target": lambda s: SelectAttackTarget(_actor(s), _window(s), RegionId("r4")),

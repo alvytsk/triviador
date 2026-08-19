@@ -40,7 +40,7 @@ def picking_state(rules_override: dict[str, object] | None = None) -> GameState:
     state = expire_warmup(state)
     for player, guess in ((P1, 100), (P2, 110), (P3, 120)):
         assert isinstance(state.turn, ExpansionQuestion)
-        cmd = SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(guess)), 100)
+        cmd = SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(guess)))
         state = fold(state, decide(state, cmd, CTX))
     return state
 
@@ -270,7 +270,7 @@ def test_running_out_of_free_regions_enters_the_battle_stage() -> None:
             break
         assert isinstance(state.turn, ExpansionQuestion)
         for player, guess in ((P1, 100), (P2, 110), (P3, 120)):
-            cmd = SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(guess)), 100)
+            cmd = SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(guess)))
             state = fold(state, decide(state, cmd, CTX))
     assert state.phase is Phase.BATTLE
     assert state.free_regions() == ()

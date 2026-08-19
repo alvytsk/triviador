@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from triviador.db.engine import create_engine, sessionmaker_for
 from triviador.db.models.auth import User
 from triviador.db.models.content import Category, Question, QuestionChoice, QuestionNumeric
+from triviador.db.models.presets import RulePreset
 from triviador.db.repositories.games import GameRepository
 from triviador.db.unit_of_work import UnitOfWork
 from triviador.domain.game.rules import DEFAULT_RULES
@@ -61,6 +62,14 @@ DATABASE_URL = os.environ.get("TRIVIADOR_TEST_DATABASE_URL", TEST_DATABASE_URL)
 THIS_DIR = Path(__file__).parent
 BACKEND_DIR = THIS_DIR.parent.parent
 ALEMBIC_INI = BACKEND_DIR / "alembic.ini"
+
+# `test_security.py` (Plan 5) exercises argon2 and `secrets` only — it opens
+# no session, builds no engine, and needs no fixture from this file. Every
+# other module here earns the `integration` mark by depending on the
+# session-scoped `engine`; this is the one named exception, not a loophole,
+# so it stays an explicit allowlist rather than a heuristic ("no `async def`
+# test") that could silently swallow a real integration test later.
+NO_DATABASE_MODULES = frozenset({THIS_DIR / "test_security.py"})
 
 
 async def _seed_category(
@@ -204,7 +213,8 @@ def _lacks_session_loop_scope(item: pytest.Item) -> bool:
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Every test module under tests/db must be marked `integration`, and
     every async test here must run on the session-scoped loop `engine`
-    (and everything built from it) requires.
+    (and everything built from it) requires — except the modules named in
+    `NO_DATABASE_MODULES`, which need neither.
 
     A conftest.py hook is registered for the whole pytest session once it is
     loaded, not scoped to its own directory — `items` here is every item
@@ -213,7 +223,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     without that filter, this hook would reject the entire fast lane the
     moment collection touches this directory.
     """
-    db_items = [item for item in items if item.path.is_relative_to(THIS_DIR)]
+    db_items = [
+        item
+        for item in items
+        if item.path.is_relative_to(THIS_DIR) and item.path not in NO_DATABASE_MODULES
+    ]
 
     unmarked = sorted(
         {item.nodeid.split("::")[0] for item in db_items if "integration" not in item.keywords}
@@ -229,9 +243,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     )
     if missing_loop_scope:
         raise pytest.UsageError(
-            "tests/db modules use fixtures built from the session-scoped `engine` "
-            "and must declare `pytestmark = [pytest.mark.integration, "
-            'pytest.mark.asyncio(loop_scope="session")]`; missing in: '
+            "tests/db async tests use fixtures built from the session-scoped "
+            '`engine` and must carry `pytest.mark.asyncio(loop_scope="session")` '
+            "— either in the module's `pytestmark`, or per test where the module "
+            "also holds synchronous tests (a module-level asyncio mark lands on "
+            "those too, and pytest-asyncio warns about it). Missing in: "
             + ", ".join(missing_loop_scope)
         )
 
@@ -381,6 +397,33 @@ async def clean_db(migrated_schema: None, engine: AsyncEngine) -> AsyncIterator[
 @pytest_asyncio.fixture(loop_scope="session")
 async def sessions(migrated_schema: None, engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
     return sessionmaker_for(engine)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def default_preset(clean_db: None, sessions: async_sessionmaker[AsyncSession]) -> None:
+    """Restore migration 0002's row after `clean_db` has truncated it.
+
+    Depends on `clean_db` rather than replacing it: the point is a known
+    baseline *before every test*, not surviving state. A test that
+    deactivates the default gets a fresh active one next time, and nothing
+    depends on the order tests happen to run in.
+
+    The row is inserted from the migration's own frozen literal, so this
+    fixture cannot drift from what a real database actually contains.
+    """
+    from triviador.db.seed import DEFAULT_PRESET_RULES
+
+    async with sessions() as session, session.begin():
+        session.add(
+            RulePreset(
+                id="default",
+                name="Default",
+                is_default=True,
+                rules=dict(DEFAULT_PRESET_RULES),
+                version=1,
+                is_active=True,
+            )
+        )
 
 
 @dataclass(frozen=True)

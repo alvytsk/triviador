@@ -25,8 +25,7 @@ def test_terminal_phase_ignores_everything() -> None:
     for phase in (Phase.FINISHED, Phase.ABORTED):
         state = replace(lobby_state(), phase=phase)
         assert (
-            decide(state, SubmitAnswer(PlayerId("p1"), DeadlineId(1), ChoiceAnswer(0), 100), CTX)
-            == ()
+            decide(state, SubmitAnswer(PlayerId("p1"), DeadlineId(1), ChoiceAnswer(0)), CTX) == ()
         )
         assert decide(state, ExpireDeadline(DeadlineId(1)), CTX) == ()
 
@@ -60,7 +59,7 @@ def test_non_participant_in_the_current_window_is_rejected() -> None:
 def test_windowed_command_with_no_open_window_is_silent_not_rejected() -> None:
     """Guard 2 fires before guard 5: with turn=None there is no window to match."""
     state = lobby_state()
-    command = SubmitAnswer(PlayerId("p1"), DeadlineId(1), ChoiceAnswer(0), 10)
+    command = SubmitAnswer(PlayerId("p1"), DeadlineId(1), ChoiceAnswer(0))
     assert decide(state, command, CTX) == ()
 
 

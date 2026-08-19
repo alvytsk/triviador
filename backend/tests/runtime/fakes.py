@@ -10,13 +10,20 @@ them, which is where it is cheapest to notice.
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 
 from triviador.domain.game.actions import RejectCode
 from triviador.domain.game.events import GameEvent
 from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId
 from triviador.services.ports import RuntimeCode
+
+# Same instant as `tests.runtime.conftest.T0`. Duplicated rather than
+# imported from there: `conftest.py` already imports from this module, and
+# the reverse import would be circular. Task 16's API-side fixtures import
+# this copy so a game built for a socket test carries the same fixed clock
+# shape the rest of the runtime suite uses.
+T0 = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 
 
 class FakeClock:

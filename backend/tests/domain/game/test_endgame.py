@@ -138,7 +138,7 @@ def test_a_non_contender_cannot_answer_the_final_tiebreak() -> None:
     state = _tied_final_tiebreak()
     assert isinstance(state.turn, FinalTiebreak)
     assert P3 not in state.turn.contenders
-    bystander = SubmitAnswer(P3, state.turn.deadline.id, NumericAnswer(Decimal(0)), 100)
+    bystander = SubmitAnswer(P3, state.turn.deadline.id, NumericAnswer(Decimal(0)))
     with pytest.raises(RejectedCommand) as exc:
         decide(state, bystander, CTX)
     assert exc.value.code is RejectCode.NOT_YOUR_TURN
@@ -147,7 +147,7 @@ def test_a_non_contender_cannot_answer_the_final_tiebreak() -> None:
 def test_repeating_the_same_final_tiebreak_answer_is_ignored() -> None:
     state = _tied_final_tiebreak()
     assert isinstance(state.turn, FinalTiebreak)
-    cmd = SubmitAnswer(P1, state.turn.deadline.id, NumericAnswer(Decimal(123)), 300)
+    cmd = SubmitAnswer(P1, state.turn.deadline.id, NumericAnswer(Decimal(123)))
     state = fold(state, decide(state, cmd, CTX))
     assert isinstance(state.turn, FinalTiebreak)  # still waiting on the other contender
     assert decide(state, cmd, CTX) == ()
@@ -180,9 +180,9 @@ def test_the_tiebreak_winner_becomes_the_winner() -> None:
     window = state.turn.deadline.id
     state = fold(
         state,
-        decide(state, SubmitAnswer(P1, window, NumericAnswer(Decimal(correct + 100)), 300), CTX),
+        decide(state, SubmitAnswer(P1, window, NumericAnswer(Decimal(correct + 100))), CTX),
     )
-    events = decide(state, SubmitAnswer(P2, window, NumericAnswer(Decimal(correct)), 300), CTX)
+    events = decide(state, SubmitAnswer(P2, window, NumericAnswer(Decimal(correct))), CTX)
     finished = next(e for e in events if isinstance(e, ev.GameFinished))
     assert finished.winner_id == P2
     after = fold(state, events)

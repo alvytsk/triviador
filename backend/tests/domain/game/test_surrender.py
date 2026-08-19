@@ -201,7 +201,7 @@ def test_a_surrendered_players_answer_does_not_close_the_window() -> None:
     window = state.turn.deadline.id
 
     def answer(s: GameState, who: str, guess: int) -> GameState:
-        cmd = SubmitAnswer(PlayerId(who), window, NumericAnswer(Decimal(guess)), 100)
+        cmd = SubmitAnswer(PlayerId(who), window, NumericAnswer(Decimal(guess)))
         return fold(s, decide(s, cmd, CTX))
 
     state = answer(state, "p1", 100)

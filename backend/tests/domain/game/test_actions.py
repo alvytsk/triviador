@@ -34,8 +34,8 @@ def test_rejected_command_exposes_its_code() -> None:
 
 
 def test_commands_compare_by_value_for_idempotency_checks() -> None:
-    a = SubmitAnswer(PlayerId("p1"), DeadlineId(4), ChoiceAnswer(2), elapsed_ms=900)
-    b = SubmitAnswer(PlayerId("p1"), DeadlineId(4), ChoiceAnswer(2), elapsed_ms=900)
+    a = SubmitAnswer(PlayerId("p1"), DeadlineId(4), ChoiceAnswer(2))
+    b = SubmitAnswer(PlayerId("p1"), DeadlineId(4), ChoiceAnswer(2))
     assert a == b
 
 

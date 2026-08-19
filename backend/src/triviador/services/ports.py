@@ -13,14 +13,16 @@ else; `tests/test_layering.py` enforces both halves.
 
 from collections.abc import Sequence
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
 from triviador.domain.game.actions import RejectCode
 from triviador.domain.game.events import GameEvent
+from triviador.domain.game.rules import GameRules
 from triviador.domain.game.state import GameState
-from triviador.domain.ids import GameId, MapId
+from triviador.domain.ids import GameId, MapId, PlayerId
 from triviador.domain.questions.types import QuestionBudget, QuestionPool
 from triviador.maps.registry import LoadedMap
 
@@ -170,7 +172,80 @@ class GameQueriesPort(Protocol):
     async def find_unfinished(self) -> tuple[GameId, ...]: ...
 
 
+@dataclass(frozen=True)
+class GameSummary:
+    """The projection `GET /api/games` and `GET /api/games/{id}` need.
+
+    Deliberately thin: full game state (territories, turn, pool, ...) lives
+    only in the folded `GameState`, never duplicated into this read model.
+    `max_players` and `player_count` together are what a lobby list needs to
+    render fill state without decoding `rules` back into a `GameRules`.
+    """
+
+    game_id: GameId
+    map_id: MapId
+    host_id: PlayerId
+    status: str
+    max_players: int
+    player_count: int
+    created_at: datetime
+
+
+class GameCatalogPort(Protocol):
+    """What the REST surface asks of the games table (§6.1, §6.2).
+
+    Deliberately *not* a widening of `GameQueriesPort`. Widening that one
+    would make every runtime fake — `tests/runtime/fakes.py` and three
+    integration fixtures — grow three methods the runtime never calls, to
+    satisfy a Protocol it only reads two of. `GameRepository` satisfies
+    both, and neither consumer sees the other's surface.
+    """
+
+    async def create(
+        self,
+        *,
+        game_id: GameId,
+        map_id: MapId,
+        rules: GameRules,
+        host_id: PlayerId,
+        map_sha256: str,
+        preset_id: str | None,
+        operation_id: str,
+    ) -> None: ...
+    async def get_summary(self, game_id: GameId) -> GameSummary | None: ...
+    async def list_joinable(self) -> tuple[GameSummary, ...]: ...
+
+
+@dataclass(frozen=True)
+class PresetRecord:
+    preset_id: str
+    name: str
+    rules: GameRules
+
+
+class PresetPort(Protocol):
+    """Read-only. Preset CRUD is Plan 7; `POST /api/games` only needs to
+    resolve one id, or the default, into a frozen `GameRules`."""
+
+    async def get(self, preset_id: str) -> PresetRecord | None: ...
+    async def get_default(self) -> PresetRecord | None: ...
+
+
+class DatabaseProbe(Protocol):
+    """Is PostgreSQL answering *right now*.
+
+    A `bool` recorded at startup would report a database that has since
+    gone away as reachable, and §10.6 asks readiness for "database
+    reachable", present tense. Non-throwing: a probe that raised would
+    reach the 503 handler and answer with `database_unavailable` instead
+    of the checklist a probe is asking for.
+    """
+
+    async def ping(self) -> bool: ...
+
+
 class MapProvider(Protocol):
+    def available(self) -> tuple[MapId, ...]: ...
     def load_with_digest(self, map_id: MapId) -> LoadedMap: ...
 
 

@@ -1,6 +1,8 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -27,3 +29,21 @@ async def engine_for(url: str) -> AsyncIterator[AsyncEngine]:
         yield engine
     finally:
         await engine.dispose()
+
+
+class EnginePing:
+    """`DatabaseProbe` over a real engine. Non-throwing — see the port's
+    own docstring in `services/ports.py`: a probe that raised would reach
+    the 500 handler instead of the readiness checklist a caller asked for.
+    """
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+
+    async def ping(self) -> bool:
+        try:
+            async with self._engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+        except SQLAlchemyError:
+            return False
+        return True

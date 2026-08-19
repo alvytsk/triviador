@@ -34,35 +34,45 @@ def started() -> GameState:
     return expire_warmup(state)
 
 
-def answer(state: GameState, player: PlayerId, value: int, elapsed: int) -> SubmitAnswer:
+def answer(state: GameState, player: PlayerId, value: int) -> SubmitAnswer:
     assert isinstance(state.turn, ExpansionQuestion)
-    return SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(value)), elapsed)
+    return SubmitAnswer(player, state.turn.deadline.id, NumericAnswer(Decimal(value)))
+
+
+def answer_ctx(state: GameState, elapsed_ms: int) -> DecisionContext:
+    """A `DecisionContext.now` that lands `elapsed_ms` into the currently
+    open ANSWER window, so tests can control the derived elapsed time."""
+    assert isinstance(state.turn, ExpansionQuestion)
+    opened_at = state.turn.deadline.deadline_at - timedelta(
+        milliseconds=state.rules.answer_timeout_ms
+    )
+    return DecisionContext(now=opened_at + timedelta(milliseconds=elapsed_ms))
 
 
 def test_first_answer_only_records_it() -> None:
     state = started()
-    events = decide(state, answer(state, P1, 100, 500), DecisionContext(now=NOW))
+    events = decide(state, answer(state, P1, 100), DecisionContext(now=NOW))
     assert [type(e) for e in events] == [ev.AnswerSubmitted]
 
 
 def test_repeating_the_same_answer_is_ignored() -> None:
     state = started()
-    state = fold(state, decide(state, answer(state, P1, 100, 500), DecisionContext(now=NOW)))
-    assert decide(state, answer(state, P1, 100, 500), DecisionContext(now=NOW)) == ()
+    state = fold(state, decide(state, answer(state, P1, 100), DecisionContext(now=NOW)))
+    assert decide(state, answer(state, P1, 100), DecisionContext(now=NOW)) == ()
 
 
 def test_changing_the_answer_is_rejected() -> None:
     state = started()
-    state = fold(state, decide(state, answer(state, P1, 100, 500), DecisionContext(now=NOW)))
+    state = fold(state, decide(state, answer(state, P1, 100), DecisionContext(now=NOW)))
     with pytest.raises(RejectedCommand) as exc:
-        decide(state, answer(state, P1, 999, 600), DecisionContext(now=NOW))
+        decide(state, answer(state, P1, 999), DecisionContext(now=NOW))
     assert exc.value.code is RejectCode.ALREADY_ANSWERED
 
 
 def test_wrong_answer_kind_is_rejected() -> None:
     state = started()
     assert isinstance(state.turn, ExpansionQuestion)
-    command = SubmitAnswer(P1, state.turn.deadline.id, ChoiceAnswer(0), 100)
+    command = SubmitAnswer(P1, state.turn.deadline.id, ChoiceAnswer(0))
     with pytest.raises(RejectedCommand) as exc:
         decide(state, command, DecisionContext(now=NOW))
     assert exc.value.code is RejectCode.ANSWER_KIND_MISMATCH
@@ -70,11 +80,9 @@ def test_wrong_answer_kind_is_rejected() -> None:
 
 def test_last_answer_closes_and_resolves_the_window() -> None:
     state = started()
-    for player, guess, elapsed in ((P1, 100, 500), (P2, 90, 400)):
-        state = fold(
-            state, decide(state, answer(state, player, guess, elapsed), DecisionContext(now=NOW))
-        )
-    events = decide(state, answer(state, P3, 105, 300), DecisionContext(now=NOW))
+    for player, guess in ((P1, 100), (P2, 90)):
+        state = fold(state, decide(state, answer(state, player, guess), DecisionContext(now=NOW)))
+    events = decide(state, answer(state, P3, 105), DecisionContext(now=NOW))
     assert [type(e) for e in events] == [
         ev.AnswerSubmitted,
         ev.AnswerWindowClosed,
@@ -86,7 +94,7 @@ def test_last_answer_closes_and_resolves_the_window() -> None:
 def test_ranking_is_by_distance_then_speed() -> None:
     state = started()  # correct answer for "numeric 0?" is 100
     for player, guess, elapsed in ((P1, 105, 900), (P2, 95, 200), (P3, 95, 100)):
-        events = decide(state, answer(state, player, guess, elapsed), DecisionContext(now=NOW))
+        events = decide(state, answer(state, player, guess), answer_ctx(state, elapsed))
         state = fold(state, events)
     resolved = next(e for e in events if isinstance(e, ev.QuestionResolved))
     # p3 and p2 are both 5 away; p3 was faster. p1 is 5 away too but slowest.
@@ -95,7 +103,7 @@ def test_ranking_is_by_distance_then_speed() -> None:
 
 def test_non_answerers_rank_last_by_seat() -> None:
     state = started()
-    state = fold(state, decide(state, answer(state, P3, 100, 100), DecisionContext(now=NOW)))
+    state = fold(state, decide(state, answer(state, P3, 100), DecisionContext(now=NOW)))
     expired = ExpireDeadline(state.turn.deadline.id)  # type: ignore[union-attr]
     late = DecisionContext(now=state.turn.deadline.deadline_at + timedelta(seconds=1))  # type: ignore[union-attr]
     events = decide(state, expired, late)
@@ -105,8 +113,8 @@ def test_non_answerers_rank_last_by_seat() -> None:
 
 def test_grants_follow_claims_by_rank_and_open_picking() -> None:
     state = started()
-    for player, guess, elapsed in ((P1, 100, 100), (P2, 110, 100), (P3, 120, 100)):
-        events = decide(state, answer(state, player, guess, elapsed), DecisionContext(now=NOW))
+    for player, guess in ((P1, 100), (P2, 110), (P3, 120)):
+        events = decide(state, answer(state, player, guess), DecisionContext(now=NOW))
         state = fold(state, events)
     granted = next(e for e in events if isinstance(e, ev.PicksGranted))
     assert granted.grants == {P1: 2, P2: 1, P3: 0}
@@ -128,8 +136,8 @@ def test_when_every_ranked_player_has_a_zero_claim_no_picking_window_opens() -> 
     assert isinstance(state.turn, ExpansionQuestion)
     assert state.active_players() == (P1, P2)
 
-    state = fold(state, decide(state, answer(state, P1, 100, 500), DecisionContext(now=NOW)))
-    events = decide(state, answer(state, P2, 110, 500), DecisionContext(now=NOW))
+    state = fold(state, decide(state, answer(state, P1, 100), DecisionContext(now=NOW)))
+    events = decide(state, answer(state, P2, 110), DecisionContext(now=NOW))
     assert not any(isinstance(e, ev.PicksGranted) for e in events)
     assert any(isinstance(e, ev.ExpansionRoundCompleted) for e in events)
 
@@ -145,8 +153,8 @@ def test_grants_are_truncated_to_free_regions() -> None:
 
     for region in ("r1", "r3", "r4", "r5", "r7"):
         state = own(state, region, "p1")
-    for player, guess, elapsed in ((P1, 100, 100), (P2, 110, 100), (P3, 120, 100)):
-        events = decide(state, answer(state, player, guess, elapsed), DecisionContext(now=NOW))
+    for player, guess in ((P1, 100), (P2, 110), (P3, 120)):
+        events = decide(state, answer(state, player, guess), DecisionContext(now=NOW))
         state = fold(state, events)
     granted = next(e for e in events if isinstance(e, ev.PicksGranted))
     assert sum(granted.grants.values()) == 1

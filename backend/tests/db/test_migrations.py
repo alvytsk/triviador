@@ -78,7 +78,7 @@ async def test_alembic_check_is_clean(migrated_schema: None, engine: AsyncEngine
     Uses Alembic's Python API directly against the live test database (the same
     `compare_metadata` machinery the `alembic check` CLI command runs), not a
     subprocess — a subprocess would need its own configuration and could drift
-    from what CI actually runs.
+    from what this test itself actually exercises.
     """
 
     def _diff(conn: Connection) -> list[object]:
