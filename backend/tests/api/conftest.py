@@ -39,7 +39,7 @@ from tests.api.fakes import (
     FakeUsers,
 )
 from tests.conftest import lobby_state
-from tests.runtime.conftest import StubExecutor, _NoGameQueries, a_manager
+from tests.runtime.conftest import StubExecutor, _created_managers, _NoGameQueries, a_manager
 from tests.runtime.fakes import T0, FakeBroadcaster
 from tests.runtime.fakes import FakeClock as RuntimeFakeClock
 from tests.runtime.integration.conftest import write_grid_map
@@ -52,13 +52,14 @@ from triviador.config import Settings
 from triviador.db.security import token_digest
 from triviador.domain.game.rules import GameRules
 from triviador.domain.game.state import GameState
-from triviador.domain.ids import GameId, SessionId, UserId
+from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.maps.registry import MapRegistry
 from triviador.runtime.errors import PermanentReplayFailure
 from triviador.runtime.manager import Live
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.runtime import GameRuntime
 from triviador.services.identity import UserRole
+from triviador.services.ports import GameSummary
 
 
 @dataclass
@@ -97,6 +98,30 @@ def _restore_logging_globals() -> Iterator[None]:
     structlog.configure(**structlog_config)
     root.handlers[:] = handlers
     root.setLevel(level)
+
+
+@pytest.fixture(autouse=True)
+async def _close_started_runtimes() -> AsyncIterator[None]:
+    """This suite's own copy of `tests/runtime/conftest.py`'s fixture of the
+    same name, for the same reason: `deps` calls `a_manager`, which
+    registers into the *same* module-level `_created_managers` list that
+    fixture drains — but only for tests collected under `tests/runtime/`.
+
+    Running the whole suite together, that works by accident: `api`
+    collects before `runtime` (alphabetically), so every manager an `api`
+    test appends is still sitting in the list, undrained, when the first
+    `runtime` test's teardown empties it. `pytest tests/api` standalone
+    never reaches a `tests/runtime` teardown at all, so nothing ever closes
+    the resident runtime's consumer task `manager.get()` started — a parked
+    task leaked at session end. Draining locally, right after each test
+    that might have populated the list, removes the dependency on
+    collection order entirely."""
+    yield
+    managers, _created_managers[:] = list(_created_managers), []
+    for manager in managers:
+        for runtime in manager.live_runtimes():
+            if not runtime.closed:
+                await runtime.aclose()
 
 
 ORIGIN = "http://box.lan"
@@ -186,6 +211,21 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         on_fault=lambda rt, exc: None,
         generation=1,
         rng=random.Random(0),
+    )
+    # `g1` is inserted directly into the manager's registry above rather
+    # than through `games.create`, but the WS endpoint's own `not_found`
+    # guard (mirroring the REST routes') checks `games.get_summary` before
+    # ever touching the manager — so the catalog needs to know about `g1`
+    # too, or every socket test that subscribes to it would see a spurious
+    # `not_found`.
+    games.summaries[resident.game_id] = GameSummary(
+        game_id=resident.game_id,
+        map_id=MapId("grid"),
+        host_id=PlayerId("u1"),
+        status="active",
+        max_players=2,
+        player_count=2,
+        created_at=T0,
     )
     manager._entries[resident.game_id] = Live(resident)
     return AppDependencies(

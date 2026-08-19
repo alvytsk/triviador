@@ -128,6 +128,23 @@ async def test_subscribing_to_someone_elses_game_closes_with_4403(deps: AppDepen
     assert socket.closed_with == 4403
 
 
+async def test_subscribing_to_an_unknown_game_id_yields_not_found_without_polluting_the_manager(
+    deps: AppDependencies,
+) -> None:
+    """`_runtime_or_none`'s `games.get_summary` guard, mirroring the REST
+    routes' (`api/http/games.py`). Without it, an id with no rows would
+    reach `manager.get` → `_load` → a failed replay → a permanently parked
+    `Failed` registry entry (plus a lock) for an id nothing ever created —
+    unbounded, since only operator action clears `Failed` (§5.6), and
+    surfaced through `manager.degraded()` into `/api/health/ready`. The
+    second assertion is the one that would have caught that: not just the
+    right error code, but no registry entry left behind."""
+    socket = ScriptedSocket({"type": "subscribe", "topic": "game:ghost"})
+    await serve(deps, socket)
+    assert socket.sent[1]["code"] == "not_found"
+    assert GameId("ghost") not in deps.manager._entries
+
+
 async def test_resync_re_sends_the_snapshot_without_re_announcing_presence(
     deps: AppDependencies,
 ) -> None:
@@ -149,6 +166,36 @@ async def test_unsubscribing_stops_the_connection_counting_as_a_subscriber(
     )
     await serve(deps, socket)
     assert deps.hub.subscriber_count("g1") == 0
+
+
+async def test_unsubscribing_rebroadcasts_presence_without_the_departed_player(
+    deps: AppDependencies,
+) -> None:
+    """§8.3: "Presence changes broadcast `game.presence`." The disconnect
+    path already re-broadcasts on departure; explicit `unsubscribe` — a tab
+    navigating back to the lobby without closing the socket — must do the
+    same, or the departed player lingers in every other subscriber's
+    roster indefinitely.
+
+    Driven directly through `_dispatch` (rather than two concurrent
+    `serve_connection` scripts) so the ordering between the two
+    connections' frames is not left to the event loop's scheduling."""
+    from tests.api.test_ws_hub import FakeSocket, a_connection, parsed
+    from triviador.api.schemas.ws import UnsubscribeFrame
+    from triviador.api.ws.endpoint import _dispatch
+
+    stayer = a_connection(FakeSocket(), id="stayer", user_id="u1")
+    leaver = a_connection(FakeSocket(), id="leaver", user_id="u2")
+    deps.hub.add(stayer)
+    deps.hub.add(leaver)
+    deps.hub.subscribe(stayer, "game:g1")
+    deps.hub.subscribe(leaver, "game:g1")
+
+    await _dispatch(leaver, deps, UnsubscribeFrame(topic="game:g1"))
+
+    presence = [m for m in parsed(stayer) if m["type"] == "game.presence"]
+    assert presence, "unsubscribe did not rebroadcast presence"
+    assert presence[-1]["connected"] == ["u1"]
 
 
 @pytest.mark.parametrize(

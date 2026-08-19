@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from tests.api.conftest import ORIGIN
-from tests.api.fakes import FakeClock, FakeHasher, FakeInvites, FakeUsers
+from tests.api.fakes import FakeClock, FakeHasher, FakeInvites, FakeSessions, FakeUsers
 from triviador.api.app import create_app
 from triviador.api.deps import AppDependencies
 from triviador.api.errors import ApiErrorCode
@@ -230,6 +230,34 @@ async def test_logging_out_revokes_the_session_and_clears_the_cookie(
     response = await client.post("/api/auth/logout")
     assert response.status_code == 204
     assert (await client.get("/api/auth/me")).status_code == 401
+
+
+async def test_logging_out_closes_that_sessions_sockets_with_4401(
+    client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """§11.1 classes session revocation as a transport error delivered as a
+    close code, and `Hub.close_sessions` exists for exactly this — but
+    before this fix had no production caller. Without it, a socket already
+    open under the revoked session keeps accepting commands until the idle
+    timeout or a transport disconnect."""
+    from tests.api.test_ws_hub import FakeSocket, a_connection
+
+    assert isinstance(deps.sessions, FakeSessions)
+    before = set(deps.sessions.rows)
+    await register(client, deps.invites)
+    new_hash = next(h for h in deps.sessions.rows if h not in before)
+    session_id = deps.sessions.rows[new_hash][0]  # the session `register` just created
+    this_session = a_connection(FakeSocket(), id="c1", user_id="alice")
+    this_session.principal = dc_replace(this_session.principal, session_id=session_id)
+    another_session = a_connection(FakeSocket(), id="c2", user_id="bob")
+    deps.hub.add(this_session)
+    deps.hub.add(another_session)
+
+    response = await client.post("/api/auth/logout")
+
+    assert response.status_code == 204
+    assert this_session.close_code == 4401
+    assert another_session.close_code is None
 
 
 async def test_a_deactivated_user_is_401_on_the_very_next_request(

@@ -185,6 +185,8 @@ async def _dispatch(connection: Connection, deps: AppDependencies, frame: Client
             await _subscribe(connection, deps, topic, resync=True)
         case UnsubscribeFrame(topic=topic):
             deps.hub.unsubscribe(connection, topic)
+            if topic.startswith("game:"):
+                deps.broadcaster.presence(GameId(topic.removeprefix("game:")))
         case SubmitAnswerFrame() | PickRegionFrame() | SelectTargetFrame() | SurrenderFrame():
             await _command(connection, deps, frame)
 
@@ -272,6 +274,15 @@ async def _runtime_or_none(
     *,
     command_id: str | None = None,
 ) -> GameRuntime | None:
+    # Mirrors the REST routes' guard (`api/http/games.py`): without it, an
+    # id with no rows reaches `manager.get`, which fails the replay and
+    # permanently parks a `Failed` entry (plus a lock) under that id —
+    # unbounded and unpruned, since only operator action clears `Failed`
+    # (§5.6). The client would also see an internal replay diagnostic
+    # instead of `not_found`.
+    if await deps.games.get_summary(game_id) is None:
+        _error(connection, command_id, ApiErrorCode.NOT_FOUND, "no such game")
+        return None
     try:
         return await deps.manager.get(game_id)
     except Exception as exc:

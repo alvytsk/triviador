@@ -87,6 +87,12 @@ async def login(body: LoginRequest, response: Response, deps: Deps) -> Me:
 async def logout(response: Response, deps: Deps, principal: Principal) -> None:
     await deps.sessions.revoke(principal.session_id, at=deps.clock.now())
     response.delete_cookie(deps.settings.session_cookie_name, path="/")
+    # §11.1: session revocation is a transport error delivered as a close
+    # code. Without this, a socket already open under this session keeps
+    # accepting commands under the revoked principal until the 30s idle
+    # timeout or a transport disconnect (§6.5: `Hub.close_sessions` closes
+    # with `4401`).
+    deps.hub.close_sessions((principal.session_id,), 4401)
 
 
 @router.get("/me")

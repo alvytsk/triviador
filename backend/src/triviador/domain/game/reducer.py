@@ -249,7 +249,7 @@ def elapsed_ms_for(deadline: Deadline, rules: GameRules, now: datetime) -> int:
     only after the window length has already bounded them.
     """
     opened_at = deadline.deadline_at - timedelta(milliseconds=rules.answer_timeout_ms)
-    elapsed = int((now - opened_at).total_seconds() * 1000)
+    elapsed = (now - opened_at) // timedelta(milliseconds=1)
     return max(0, min(rules.answer_timeout_ms, elapsed))
 
 

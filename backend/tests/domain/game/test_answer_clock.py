@@ -73,6 +73,22 @@ def test_the_recorded_elapsed_time_is_measured_from_the_window_opening() -> None
     assert submitted.answer.elapsed_ms == 1234
 
 
+def test_an_answer_at_1001ms_is_recorded_exactly() -> None:
+    """`total_seconds() * 1000` truncated through a float lands on 1000 here,
+    not 1001, because the float representation of 1.001 seconds falls just
+    below the integer millisecond boundary. Exact integer division does not
+    have that failure mode."""
+    state, opened_at = question_open()
+    assert isinstance(state.turn, ExpansionQuestion)
+    events = decide(
+        state,
+        SubmitAnswer(PlayerId("p1"), state.turn.deadline.id, NumericAnswer(Decimal(7))),
+        DecisionContext(now=opened_at + timedelta(milliseconds=1001)),
+    )
+    submitted = next(e for e in events if isinstance(e, AnswerSubmitted))
+    assert submitted.answer.elapsed_ms == 1001
+
+
 def test_an_answer_at_the_very_start_of_the_window_records_zero() -> None:
     state, opened_at = question_open()
     assert isinstance(state.turn, ExpansionQuestion)
