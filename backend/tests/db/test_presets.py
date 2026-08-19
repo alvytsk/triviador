@@ -12,7 +12,16 @@ from triviador.db.repositories.presets import PresetRepository
 from triviador.db.seed import DEFAULT_PRESET_RULES
 from triviador.domain.game.rules import DEFAULT_RULES, validate_rules
 
-pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
+# `integration` covers every test here; the asyncio mark is applied per async
+# test rather than at module level. A module-level asyncio mark also lands on
+# the two synchronous tests below, which have no loop to scope — pytest-asyncio
+# warns about exactly that. `tests/db/conftest.py`'s collection guard already
+# treats a sync item as exempt (`_lacks_session_loop_scope` is False when no
+# marker is present), so stating the requirement per async test says the same
+# thing where it is actually true.
+pytestmark = [pytest.mark.integration]
+
+session_loop = pytest.mark.asyncio(loop_scope="session")
 
 
 def test_the_frozen_seed_is_a_valid_ruleset() -> None:
@@ -43,6 +52,7 @@ def test_the_frozen_seed_still_matches_todays_defaults() -> None:
     assert dict(DEFAULT_PRESET_RULES) == json.loads(json.dumps(asdict(DEFAULT_RULES)))
 
 
+@session_loop
 async def test_exactly_one_default_preset_exists(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -53,6 +63,7 @@ async def test_exactly_one_default_preset_exists(
         assert len(rows.all()) == 1
 
 
+@session_loop
 async def test_a_preset_is_reachable_by_id(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -60,6 +71,7 @@ async def test_a_preset_is_reachable_by_id(
     assert (await PresetRepository(sessions).get("nope")) is None
 
 
+@session_loop
 async def test_an_inactive_preset_is_invisible(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -71,6 +83,7 @@ async def test_an_inactive_preset_is_invisible(
     assert await PresetRepository(sessions).get_default() is None
 
 
+@session_loop
 async def test_the_previous_test_did_not_leak_its_deactivation(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -80,6 +93,7 @@ async def test_the_previous_test_did_not_leak_its_deactivation(
     assert await PresetRepository(sessions).get_default() is not None
 
 
+@session_loop
 async def test_rules_that_no_longer_validate_are_refused_rather_than_returned(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:

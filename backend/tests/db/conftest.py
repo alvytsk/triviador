@@ -243,9 +243,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     )
     if missing_loop_scope:
         raise pytest.UsageError(
-            "tests/db modules use fixtures built from the session-scoped `engine` "
-            "and must declare `pytestmark = [pytest.mark.integration, "
-            'pytest.mark.asyncio(loop_scope="session")]`; missing in: '
+            "tests/db async tests use fixtures built from the session-scoped "
+            '`engine` and must carry `pytest.mark.asyncio(loop_scope="session")` '
+            "— either in the module's `pytestmark`, or per test where the module "
+            "also holds synchronous tests (a module-level asyncio mark lands on "
+            "those too, and pytest-asyncio warns about it). Missing in: "
             + ", ".join(missing_loop_scope)
         )
 
