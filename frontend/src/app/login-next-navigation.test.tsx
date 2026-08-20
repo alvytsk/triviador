@@ -2,7 +2,8 @@ import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/rea
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeSocket } from "../../testing/fake-socket";
 import { server } from "../../testing/msw";
 import { Providers } from "./app-providers";
 import { createQueryClient } from "./query-client";
@@ -10,13 +11,37 @@ import { routeTree } from "./routes/routeTree.gen";
 
 const ME = { user_id: "u1", username: "alexey", display_name: "Alexey", role: "player" };
 
-/** Every render below goes through the real `Providers` from
- *  `app-providers.tsx` — the same tree `main.tsx` mounts — rather than a
- *  hand-rolled `QueryClientProvider`. That means `SocketWhenSignedIn` also
- *  mounts and issues its own `GET /api/auth/me` on every render here, which
- *  is why every test below installs a handler for it: the point of using
- *  the real providers is that a future provider dependency in `LoginPage`
- *  or `SignInForm` fails *here*, not in a browser. */
+/**
+ * Every render below goes through the real `Providers` from
+ * `app-providers.tsx` — the same tree `main.tsx` mounts — rather than a
+ * hand-rolled `QueryClientProvider`. That means `SocketWhenSignedIn` also
+ * mounts and issues its own `GET /api/auth/me` on every render here, which
+ * is why every test below installs a handler for it: the point of using
+ * the real providers is that a future provider dependency in `LoginPage`
+ * or `SignInForm` fails *here*, not in a browser.
+ *
+ * `Providers` does not accept an injected socket client — unlike
+ * `renderWithApp`, which is only usable below `app/` — so once sign-in
+ * flips `["me"]` to non-null, `SocketProvider` opens a *real* `WebSocket`
+ * to a host nothing is listening on. That used to "work" only because
+ * `SocketProvider`'s cleanup effect fired a few milliseconds before the
+ * OS's connection refusal landed — a race, not a guarantee, and the kind
+ * that goes from green to intermittently red the day a slower CI box or
+ * one extra `await` shifts that timing. Stubbing the global `WebSocket`
+ * with `FakeSocket` (already built for exactly this — see
+ * `testing/fake-socket.ts` — and constructor-compatible with `WebSocket`)
+ * removes the race entirely without touching any production code. Tasks
+ * 12 and 14 mount signed-in app trees the same way this file does; copy
+ * this stub along with the pattern rather than re-discovering the race.
+ */
+beforeEach(() => {
+  vi.stubGlobal("WebSocket", FakeSocket);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 function meUnauthenticated() {
   return http.get("/api/auth/me", () =>
     HttpResponse.json(
