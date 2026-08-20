@@ -1,4 +1,14 @@
 import type { z } from "zod";
+import type {
+  ClientGameState,
+  duelTurnSchema,
+  finalTurnSchema,
+  neutralTurnSchema,
+  pickingTurnSchema,
+  questionTurnSchema,
+  targetSelectTurnSchema,
+  warmupTurnSchema,
+} from "./generated/public";
 import {
   errorMessageSchema,
   helloMessageSchema,
@@ -35,6 +45,41 @@ export type ClientFrame =
   | z.infer<typeof pickRegionFrameSchema>
   | z.infer<typeof selectTargetFrameSchema>
   | z.infer<typeof surrenderFrameSchema>;
+
+/**
+ * The seven turn kinds, as a real discriminated union.
+ *
+ * `clientGameStateSchema`'s `turn` field cannot be expressed as a Zod
+ * discriminated union by the code generator: the JSON Schema `oneOf` it
+ * compiles from becomes a `z.any().superRefine(...)` that checks "exactly
+ * one of these seven schemas parses", so `z.infer` collapses that field to
+ * `any`. This is the union the generator could not express, declared by
+ * hand from the same seven generated schemas it validates against.
+ */
+export type Turn =
+  | z.infer<typeof warmupTurnSchema>
+  | z.infer<typeof questionTurnSchema>
+  | z.infer<typeof pickingTurnSchema>
+  | z.infer<typeof targetSelectTurnSchema>
+  | z.infer<typeof duelTurnSchema>
+  | z.infer<typeof neutralTurnSchema>
+  | z.infer<typeof finalTurnSchema>;
+
+/**
+ * Recovers `state.turn`'s real type.
+ *
+ * This is a cast, not a re-parse. `clientGameStateSchema.parse()` has
+ * already validated `turn` against exactly one of the seven schemas above,
+ * via the `superRefine` described on `Turn` — that check is what makes this
+ * cast sound. The runtime guarantee already holds by the time a
+ * `ClientGameState` exists; only the compile-time type was lost to the code
+ * generator's `z.any()` fallback. Re-parsing here would re-check a fact
+ * that is already established, on every render; this recovers the dropped
+ * type instead.
+ */
+export function turnOf(state: ClientGameState): Turn | null {
+  return state.turn as Turn | null;
+}
 
 const SERVER_SCHEMAS = {
   hello: helloMessageSchema,

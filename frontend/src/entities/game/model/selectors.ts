@@ -1,4 +1,10 @@
-import type { ClientGameState, ClientPlayer, SubmittedValue, YourOptions } from "@/shared/api";
+import {
+  type ClientGameState,
+  type ClientPlayer,
+  type SubmittedValue,
+  turnOf,
+  type YourOptions,
+} from "@/shared/api";
 
 const NO_OPTIONS: YourOptions = { pick: [], attack: [] };
 
@@ -16,28 +22,28 @@ export function playerById(state: ClientGameState, playerId: string): ClientPlay
 }
 
 export function turnKindOf(state: ClientGameState): string | null {
-  return state.turn === null ? null : state.turn.kind;
+  return turnOf(state)?.kind ?? null;
 }
 
 export function yourOptions(state: ClientGameState): YourOptions {
-  return state.turn?.your_options ?? NO_OPTIONS;
+  return turnOf(state)?.your_options ?? NO_OPTIONS;
 }
 
 export function deadlineOf(state: ClientGameState): string | null {
-  return state.turn?.deadline_at ?? null;
+  return turnOf(state)?.deadline_at ?? null;
 }
 
 export function deadlineIdOf(state: ClientGameState): number | null {
-  return state.turn?.deadline_id ?? null;
+  return turnOf(state)?.deadline_id ?? null;
 }
 
 export function answeredBy(state: ClientGameState): readonly string[] {
-  const turn = state.turn;
+  const turn = turnOf(state);
   return turn !== null && "answered" in turn ? turn.answered : [];
 }
 
 export function yourAnswer(state: ClientGameState): SubmittedValue | null {
-  const turn = state.turn;
+  const turn = turnOf(state);
   return turn !== null && "your_answer" in turn ? turn.your_answer : null;
 }
 
@@ -50,7 +56,7 @@ export function yourAnswer(state: ClientGameState): SubmittedValue | null {
  * watching, whatever the turn says.
  */
 export function isYourTurn(state: ClientGameState): boolean {
-  const turn = state.turn;
+  const turn = turnOf(state);
   if (turn === null) return false;
   const options = yourOptions(state);
   if (options.pick.length > 0 || options.attack.length > 0) return true;

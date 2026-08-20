@@ -77,6 +77,8 @@ export {
   MessageParseError,
   parseServerMessage,
   type ServerMessage,
+  type Turn,
+  turnOf,
 } from "./messages";
 export { apiFetch, apiSend } from "./rest";
 export {
