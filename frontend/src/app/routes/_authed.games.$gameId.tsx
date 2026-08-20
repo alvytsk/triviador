@@ -1,19 +1,33 @@
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
+import { GamePage } from "@/pages/game";
+import { gameQueryOptions } from "../game-query";
 
 /**
- * Placeholder, added here rather than in Task 12 because it already has to
- * exist for this task's own code to type-check: `useCreateGame` and
- * `useJoinGame` (`src/features/create-game`, `src/features/join-game`) both
- * `navigate({ to: "/games/$gameId", params: { gameId } })` on success, and
- * TanStack Router's typed `navigate` needs `/games/$gameId` to be a real
- * route — with this exact param shape — for that call to compile. Same
- * pattern Task 8 used for `/login` ahead of Task 9's `redirect`.
+ * The loader pre-warms `["game", id]` through `gameQueryOptions`'s one merge
+ * rule (§9.3) so navigation from create/join — which never write that cache
+ * themselves, see `features/create-game`/`features/join-game` — lands with
+ * the snapshot already there.
  *
- * Task 12 replaces the component (and adds the loader that fetches the
- * game's snapshot through `gameQueryOptions` / `writeGame`'s one merge
- * rule) — the route id and the `$gameId` param are expected to survive
- * unchanged, since Task 10's navigation calls already depend on them.
+ * The component's own `useQuery(gameQueryOptions(...))` is what actually
+ * keeps `GamePage` subscribed to that cache entry afterwards, and it has to
+ * run *here*: `gameQueryOptions` lives in `app/` because its queryFn calls
+ * `writeGame`, which is app-only (Task 7's `noRestrictedImports` gate, and
+ * steiger's `fsd/forbidden-imports`), and `pages` may not import from `app`
+ * — the identical wall Task 10 hit for `useSocket`, resolved there by moving
+ * the socket-consuming parts down to `shared`/`entities`. `gameQueryOptions`
+ * cannot move down the same way (it needs `writeGame`), so instead this
+ * route — the one place both `gameQueryOptions` and `GamePage` may be
+ * imported together — runs the query and hands the live result down as a
+ * prop.
  */
 export const Route = createFileRoute("/_authed/games/$gameId")({
-  component: () => null,
+  loader: ({ context, params }) =>
+    context.queryClient.ensureQueryData(gameQueryOptions(params.gameId, context.queryClient)),
+  component: function GameRoute() {
+    const { gameId } = Route.useParams();
+    const queryClient = useQueryClient();
+    const game = useQuery(gameQueryOptions(gameId, queryClient));
+    return <GamePage gameId={gameId} game={game} />;
+  },
 });

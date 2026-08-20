@@ -13,3 +13,4 @@ export {
   yourAnswer,
   yourOptions,
 } from "./model/selectors";
+export { useGameSubscription, useResyncGame } from "./model/use-game-subscription";

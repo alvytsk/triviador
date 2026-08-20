@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { SocketStatus } from "@/shared/api";
-import { useSocket } from "./socket-provider";
+import { type SocketStatus, useSocket } from "@/shared/api";
 
 /**
  * §9.4's refcounted subscription. Two widgets on one screen both wanting the
@@ -16,6 +15,17 @@ import { useSocket } from "./socket-provider";
  * snapshot. `resync` is reserved for a socket that is still open but whose
  * client believes it has desynced (§11.7's "one resolution: take a fresh
  * snapshot"), and is exposed separately as `resyncGame`.
+ *
+ * This hook (and `useResyncGame` below) lives in `entities/game` rather than
+ * `app/`, where it was originally drafted: `GamePage` — a page — needs it,
+ * and `pages` may not import from `app` (steiger's `fsd/forbidden-imports`,
+ * proven directly the same way `shared/api/socket-context.ts` documents for
+ * `useSocket`). It only ever needs `send`, `status` and `client` off the
+ * socket — never `EventBus` narration — so it consumes the thin
+ * `useSocket`/`SocketHandle` exported from `@/shared/api`, not the richer
+ * context `app/socket-provider.tsx` keeps for itself. `app/` still owns the
+ * `SocketProvider` that supplies that context, the dispatcher, the event bus
+ * and `useNarration` — nothing about *those* needed to move.
  */
 const counts = new Map<string, number>();
 

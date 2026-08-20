@@ -1,7 +1,7 @@
 import { act } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TIMING } from "@/shared/config";
-import { renderWithApp } from "../../testing/render";
+import { renderWithApp } from "../../../../testing/render";
 import { useGameSubscription } from "./use-game-subscription";
 
 function Watcher({ gameId }: { gameId: string }) {
