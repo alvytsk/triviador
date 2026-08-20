@@ -4938,6 +4938,112 @@ async def test_two_concurrent_confirms_cannot_both_apply(sessions, clean_db) -> 
     assert sorted([first, second]) == [False, True]
 
 
+async def test_confirm_writes_every_kind_of_row_in_one_transaction(sessions, clean_db) -> None:
+    """The composition this task actually adds, against the real schema.
+
+    Every individual statement here is proven elsewhere — questions and
+    their children in `test_question_admin.py`, the media upsert in
+    `test_media_repository.py`, category-ensure-in-the-caller's-transaction
+    in `test_seed_questions.py`. What has never run against PostgreSQL is
+    all five landing *together* inside the locked transaction with the
+    status flip. A column-name typo, an FK ordering mistake or a
+    `Decimal`/`NUMERIC` mismatch in that composition would pass every fake
+    and fail on the first real import.
+    """
+    from sqlalchemy import text as sql
+
+    await _seed_user(sessions, "admin-1")
+    repository = QuestionImportRepository(sessions)
+    await repository.create(
+        import_id="imp-write",
+        uploaded_by="admin-1",
+        upload_sha256="sha",
+        filename="bank.zip",
+        staged_key="imp-write/bank.zip",
+        row_count=2,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    applied = await repository.apply_if_confirmable(
+        "imp-write",
+        rows=(
+            ImportedQuestion(
+                category_slug="geography",
+                kind="multiple_choice",
+                prompt="Which river runs through Prague?",
+                difficulty="easy",
+                media_file="river.png",
+                choices=(("Vltava", True), ("Elbe", False), ("Morava", False), ("Ohře", False)),
+                numeric_answer=None,
+                unit=None,
+            ),
+            ImportedQuestion(
+                category_slug="history",
+                kind="numeric",
+                prompt="In which year did the Velvet Revolution begin?",
+                difficulty="easy",
+                media_file=None,
+                choices=None,
+                numeric_answer=Decimal("1989"),
+                unit=None,
+            ),
+        ),
+        images={
+            "river.png": ImportedImage(
+                asset_id="c" * 64,
+                mime_type="image/webp",
+                width=800,
+                height=400,
+                byte_size=1234,
+                storage_key="cc/ccc.webp",
+            )
+        },
+        uploaded_by="admin-1",
+        now=datetime.now(UTC),
+    )
+    assert applied is True
+
+    async with sessions() as session:
+        counts = {
+            table: (await session.execute(sql(f"SELECT count(*) FROM {table}"))).scalar_one()
+            for table in (
+                "categories",
+                "questions",
+                "question_choices",
+                "question_numeric",
+                "media_assets",
+            )
+        }
+        status = (
+            await session.execute(
+                sql("SELECT status FROM question_imports WHERE id = 'imp-write'")
+            )
+        ).scalar_one()
+        answer = (
+            await session.execute(sql("SELECT correct_value FROM question_numeric"))
+        ).scalar_one()
+        attached = (
+            await session.execute(
+                sql("SELECT media_asset_id FROM questions WHERE kind = 'multiple_choice'")
+            )
+        ).scalar_one()
+
+    # Two categories created from slugs that did not exist, two questions,
+    # four choices for the MC one, one numeric answer, one media asset.
+    assert counts == {
+        "categories": 2,
+        "questions": 2,
+        "question_choices": 4,
+        "question_numeric": 1,
+        "media_assets": 1,
+    }
+    assert status == "confirmed"
+    assert answer == Decimal("1989")
+    assert attached == "c" * 64
+
+
 async def test_an_expired_import_cannot_be_applied_even_with_zero_rejections(
     sessions, clean_db
 ) -> None:
@@ -5232,11 +5338,28 @@ async def confirm_import(
 
     parsed = parse_upload(staged, filename=record.filename)
     normalized = {}
-    for row in parsed.rows:
-        if row.media_file is not None and row.media_file not in normalized:
-            normalized[row.media_file] = await deps.normalizer.normalize(
-                parsed.media[row.media_file]
-            )
+    try:
+        for row in parsed.rows:
+            if row.media_file is not None and row.media_file not in normalized:
+                normalized[row.media_file] = await deps.normalizer.normalize(
+                    parsed.media[row.media_file]
+                )
+    except MediaRejected as exc:
+        # Dry-run validated these exact bytes — the sha match above proves
+        # they *are* the same bytes — so this is unreachable within one
+        # running process. It is not unreachable across a deploy: the
+        # limits live on `ImageNormalizer`, built from settings at process
+        # start, and an operator who tightens `media_max_bytes` between an
+        # admin's dry-run and their confirm (well inside `IMPORT_TTL_HOURS`)
+        # makes an image that passed then fail now. That is an ordinary
+        # "run the dry-run again", not a server fault, and letting it reach
+        # the catch-all handler would report it as a 500.
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE,
+            409,
+            f"{exc.reason}; the media limits changed since this upload was validated — "
+            "run the dry-run again",
+        ) from exc
     for image in normalized.values():
         await deps.media_store.put(
             image.storage_key,
