@@ -16,6 +16,7 @@
 // than silently — fix that by pinning the canonical module for that name here, never by
 // dropping the name.
 
+export { type ApiFailureKind, ApiFetchError } from "./errors";
 export type { ApiErrorCode, RejectCode } from "./generated/errors";
 export * from "./generated/errors";
 export { apiErrorCodeSchema, rejectCodeSchema } from "./generated/errors";
@@ -69,3 +70,4 @@ export {
   yourOptionsSchema,
 } from "./generated/public";
 export * from "./generated/ws";
+export { apiFetch, apiSend } from "./rest";
