@@ -1230,7 +1230,7 @@ git commit -m "feat(seed): a startable question bank, and the command that insta
 
 **Interfaces:**
 - Consumes: the three generated modules Plan 5 committed.
-- Produces: `cn(...classes)`; `invariant(condition, message): asserts condition`; `SEAT_VARS: readonly string[]` and `seatVar(seat: number): string`; `TIMING` (`{ PING_INTERVAL_MS: 15_000, RECONNECT_BASE_MS: 500, RECONNECT_MAX_MS: 10_000, TIMER_URGENT_MS: 8_000 }`); `<Button>`, `<Field>`, `<Banner>`, `<Chip>`; the `@/` path alias; the scripts `pnpm dev | build | test | check | codegen:check`.
+- Produces: `cn(...classes)`; `invariant(condition, message): asserts condition`; `SEAT_COUNT: 4` and `seatVar(seat: number): string`; `TIMING` (`{ PING_INTERVAL_MS: 15_000, RECONNECT_BASE_MS: 500, RECONNECT_MAX_MS: 10_000, TIMER_URGENT_MS: 8_000 }`); `<Button>`, `<Field>`, `<Banner>`, `<Chip>`; the `@/` path alias; the scripts `pnpm dev | build | test | check | codegen:check`.
 
 **A correction to the File Structure block above:** test helpers live in `frontend/testing/`, *outside* `src/`, not under `shared/lib`. `steiger` scans the FSD root (`./src`); a `render.tsx` that imports `app/providers` is not an FSD violation, but it is a slice that exists only for tests and would have to be argued about on every `fsd/insignificant-slice` run. Keeping it outside the tree costs nothing and removes the argument. `shared/lib` holds `cn()` and `invariant()` only.
 
