@@ -8,16 +8,17 @@ import { Banner, Button, Chip } from "@/shared/ui";
  * seats filled to `player_count` of `max_players`, the count, a status
  * chip, and one action button.
  *
- * `LobbyGameSummary` carries no participant list, so there is no way to
- * tell "a game in progress that isn't mine" from "a game in progress I'm
- * seated in" from this row alone — the button rule below (mirroring the
- * brief exactly) treats every non-`lobby` game as a Rejoin candidate and
- * lets the server's own membership check be the real answer.
+ * No Rejoin case: `GameRepository.list_joinable()` filters `WHERE status ==
+ * "lobby"`, and `GET /api/games`, `lobby.snapshot` and `lobby.update` are
+ * all sourced from it, so every row this component ever receives already
+ * has `status === "lobby"` — a `!== "lobby"` branch here could never
+ * render. That is also a real product gap, not something this component
+ * can fix: a player who refreshes mid-game has no lobby affordance back
+ * into it, only browser history or the URL.
  */
 export function GameRow({ game }: { game: LobbyGameSummary }) {
   const join = useJoinGame();
   const hasRoom = game.player_count < game.max_players;
-  const isOpen = game.status === "lobby";
 
   return (
     <li className="flex flex-col gap-2 border border-line bg-panel px-5 py-4">
@@ -46,7 +47,7 @@ export function GameRow({ game }: { game: LobbyGameSummary }) {
 
         <Chip>{game.status}</Chip>
 
-        {isOpen && hasRoom && (
+        {hasRoom ? (
           <Button
             variant="ghost"
             disabled={join.isPending}
@@ -54,19 +55,9 @@ export function GameRow({ game }: { game: LobbyGameSummary }) {
           >
             Join
           </Button>
-        )}
-        {isOpen && !hasRoom && (
+        ) : (
           <Button variant="ghost" disabled>
             Full
-          </Button>
-        )}
-        {!isOpen && (
-          <Button
-            variant="ghost"
-            disabled={join.isPending}
-            onClick={() => join.mutate(game.game_id)}
-          >
-            Rejoin
           </Button>
         )}
       </div>

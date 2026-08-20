@@ -1,6 +1,8 @@
 import { act, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { gameKey, meKey } from "@/entities/game";
+import { snapshot } from "../../../../testing/factories";
 import { server } from "../../../../testing/msw";
 import { renderWithApp } from "../../../../testing/render";
 import { LobbyPage } from "./lobby-page";
@@ -13,6 +15,8 @@ const GAME = {
   max_players: 3,
   status: "lobby",
 };
+
+const ME = { user_id: "u1", username: "alexey", display_name: "Alexey", role: "player" };
 
 function withLobby(games: unknown[] = [GAME]) {
   server.use(
@@ -78,5 +82,32 @@ describe("LobbyPage", () => {
     await screen.findByText(/no open games/i);
     (await findByRole("button", { name: /create game/i })).click();
     expect(await findByRole("status")).toHaveTextContent("no default preset is configured");
+  });
+
+  it("hands a created game off to the router instead of writing the game cache", async () => {
+    withLobby([]);
+    server.use(
+      // Belt and suspenders alongside the `meKey()` seed below: the query
+      // client's default `staleTime: Infinity` (see `app/query-client.ts`)
+      // should let `_authed`'s `beforeLoad` find the seeded value without
+      // ever fetching, but if that assumption is ever wrong, MSW's
+      // `onUnhandledRequest: "error"` needs a handler to fail loudly on
+      // instead of throwing an unrelated error.
+      http.get("/api/auth/me", () => HttpResponse.json(ME)),
+      http.post("/api/games", () => HttpResponse.json(snapshot(9, { game_id: "g9" }))),
+    );
+    const harness = renderWithApp(<LobbyPage />, {
+      seed: ({ queryClient }) => queryClient.setQueryData(meKey(), ME),
+    });
+    await screen.findByText(/no open games/i);
+    (await screen.findByRole("button", { name: /create game/i })).click();
+
+    // The navigation half of Task 10's claim.
+    await waitFor(() => expect(harness.router.state.location.pathname).toBe("/games/g9"));
+    // The cache half — the one the architecture actually rests on. A second
+    // writer of `["game", id]` here would be exactly the bug `writeGame`'s
+    // one-merge-rule and the `@/app/dispatcher` lint gate exist to prevent;
+    // this proves the mutation itself never attempts it.
+    expect(harness.queryClient.getQueryData(gameKey("g9"))).toBeUndefined();
   });
 });
