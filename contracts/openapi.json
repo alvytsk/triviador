@@ -2272,6 +2272,50 @@
         ]
       }
     },
+    "/api/admin/questions/import/{import_id}/confirm": {
+      "post": {
+        "description": "\u00a79.3's order, and the reason each step is where it is.\n\n    read staged object          \u2014 the upload, not what the client sent now\n    recompute sha256            \u2014 and compare against the dry-run's\n    validate + re-encode media  \u2014 CPU-bound, before any lock is taken\n    write public blobs          \u2014 idempotent by content addressing\n    BEGIN \u2026 FOR UPDATE \u2026 COMMIT \u2014 the only step that can lose a race\n\nConcurrent confirms duplicate the preprocessing and write the same\nblobs twice, which is safe precisely because the blobs are addressed\nby their content; only the transaction is serialised.",
+        "operationId": "confirm_import_api_admin_questions_import__import_id__confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Import",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
     "/api/admin/questions/import/{import_id}/rejected.csv": {
       "get": {
         "description": "The original rows plus a `reason` column \u2014 \u00a710.3's fix-and-repeat\nloop. Built from the stored report, not from the staged object: the\nobject may already have been retired, and the report is what the\nverdict was actually computed from.",

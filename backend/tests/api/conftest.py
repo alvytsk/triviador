@@ -298,6 +298,26 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         created_at=T0,
     )
     manager._entries[resident.game_id] = Live(resident)
+    media_assets = FakeMediaAssets()
+    questions_admin = FakeQuestionAdmin(
+        {
+            "q1": QuestionDetailRecord(
+                question_id="q1",
+                kind="numeric",
+                prompt="How many players does a default game seat?",
+                category_id="cat-1",
+                category_slug="general",
+                difficulty="easy",
+                is_active=True,
+                version=1,
+                media_asset_id=None,
+                choices=None,
+                numeric_answer=Decimal("3"),
+                unit=None,
+            )
+        }
+    )
+    categories = FakeCategories()
     return AppDependencies(
         settings=settings,
         clock=clock,
@@ -315,32 +335,22 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         maps=MapRegistry(root=map_root),
         presets=FakePresets(),
         media_store=FakeMediaStore(clock),
-        media_assets=FakeMediaAssets(),
-        questions_admin=FakeQuestionAdmin(
-            {
-                "q1": QuestionDetailRecord(
-                    question_id="q1",
-                    kind="numeric",
-                    prompt="How many players does a default game seat?",
-                    category_id="cat-1",
-                    category_slug="general",
-                    difficulty="easy",
-                    is_active=True,
-                    version=1,
-                    media_asset_id=None,
-                    choices=None,
-                    numeric_answer=Decimal("3"),
-                    unit=None,
-                )
-            }
-        ),
-        categories=FakeCategories(),
+        media_assets=media_assets,
+        questions_admin=questions_admin,
+        categories=categories,
         normalizer=ImageNormalizer(
             max_bytes=settings.media_max_bytes,
             max_pixels=settings.media_max_pixels,
             target_px=settings.media_target_px,
         ),
-        imports=FakeImports(),
+        # The same `categories`/`questions_admin`/`media_assets` instances,
+        # not fresh ones: `apply_if_confirmable` writes straight into them
+        # (see `FakeImports`'s docstring), and a test asserting on
+        # `deps.questions_admin.records` after a confirm has to be looking
+        # at the store the import actually wrote to.
+        imports=FakeImports(
+            categories=categories, questions_admin=questions_admin, media_assets=media_assets
+        ),
         staging_store=FakeStagingStore(),
     )
 

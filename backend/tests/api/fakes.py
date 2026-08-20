@@ -8,6 +8,7 @@ being run on every change.
 """
 
 import hashlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -19,6 +20,8 @@ from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.services.admin import (
     CategoryRecord,
     ChoiceRecord,
+    ImportedImage,
+    ImportedQuestion,
     ImportRecord,
     ImportStatus,
     MediaAssetRecord,
@@ -459,10 +462,23 @@ class FakeCategories:
 @dataclass
 class FakeImports:
     """In-memory `ImportPort`. Every import created here starts
-    `ImportStatus.VALIDATED` — the only status this task's route ever
-    writes; Task 8 and Task 9 are what teach a fake to move it further."""
+    `ImportStatus.VALIDATED`.
+
+    `categories`, `questions_admin` and `media_assets` are the *same*
+    instances wired onto `AppDependencies` — never private copies. The real
+    `QuestionImportRepository.apply_if_confirmable` writes straight into
+    `categories`/`questions`/`media_assets` from inside its own locked
+    transaction, bypassing `CategoryPort`/`QuestionAdminPort` entirely
+    (Task 8's report explains why). This fake has no session to bypass, so
+    it reaches the same stores those ports already write to — the only way
+    a test asserting on `deps.questions_admin.records` after a confirm can
+    see what the import produced.
+    """
 
     records: dict[str, ImportRecord] = field(default_factory=dict)
+    categories: FakeCategories = field(default_factory=FakeCategories)
+    questions_admin: FakeQuestionAdmin = field(default_factory=FakeQuestionAdmin)
+    media_assets: FakeMediaAssets = field(default_factory=FakeMediaAssets)
 
     async def create(
         self,
@@ -494,6 +510,64 @@ class FakeImports:
 
     async def get(self, import_id: str) -> ImportRecord | None:
         return self.records.get(import_id)
+
+    async def apply_if_confirmable(
+        self,
+        import_id: str,
+        *,
+        rows: Sequence[ImportedQuestion],
+        images: Mapping[str, ImportedImage],
+        uploaded_by: str,
+        now: datetime,
+    ) -> bool:
+        """Mirrors `QuestionImportRepository.apply_if_confirmable`'s three
+        rechecked conditions and its category/asset/question writes — a
+        single-process stand-in for the `FOR UPDATE` transaction, since
+        nothing here is actually concurrent."""
+        record = self.records.get(import_id)
+        if record is None:
+            return False
+        if record.status is not ImportStatus.VALIDATED:
+            return False
+        if record.rejected_count != 0:
+            return False
+        if record.expires_at <= now:
+            return False
+
+        category_ids = {c.slug: c.category_id for c in self.categories.records.values()}
+        for slug in {row.category_slug for row in rows} - set(category_ids):
+            created = await self.categories.create(
+                slug=slug, name=slug.replace("-", " ").title()
+            )
+            category_ids[slug] = created.category_id
+
+        for image in images.values():
+            await self.media_assets.ensure(
+                asset_id=image.asset_id,
+                mime_type=image.mime_type,
+                width=image.width,
+                height=image.height,
+                byte_size=image.byte_size,
+                storage_key=image.storage_key,
+                created_by=uploaded_by,
+            )
+
+        for row in rows:
+            await self.questions_admin.create(
+                QuestionWrite(
+                    kind=row.kind,
+                    prompt=row.prompt,
+                    category_id=category_ids[row.category_slug],
+                    difficulty=row.difficulty,
+                    media_asset_id=images[row.media_file].asset_id if row.media_file else None,
+                    choices=row.choices,
+                    numeric_answer=row.numeric_answer,
+                    unit=row.unit,
+                )
+            )
+
+        self.records[import_id] = replace(record, status=ImportStatus.CONFIRMED)
+        return True
 
 
 class FakeStagingStore:

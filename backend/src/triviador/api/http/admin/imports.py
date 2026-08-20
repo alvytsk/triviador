@@ -27,7 +27,7 @@ from fastapi.responses import PlainTextResponse
 
 from triviador.api.deps import AdminPrincipal, Deps
 from triviador.api.errors import ApiError, ApiErrorCode
-from triviador.api.http.admin.media import read_capped
+from triviador.api.http.admin.media import CACHE_CONTROL, read_capped, repair_blob
 from triviador.api.schemas.admin.imports import ImportNotice, ImportRejection, ImportSummary
 from triviador.imports.digest import prompt_digest
 from triviador.imports.parse import (
@@ -38,8 +38,8 @@ from triviador.imports.parse import (
     UploadRejected,
     parse_upload,
 )
-from triviador.media.pipeline import MediaRejected
-from triviador.services.admin import ImportRecord, ImportStatus
+from triviador.media.pipeline import MediaRejected, NormalizedImage
+from triviador.services.admin import ImportedImage, ImportedQuestion, ImportRecord, ImportStatus
 
 router = APIRouter(prefix="/questions/import", tags=["admin"])
 
@@ -180,3 +180,118 @@ async def rejected_csv(import_id: str, deps: Deps, principal: AdminPrincipal) ->
     for item in rejections:
         writer.writerow({**item.get("raw", {}), "reason": item["reason"]})
     return PlainTextResponse(buffer.getvalue(), media_type="text/csv; charset=utf-8")
+
+
+@router.post("/{import_id}/confirm")
+async def confirm_import(
+    import_id: str, deps: Deps, principal: AdminPrincipal
+) -> ImportSummary:
+    """§9.3's order, and the reason each step is where it is.
+
+        read staged object          — the upload, not what the client sent now
+        recompute sha256            — and compare against the dry-run's
+        validate + re-encode media  — CPU-bound, before any lock is taken
+        write public blobs          — idempotent by content addressing
+        BEGIN … FOR UPDATE … COMMIT — the only step that can lose a race
+
+    Concurrent confirms duplicate the preprocessing and write the same
+    blobs twice, which is safe precisely because the blobs are addressed
+    by their content; only the transaction is serialised.
+    """
+    now = deps.clock.now()
+    record = await deps.imports.get(import_id)
+    if record is None:
+        raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such import")
+    if record.status is not ImportStatus.VALIDATED or record.rejected_count != 0:
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE,
+            409,
+            f"this import is {record.status.value} with {record.rejected_count} rejected rows",
+        )
+    if record.expires_at <= now:
+        # Refused here for the message, and again under the lock for the
+        # rule (`apply_if_confirmable`). §9.3 sets a TTL on the staged
+        # upload; an import that outlived it must not be applicable just
+        # because `media-gc` has not run since.
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE,
+            409,
+            "this import expired; upload it again",
+        )
+    if record.staged_key is None:
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE, 409, "the staged upload has been retired"
+        )
+
+    staged = await deps.staging_store.open(record.staged_key)
+    if staged is None:
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE, 409, "the staged upload is no longer available"
+        )
+    if hashlib.sha256(staged).hexdigest() != record.upload_sha256:
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE,
+            409,
+            "the staged upload changed since it was validated; run the dry-run again",
+        )
+
+    parsed = parse_upload(staged, filename=record.filename)
+    normalized: dict[str, NormalizedImage] = {}
+    for row in parsed.rows:
+        if row.media_file is not None and row.media_file not in normalized:
+            normalized[row.media_file] = await deps.normalizer.normalize(
+                parsed.media[row.media_file]
+            )
+    for image in normalized.values():
+        await deps.media_store.put(
+            image.storage_key,
+            image.data,
+            content_type=image.mime_type,
+            cache_control=CACHE_CONTROL,
+        )
+
+    applied = await deps.imports.apply_if_confirmable(
+        import_id,
+        rows=tuple(
+            ImportedQuestion(
+                category_slug=row.category_slug,
+                kind=row.kind,
+                prompt=row.prompt,
+                difficulty=row.difficulty,
+                media_file=row.media_file,
+                choices=row.choices,
+                numeric_answer=row.numeric_answer,
+                unit=row.unit,
+            )
+            for row in parsed.rows
+        ),
+        images={
+            name: ImportedImage(
+                asset_id=image.sha256,
+                mime_type=image.mime_type,
+                width=image.width,
+                height=image.height,
+                byte_size=image.byte_size,
+                storage_key=image.storage_key,
+            )
+            for name, image in normalized.items()
+        },
+        uploaded_by=str(principal.user_id),
+        now=now,
+    )
+    if not applied:
+        # Lost the `FOR UPDATE` race, or the row changed underneath. The
+        # blobs written above stay; they are content-addressed, and
+        # `media-gc` collects them if nothing ends up referencing them.
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE, 409, "this import was already confirmed"
+        )
+    # Same repair as the upload route, for the same window: the blobs were
+    # written before the transaction (§9.3's order), so a sweep in between
+    # could have taken one. The bytes are still in memory here.
+    for image in normalized.values():
+        await repair_blob(deps, image)
+
+    confirmed = await deps.imports.get(import_id)
+    assert confirmed is not None
+    return _summary(confirmed, now=now)

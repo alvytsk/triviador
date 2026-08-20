@@ -1,12 +1,35 @@
+from datetime import timedelta
+
 import httpx
 import pytest
+import pytest_asyncio
 
-from tests.api.fakes import FakeCategories, FakeMediaStore, FakeQuestionAdmin, FakeStagingStore
+from tests.api.fakes import (
+    FakeCategories,
+    FakeClock,
+    FakeMediaStore,
+    FakeQuestionAdmin,
+    FakeStagingStore,
+)
 from tests.imports.test_parse import MC, NUM, csv_bytes, zip_bytes
 from tests.media.test_pipeline import png
 from triviador.api.deps import AppDependencies
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture
+async def deps(deps: AppDependencies) -> AppDependencies:
+    """Overrides `conftest.py`'s `deps`, which seeds one pre-existing
+    question (`q1`) for the admin-questions CRUD suite. The confirm tests
+    below assert on the bank's exact contents and count after an import —
+    `q1` would be indistinguishable noise in both, so this module starts
+    every test from an empty bank instead. `categories`/`media_assets` stay
+    untouched: nothing here seeds them, so they are already empty.
+    """
+    assert isinstance(deps.questions_admin, FakeQuestionAdmin)
+    deps.questions_admin.records.clear()
+    return deps
 
 
 async def dry_run(client: httpx.AsyncClient, body: bytes, filename: str) -> httpx.Response:
@@ -95,3 +118,160 @@ async def test_an_upload_over_the_import_cap_is_refused(
 ) -> None:
     oversized = b"x" * (deps.settings.import_max_bytes + 1)
     assert (await dry_run(admin_client, oversized, "b.csv")).status_code == 413
+
+
+async def confirm(client: httpx.AsyncClient, import_id: str) -> httpx.Response:
+    return await client.post(f"/api/admin/questions/import/{import_id}/confirm")
+
+
+async def test_confirm_writes_every_row_once(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    assert isinstance(deps.questions_admin, FakeQuestionAdmin)
+    created = (await dry_run(admin_client, csv_bytes(MC, NUM), "bank.csv")).json()
+    response = await confirm(admin_client, created["import_id"])
+    assert response.status_code == 200
+    assert response.json()["status"] == "confirmed"
+    assert len(deps.questions_admin.records) == 2
+
+
+async def test_a_second_confirm_is_409(admin_client: httpx.AsyncClient) -> None:
+    """The row is `confirmed` and can never be applied again — which is
+    what makes the button safe to double-click."""
+    created = (await dry_run(admin_client, csv_bytes(NUM), "b.csv")).json()
+    assert (await confirm(admin_client, created["import_id"])).status_code == 200
+    second = await confirm(admin_client, created["import_id"])
+    assert second.status_code == 409
+    assert second.json()["code"] == "import_not_confirmable"
+
+
+async def test_an_upload_with_rejections_cannot_be_confirmed(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    assert isinstance(deps.questions_admin, FakeQuestionAdmin)
+    created = (
+        await dry_run(
+            admin_client, csv_bytes(MC, "numeric,No answer,history,easy,,,,,,,,"), "b.csv"
+        )
+    ).json()
+    response = await confirm(admin_client, created["import_id"])
+    assert response.status_code == 409
+    assert deps.questions_admin.records == {}
+
+
+async def test_a_staged_object_that_changed_underneath_is_refused(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """The comparison §9.3 specifies: recomputed-from-staged against
+    dry-run-stored. Nothing here trusts a sha the client sent."""
+    assert isinstance(deps.staging_store, FakeStagingStore)
+    created = (await dry_run(admin_client, csv_bytes(NUM), "b.csv")).json()
+    deps.staging_store.objects[created["staged_key"]] = csv_bytes(MC)
+    response = await confirm(admin_client, created["import_id"])
+    assert response.status_code == 409
+    assert "changed" in response.json()["message"]
+
+
+async def test_an_expired_import_cannot_be_confirmed(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """§9.3 gives a staged upload a TTL. Without this check a validated
+    import stays confirmable forever, and the TTL only bites if an
+    operator happens to run `media-gc` first — which is a rule enforced by
+    a cron job that does not exist yet."""
+    assert isinstance(deps.clock, FakeClock)
+    created = (await dry_run(admin_client, csv_bytes(NUM), "b.csv")).json()
+    deps.clock.advance(timedelta(hours=deps.settings.import_ttl_hours + 1))
+    response = await confirm(admin_client, created["import_id"])
+    assert response.status_code == 409
+    assert response.json()["code"] == "import_not_confirmable"
+    assert "expired" in response.json()["message"]
+
+
+def test_confirmable_is_false_once_the_upload_expires() -> None:
+    """`_summary` is a pure function and is tested as one — §6.1 defines
+    three import routes and no "read one import", so there is nowhere to
+    observe this through HTTP without inventing a fourth.
+
+    The client renders CONFIRM from this field; if the server computed it
+    from rejections alone, 7B would show a live button on a dead import.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from triviador.api.http.admin.imports import _summary
+    from triviador.services.admin import ImportRecord, ImportStatus
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    record = ImportRecord(
+        import_id="imp-1",
+        uploaded_by="admin",
+        upload_sha256="sha",
+        filename="b.csv",
+        staged_key="imp-1/b.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        status=ImportStatus.VALIDATED,
+        expires_at=now - timedelta(seconds=1),
+    )
+    assert _summary(record, now=now).confirmable is False
+    assert _summary(record, now=now - timedelta(hours=2)).confirmable is True
+
+
+async def test_a_duplicate_prompt_is_a_notice_and_the_upload_stays_confirmable(
+    admin_client: httpx.AsyncClient
+) -> None:
+    """§10.2's rule, in the place it is easiest to get wrong: a repeated
+    prompt inside one file, and a prompt the bank already holds, are both
+    warnings. Rejecting either would make the upload unconfirmable, which
+    is a block by another name."""
+    first = await dry_run(admin_client, csv_bytes(NUM), "b.csv")
+    await confirm(admin_client, first.json()["import_id"])
+
+    again = (await dry_run(admin_client, csv_bytes(NUM, NUM), "b.csv")).json()
+    assert again["rejected_count"] == 0
+    assert again["confirmable"] is True
+    reasons = " ".join(n["reason"] for n in again["notices"])
+    assert "already in the bank" in reasons
+    # `imports/parse.py`'s own wording (Task 7, unchanged here) is
+    # "duplicate prompt: same as line N of this upload" — checked against
+    # that established text rather than the brief's "same prompt as line",
+    # which does not occur in the actual notice.
+    assert "same as line" in reasons
+
+
+async def test_a_missing_staged_object_is_refused_with_a_reason(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    assert isinstance(deps.staging_store, FakeStagingStore)
+    created = (await dry_run(admin_client, csv_bytes(NUM), "b.csv")).json()
+    del deps.staging_store.objects[created["staged_key"]]
+    response = await confirm(admin_client, created["import_id"])
+    assert response.status_code == 409
+    assert response.json()["code"] == "import_not_confirmable"
+
+
+async def test_confirm_writes_the_media_blobs_before_the_rows(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    assert isinstance(deps.questions_admin, FakeQuestionAdmin)
+    assert isinstance(deps.media_store, FakeMediaStore)
+    body = zip_bytes(csv_bytes(MC.replace(",,,", ",,,river.png")), {"river.png": png(40, 20)})
+    created = (await dry_run(admin_client, body, "bank.zip")).json()
+    await confirm(admin_client, created["import_id"])
+    question = next(iter(deps.questions_admin.records.values()))
+    assert question.media_asset_id is not None
+    key = f"{question.media_asset_id[:2]}/{question.media_asset_id}.webp"
+    assert deps.media_store.objects[key][:4] == b"RIFF"
+
+
+async def test_an_unknown_category_in_the_file_is_created_by_confirm(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """The slug in the file is authoritative at confirm time: the dry-run
+    already told the admin how many rows carry it, and refusing here would
+    make every first import of a new topic a two-step dance."""
+    assert isinstance(deps.categories, FakeCategories)
+    created = (await dry_run(admin_client, csv_bytes(NUM), "b.csv")).json()
+    await confirm(admin_client, created["import_id"])
+    assert {c.slug for c in deps.categories.records.values()} == {"history"}

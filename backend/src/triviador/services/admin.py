@@ -10,6 +10,7 @@ single wide port would make every fake grow a method for every route in
 the plan.
 """
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -213,6 +214,39 @@ class ImportRecord:
     expires_at: datetime
 
 
+@dataclass(frozen=True)
+class ImportedImage:
+    """A blob the confirm has already written, described for the row that
+    will reference it. No bytes: they are in the bucket by the time this
+    exists."""
+
+    asset_id: str
+    mime_type: str
+    width: int
+    height: int
+    byte_size: int
+    storage_key: str
+
+
+@dataclass(frozen=True)
+class ImportedQuestion:
+    """One row of a validated import, in the vocabulary of the bank.
+
+    `category_slug` rather than `category_id`: the category may not exist
+    until the confirming transaction creates it, so resolution has to
+    happen inside that transaction and cannot be done by the caller.
+    """
+
+    category_slug: str
+    kind: str
+    prompt: str
+    difficulty: str
+    media_file: str | None
+    choices: tuple[tuple[str, bool], ...] | None
+    numeric_answer: Decimal | None
+    unit: str | None
+
+
 class ImportPort(Protocol):
     async def create(
         self,
@@ -228,3 +262,31 @@ class ImportPort(Protocol):
         expires_at: datetime,
     ) -> ImportRecord: ...
     async def get(self, import_id: str) -> ImportRecord | None: ...
+
+    async def apply_if_confirmable(
+        self,
+        import_id: str,
+        *,
+        rows: Sequence[ImportedQuestion],
+        images: Mapping[str, ImportedImage],
+        uploaded_by: str,
+        now: datetime,
+    ) -> bool:
+        """§9.3's transaction, from `FOR UPDATE` to `COMMIT`.
+
+        Everything the import inserts — categories, questions, choices,
+        numeric answers, media asset rows — happens inside this call,
+        because it all has to be inside the transaction that holds the
+        lock. Passing plain data rather than a callback keeps the
+        SQLAlchemy session on the `db/` side of the port: a Protocol whose
+        parameter is a session either names `AsyncSession` in `services/`
+        (which the layering gate forbids) or widens it to `object`, which
+        no implementation can narrow back without breaking
+        contravariance — `mypy --strict` rejects both.
+
+        `False` means the row was not confirmable under the lock: already
+        confirmed, expired, or carrying rejections. The caller turns that
+        into a 409; it is never an exception, because losing this race is
+        an ordinary outcome of two admins clicking at once.
+        """
+        ...
