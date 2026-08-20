@@ -10,21 +10,49 @@ import type {
   warmupTurnSchema,
 } from "./generated/public";
 import {
+  attackDeclaredEventSchema,
+  baseDamagedEventSchema,
+  baseDestroyedEventSchema,
+  basesAssignedEventSchema,
+  defenseHeldEventSchema,
+  duelResolvedEventSchema,
   errorMessageSchema,
+  finalTiebreakStartedEventSchema,
+  gameAbortedEventSchema,
+  gameFinishedEventSchema,
+  gameStartedEventSchema,
   helloMessageSchema,
   lobbyMessageSchema,
+  neutralAttackFailedEventSchema,
+  neutralCapturedEventSchema,
   pickRegionFrameSchema,
+  picksGrantedEventSchema,
   pingFrameSchema,
+  playerAnsweredEventSchema,
+  playerGoneEventSchema,
+  playerJoinedEventSchema,
+  playerLeftEventSchema,
   pongMessageSchema,
   presenceMessageSchema,
+  questionPresentedEventSchema,
+  questionResolvedEventSchema,
   resyncFrameSchema,
+  roundEventSchema,
+  scoreChangedEventSchema,
   selectTargetFrameSchema,
   snapshotMessageSchema,
   submitAnswerFrameSchema,
   subscribeFrameSchema,
   surrenderFrameSchema,
+  territoryCapturedEventSchema,
+  territoryClaimedEventSchema,
+  territoryNeutralizedEventSchema,
+  tiebreakStartedEventSchema,
+  turnEndedEventSchema,
+  turnStartedEventSchema,
   unsubscribeFrameSchema,
   updateMessageSchema,
+  warmupStartedEventSchema,
 } from "./generated/ws";
 
 export type ServerMessage =
@@ -143,4 +171,52 @@ export function parseServerMessage(raw: string): ServerMessage | null {
 export function encodeClientFrame(frame: ClientFrame): string {
   const schema = CLIENT_SCHEMAS[frame.type];
   return JSON.stringify(schema.parse(frame));
+}
+
+const EVENT_SCHEMAS = {
+  attack_declared: attackDeclaredEventSchema,
+  base_damaged: baseDamagedEventSchema,
+  base_destroyed: baseDestroyedEventSchema,
+  bases_assigned: basesAssignedEventSchema,
+  defense_held: defenseHeldEventSchema,
+  duel_resolved: duelResolvedEventSchema,
+  final_tiebreak_started: finalTiebreakStartedEventSchema,
+  game_aborted: gameAbortedEventSchema,
+  game_finished: gameFinishedEventSchema,
+  game_started: gameStartedEventSchema,
+  neutral_attack_failed: neutralAttackFailedEventSchema,
+  neutral_captured: neutralCapturedEventSchema,
+  picks_granted: picksGrantedEventSchema,
+  player_answered: playerAnsweredEventSchema,
+  player_gone: playerGoneEventSchema,
+  player_joined: playerJoinedEventSchema,
+  player_left: playerLeftEventSchema,
+  question_presented: questionPresentedEventSchema,
+  question_resolved: questionResolvedEventSchema,
+  round: roundEventSchema,
+  score_changed: scoreChangedEventSchema,
+  territory_captured: territoryCapturedEventSchema,
+  territory_claimed: territoryClaimedEventSchema,
+  territory_neutralized: territoryNeutralizedEventSchema,
+  tiebreak_started: tiebreakStartedEventSchema,
+  turn_ended: turnEndedEventSchema,
+  turn_started: turnStartedEventSchema,
+  warmup_started: warmupStartedEventSchema,
+} as const;
+
+type EventSchemas = typeof EVENT_SCHEMAS;
+export type Narration = { [K in keyof EventSchemas]: z.infer<EventSchemas[K]> }[keyof EventSchemas];
+
+/** `null` for an event type this build does not know — narration is
+ *  decoration, and a client that throws away an animation it has never heard
+ *  of is behaving correctly. A *known* type with a malformed payload also
+ *  returns null rather than throwing: unlike a `game.update`, losing one
+ *  narration event costs nothing, and taking the whole board down for a bad
+ *  toast would be the wrong trade. */
+export function parseClientEvent(value: unknown): Narration | null {
+  if (typeof value !== "object" || value === null || !("type" in value)) return null;
+  const type = (value as { type: unknown }).type;
+  if (typeof type !== "string" || !(type in EVENT_SCHEMAS)) return null;
+  const result = EVENT_SCHEMAS[type as keyof EventSchemas].safeParse(value);
+  return result.success ? (result.data as Narration) : null;
 }

@@ -21,9 +21,25 @@
       "recommended": true,
       "suspicious": {
         "noExplicitAny": "error"
+      },
+      "style": {
+        "noRestrictedImports": {
+          "level": "error",
+          "options": {
+            "paths": {
+              "@/app/dispatcher": "writeGame is app/'s. If a screen needs to change a game, send a command and let the server answer."
+            }
+          }
+        }
       }
     }
   },
+  "overrides": [
+    {
+      "includes": ["src/app/**"],
+      "linter": { "rules": { "style": { "noRestrictedImports": "off" } } }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",

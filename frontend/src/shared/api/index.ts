@@ -75,6 +75,8 @@ export {
   type ClientFrame,
   encodeClientFrame,
   MessageParseError,
+  type Narration,
+  parseClientEvent,
   parseServerMessage,
   type ServerMessage,
   type Turn,
