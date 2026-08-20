@@ -2,6 +2,27 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useDeadline } from "./use-deadline";
 
+// Scoped to this file only. `renderHook`'s `act()` wrapper always flushes a
+// mount effect before handing `result` back to the test, and `useDeadline`'s
+// own effect calls its first `tick()` synchronously — so by the time any
+// assertion runs, the effect has *already* overwritten whatever the initial
+// `useState` held, hiding exactly the bug this file exists to catch: a real
+// browser paints the commit BEFORE running that effect, so if the initial
+// state were wrong, the wrong value is what a player's screen shows first.
+// Toggling this flag mid-effect-dispatch removes the effect entirely for one
+// test, isolating the value that initial commit would have painted.
+let suppressEffect = false;
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react")>();
+  return {
+    ...actual,
+    useEffect: (...args: Parameters<typeof actual.useEffect>) => {
+      // biome-ignore lint/correctness/useHookAtTopLevel: not a component — wraps React's own useEffect inside a vi.mock("react", ...) factory; see the comment above.
+      if (!suppressEffect) actual.useEffect(...args);
+    },
+  };
+});
+
 // The offset the socket would have measured; the hook takes it as an
 // argument precisely so this is testable without a socket.
 const NO_OFFSET = () => 0;
@@ -56,6 +77,33 @@ describe("useDeadline", () => {
     const { result } = renderHook(() => useDeadline(null, NO_OFFSET));
     expect(result.current.remainingMs).toBe(0);
     expect(result.current.expired).toBe(false);
+  });
+
+  it("is already correct on the very first commit, before the mount effect ever runs — never a spurious 'Time is up.' frame", () => {
+    suppressEffect = true;
+    try {
+      const { result } = renderHook(() => useDeadline("2026-08-20T12:00:20.000Z", NO_OFFSET));
+      expect(result.current.remainingMs).toBe(20_000);
+      expect(result.current.expired).toBe(false);
+    } finally {
+      suppressEffect = false;
+    }
+  });
+
+  it("resets to the new deadline's remaining time synchronously on change, with the effect suppressed — not stuck at the old value", () => {
+    suppressEffect = true;
+    try {
+      const { result, rerender } = renderHook(
+        ({ at }: { at: string }) => useDeadline(at, NO_OFFSET),
+        { initialProps: { at: "2026-08-20T12:00:01.000Z" } },
+      );
+      expect(result.current.remainingMs).toBe(1_000);
+      rerender({ at: "2026-08-20T12:00:30.000Z" });
+      expect(result.current.remainingMs).toBe(30_000);
+      expect(result.current.expired).toBe(false);
+    } finally {
+      suppressEffect = false;
+    }
   });
 
   it("restarts cleanly when the deadline moves to the next window", () => {

@@ -28,11 +28,28 @@ import { useEffect, useRef, useState } from "react";
  * deletes dead code on sight. `use-deadline.test.ts` lives beside this
  * module now, unchanged apart from the move.
  */
+function computeRemaining(deadlineAt: string | null, offsetMs: () => number): number {
+  if (deadlineAt === null) return 0;
+  return Math.max(0, Date.parse(deadlineAt) - (Date.now() + offsetMs()));
+}
+
 export function useDeadline(
   deadlineAt: string | null,
   offsetMs: () => number,
 ): { remainingMs: number; expired: boolean } {
-  const [remainingMs, setRemaining] = useState(0);
+  // Initialised from the deadline itself, not `0` — React commits and
+  // *paints* this initial state before the mount effect below ever runs, so
+  // starting at `0` painted one real frame of "Time is up." (dock disabled)
+  // on every question, correct value or not. This is state derived from
+  // props, reset synchronously (during render, not via an effect) whenever
+  // `deadlineAt` changes — the documented pattern for "adjust state when a
+  // prop changes" that avoids rendering a stale value even for one frame.
+  const [remainingMs, setRemaining] = useState(() => computeRemaining(deadlineAt, offsetMs));
+  const previousDeadlineAt = useRef(deadlineAt);
+  if (previousDeadlineAt.current !== deadlineAt) {
+    previousDeadlineAt.current = deadlineAt;
+    setRemaining(computeRemaining(deadlineAt, offsetMs));
+  }
   const frame = useRef<number | null>(null);
 
   useEffect(() => {
