@@ -1,10 +1,12 @@
 """`uv run triviador <command>`.
 
-Three commands. `export-contracts` needs no database at all;
+Four commands. `export-contracts` needs no database at all;
 `admin-create` needs one, and is the bootstrap Spec 1 §10.1 specifies —
 with its three outcomes spelled out so it is safe in a deployment script;
 `seed-questions` needs one too, and installs the question bank Spec 1 §14.3
-requires before `StartGame` can succeed.
+requires before `StartGame` can succeed; `media-gc` needs a database and
+both buckets, and is §9.3's expiry machine plus §10.4's asset sweep — rare
+and destructive, so it is a command an operator runs, not a screen.
 """
 
 import argparse
@@ -14,6 +16,7 @@ import io
 import random
 import sys
 import uuid
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
@@ -22,13 +25,19 @@ from triviador.api.contracts import export_contracts
 from triviador.config import get_settings
 from triviador.db.engine import engine_for, sessionmaker_for
 from triviador.db.repositories.auth import UserRepository
+from triviador.db.repositories.imports import QuestionImportRepository
+from triviador.db.repositories.media import MediaAssetRepository
 from triviador.db.repositories.presets import PresetRepository
 from triviador.db.repositories.questions import QuestionSeeder, SeedQuestion, prompt_digest
 from triviador.db.security import Argon2Hasher
 from triviador.domain.game.rules import required_question_budget
 from triviador.domain.ids import UserId
 from triviador.domain.questions.types import Difficulty, QuestionKind
+from triviador.imports.retire import ImportRetirer
+from triviador.media.gc import MediaCollector
+from triviador.runtime.clock import SystemClock
 from triviador.services.identity import PasswordHasher, UserRole, UserStore
+from triviador.storage.s3 import S3ImportStagingStore, S3MediaStore
 
 
 class AdminCreateOutcome(StrEnum):
@@ -243,6 +252,54 @@ async def _seed_questions_command(args: argparse.Namespace) -> int:
     return 1 if short else 0
 
 
+async def _media_gc_command(args: argparse.Namespace) -> int:
+    """Rare and destructive, so it is a command and not a screen (§10.4) —
+    and it prints what it did, because an operator running this at 2 a.m.
+    needs to be able to tell "nothing to collect" from "did not run"."""
+    settings = get_settings()
+    async with engine_for(settings.database_url) as engine:
+        sessionmaker = sessionmaker_for(engine)
+        staging = S3ImportStagingStore(
+            endpoint_url=settings.s3_endpoint_url,
+            region=settings.s3_region,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+            bucket=settings.staging_bucket,
+        )
+        media = S3MediaStore(
+            endpoint_url=settings.s3_endpoint_url,
+            region=settings.s3_region,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+            bucket=settings.media_bucket,
+        )
+        # Imports first: retiring a staged upload can only ever *reduce*
+        # what the media sweep has to consider, and running the sweep
+        # first would leave every just-expired object for the next run.
+        clock = SystemClock()
+        retired = await ImportRetirer(
+            imports=QuestionImportRepository(sessionmaker),
+            staging=staging,
+            clock=clock,
+        ).run(after_restore=args.after_restore, dry_run=args.dry_run)
+        collected = await MediaCollector(
+            assets=MediaAssetRepository(sessionmaker),
+            store=media,
+            grace=timedelta(minutes=settings.media_gc_grace_minutes),
+        ).run(now=clock.now(), dry_run=args.dry_run)
+
+    verb = "would expire" if args.dry_run else "expired"
+    print(f"imports {verb} {retired.expired}, staged objects {retired.objects_deleted}")
+    print(
+        f"unreferenced assets {len(collected.unreferenced)}, "
+        f"orphan objects {len(collected.orphan_objects)} "
+        f"({collected.skipped_young} too recent to touch)"
+    )
+    if args.dry_run:
+        print("dry run: nothing was deleted")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="triviador")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -268,12 +325,25 @@ def main(argv: list[str] | None = None) -> int:
     seed = commands.add_parser("seed-questions")
     seed.add_argument("--csv", type=Path, required=True)
 
+    gc = commands.add_parser("media-gc")
+    gc.add_argument("--dry-run", action="store_true")
+    gc.add_argument(
+        "--after-restore",
+        action="store_true",
+        help=(
+            "expire every unconfirmed import regardless of its expiry: staging "
+            "is not backed up (§10.9), so after a restore their uploads are gone"
+        ),
+    )
+
     args = parser.parse_args(argv)
     if args.command == "export-contracts":
         export_contracts(args.out)
         return 0
     if args.command == "seed-questions":
         return asyncio.run(_seed_questions_command(args))
+    if args.command == "media-gc":
+        return asyncio.run(_media_gc_command(args))
     return asyncio.run(_admin_create_command(args))
 
 

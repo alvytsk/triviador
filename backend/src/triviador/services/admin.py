@@ -51,6 +51,42 @@ class MediaAssetPort(Protocol):
 
     async def get(self, asset_id: str) -> MediaAssetRecord | None: ...
 
+    async def unreferenced(self) -> tuple[MediaAssetRecord, ...]:
+        """§10.4's two-way check, read-only: every asset named by neither a
+        question, a choice, nor a persisted event snapshot. `media-gc
+        --dry-run` reports this; the destructive sweep uses
+        `claim_unreferenced` instead, which repeats the same check under a
+        lock."""
+        ...
+
+    async def claim_unreferenced(self) -> tuple[MediaAssetRecord, ...]:
+        """Delete every row `unreferenced()` would return, atomically, and
+        hand them back so the caller can delete their objects next.
+
+        Rows before objects, always: PostgreSQL and Garage share no
+        transaction, so this is the half of `media-gc`'s sweep that can be
+        made safe by a database lock, and it is the half that decides what
+        a crash leaves behind — an object with no row, not a row pointing
+        at a blob that is gone.
+        """
+        ...
+
+    async def all_storage_keys(self) -> frozenset[str]:
+        """Every key a `media_assets` row currently claims, for the orphan
+        pass: a key `list_objects` finds with no row here is either
+        garbage from a failed import transaction (§10.3) or an upload
+        whose row has not committed yet, and `media-gc`'s grace period is
+        what tells the two apart."""
+        ...
+
+    async def delete(self, asset_id: str) -> None:
+        """Used only for an asset `claim_unreferenced` has already deleted
+        the row of, if a caller ever needs to remove a row on its own —
+        `claim_unreferenced` does its own deleting inline rather than
+        calling this in a loop, to keep both operations in one
+        transaction."""
+        ...
+
 
 @dataclass(frozen=True)
 class QuestionFilters:
@@ -289,4 +325,32 @@ class ImportPort(Protocol):
         into a 409; it is never an exception, because losing this race is
         an ordinary outcome of two admins clicking at once.
         """
+        ...
+
+    async def count_expirable(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        """What `mark_expired` would touch, for `media-gc --dry-run`.
+        `all_unconfirmed` mirrors that method's flag exactly, so the
+        preview and the real run always agree on the count."""
+        ...
+
+    async def mark_expired(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        """§9.3's first step: `validated` -> `expired`, never touching the
+        staged object. `all_unconfirmed` is `--after-restore` (§10.9):
+        staging is not backed up, so every `validated` row that survived a
+        restore is unconfirmable regardless of its own `expires_at`."""
+        ...
+
+    async def retirable_staged(self) -> tuple[tuple[str, str], ...]:
+        """Every `(import_id, staged_key)` still holding an object:
+        `expired` rows (§9.3's second step still owes them a delete) and
+        `confirmed` rows (whose upload the bank no longer needs). A row
+        already `cleaned` has `staged_key = NULL` and so never appears
+        here — that column is what makes this call, and the whole
+        machine, idempotent."""
+        ...
+
+    async def mark_cleaned(self, import_id: str) -> None:
+        """§9.3's third step, run once the staged object is confirmed
+        gone: clear `staged_key`, and move `expired` to `cleaned`.
+        `confirmed` stays `confirmed` — that row is the audit trail."""
         ...

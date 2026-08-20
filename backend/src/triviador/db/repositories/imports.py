@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -82,6 +82,56 @@ class QuestionImportRepository:
         async with self._sessionmaker() as session:
             row = await session.get(QuestionImport, import_id)
         return None if row is None else _to_record(row)
+
+    async def count_expirable(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        """What `mark_expired` would touch. Read-only, for `--dry-run`."""
+        async with self._sessionmaker() as session:
+            statement = (
+                select(func.count())
+                .select_from(QuestionImport)
+                .where(QuestionImport.status == ImportStatus.VALIDATED.value)
+            )
+            if not all_unconfirmed:
+                statement = statement.where(QuestionImport.expires_at < now)
+            return (await session.execute(statement)).scalar_one()
+
+    async def mark_expired(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        async with self._sessionmaker() as session, session.begin():
+            statement = (
+                update(QuestionImport)
+                .where(QuestionImport.status == ImportStatus.VALIDATED.value)
+                .values(status=ImportStatus.EXPIRED.value)
+                .returning(QuestionImport.id)
+            )
+            if not all_unconfirmed:
+                statement = statement.where(QuestionImport.expires_at < now)
+            return len((await session.execute(statement)).scalars().all())
+
+    async def retirable_staged(self) -> tuple[tuple[str, str], ...]:
+        async with self._sessionmaker() as session:
+            rows = (
+                await session.execute(
+                    select(QuestionImport.id, QuestionImport.staged_key).where(
+                        QuestionImport.staged_key.is_not(None),
+                        QuestionImport.status.in_(
+                            (ImportStatus.EXPIRED.value, ImportStatus.CONFIRMED.value)
+                        ),
+                    )
+                )
+            ).all()
+        return tuple((row[0], row[1]) for row in rows)
+
+    async def mark_cleaned(self, import_id: str) -> None:
+        """`confirmed` stays `confirmed` — §9.3 keeps that row as an audit
+        trail and only drops its `staged_key`. Only an `expired` row
+        becomes `cleaned`."""
+        async with self._sessionmaker() as session, session.begin():
+            row = await session.get(QuestionImport, import_id)
+            if row is None:
+                return
+            row.staged_key = None
+            if row.status == ImportStatus.EXPIRED.value:
+                row.status = ImportStatus.CLEANED.value
 
     async def apply_if_confirmable(
         self,

@@ -43,7 +43,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from triviador.db.engine import create_engine, sessionmaker_for
 from triviador.db.models.auth import User
-from triviador.db.models.content import Category, Question, QuestionChoice, QuestionNumeric
+from triviador.db.models.content import (
+    Category,
+    MediaAsset,
+    Question,
+    QuestionChoice,
+    QuestionNumeric,
+)
+from triviador.db.models.games import Game, GameEventRow
 from triviador.db.models.presets import RulePreset
 from triviador.db.repositories.games import GameRepository
 from triviador.db.unit_of_work import UnitOfWork
@@ -85,6 +92,113 @@ async def _seed_category(
     has to be reimplemented (and inevitably drift) for a second caller."""
     async with sessionmaker() as session:
         session.add(Category(id=category_id, slug=slug, name=name))
+        await session.commit()
+
+
+async def _seed_asset(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    asset_id: str,
+    *,
+    created_by: str = "admin-1",
+    storage_key: str | None = None,
+) -> None:
+    """One `media_assets` row. `asset_id` here is just a hex string the
+    caller picks (`"a" * 64`, ...), not a real sha256 of `storage_key`'s
+    bytes — Task 3's `MediaAssetRepository.ensure` already covers content
+    addressing; `media-gc`'s tests only need a row that is referenceable
+    or not."""
+    async with sessionmaker() as session:
+        session.add(
+            MediaAsset(
+                id=asset_id,
+                mime_type="image/webp",
+                width=800,
+                height=600,
+                byte_size=12345,
+                storage_key=storage_key or f"media/{asset_id}.webp",
+                created_by=created_by,
+            )
+        )
+        await session.commit()
+
+
+async def _seed_event_with_pool(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    media_asset_id: str,
+    game_id: str = "g-1",
+    host_id: str = "admin-1",
+) -> None:
+    """One `games` row and one `game_events` row shaped like a real
+    `QuestionPoolDrawn` (`type = "game.question_pool_drawn"`).
+
+    The payload below is the seq-10 event of
+    `tests/codec/golden/expansion_to_battle.json`, trimmed to a single
+    multiple-choice snapshot — not a shape invented for this test. That
+    matters because `media_asset_id` here sits at
+    `payload.pool.multiple_choice[0].choices[0].media_asset_id`, the
+    *choice*-level nesting §10.4 calls out as the one easy to miss; the
+    golden file is what proves that path is real rather than a guess
+    about what the codec produces.
+    """
+    async with sessionmaker() as session:
+        session.add(
+            Game(
+                id=game_id,
+                map_id="grid",
+                rules={},
+                status="expansion",
+                host_id=host_id,
+                last_seq=1,
+            )
+        )
+        session.add(
+            GameEventRow(
+                game_id=game_id,
+                seq=1,
+                operation_id="op-pool",
+                type="game.question_pool_drawn",
+                schema_version=1,
+                payload={
+                    "pool": {
+                        "mc_used": 0,
+                        "numeric_used": 0,
+                        "numeric": [],
+                        "multiple_choice": [
+                            {
+                                "question_id": "m0",
+                                "version": 1,
+                                "kind": "multiple_choice",
+                                "prompt": "mc 0?",
+                                "category": {
+                                    "category_id": "c",
+                                    "slug": "general",
+                                    "name": "General",
+                                },
+                                "difficulty": "easy",
+                                "media_asset_id": None,
+                                "numeric_answer": None,
+                                "unit": None,
+                                "choices": [
+                                    {
+                                        "idx": 0,
+                                        "text": "a",
+                                        "is_correct": True,
+                                        "media_asset_id": media_asset_id,
+                                    },
+                                    {
+                                        "idx": 1,
+                                        "text": "b",
+                                        "is_correct": False,
+                                        "media_asset_id": None,
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                },
+            )
+        )
         await session.commit()
 
 

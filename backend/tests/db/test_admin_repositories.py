@@ -199,3 +199,155 @@ async def test_an_expired_import_cannot_be_applied_even_with_zero_rejections(
     assert not await repository.apply_if_confirmable(
         "imp-2", rows=(), images={}, uploaded_by="admin-1", now=datetime.now(UTC)
     )
+
+
+async def _seed_import(
+    repository: QuestionImportRepository,
+    import_id: str,
+    *,
+    expires_at: datetime,
+    staged_key: str | None = None,
+) -> None:
+    await repository.create(
+        import_id=import_id,
+        uploaded_by="admin-1",
+        upload_sha256="sha",
+        filename="b.csv",
+        staged_key=staged_key or f"{import_id}/b.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        expires_at=expires_at,
+    )
+
+
+async def test_count_expirable_and_mark_expired_only_touch_validated_rows_past_their_ttl(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """`imports/retire.py`'s SQL, against the real schema: neither method
+    is exercised anywhere else — `test_retire.py` proves the state machine
+    over `FakeImports`, never the `UPDATE ... RETURNING` this repository
+    actually runs."""
+    await _seed_user(sessions, "admin-1")
+    now = datetime.now(UTC)
+    repository = QuestionImportRepository(sessions)
+    await _seed_import(repository, "imp-past", expires_at=now - timedelta(hours=1))
+    await _seed_import(repository, "imp-future", expires_at=now + timedelta(hours=1))
+    await repository.create(
+        import_id="imp-confirmed",
+        uploaded_by="admin-1",
+        upload_sha256="sha",
+        filename="c.csv",
+        staged_key="imp-confirmed/c.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        expires_at=now + timedelta(hours=1),
+    )
+    assert await repository.apply_if_confirmable(
+        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+    ) is True
+
+    assert await repository.count_expirable(now, all_unconfirmed=False) == 1
+    assert await repository.mark_expired(now, all_unconfirmed=False) == 1
+
+    past = await repository.get("imp-past")
+    future = await repository.get("imp-future")
+    confirmed = await repository.get("imp-confirmed")
+    assert past is not None and past.status is ImportStatus.EXPIRED
+    assert future is not None and future.status is ImportStatus.VALIDATED
+    assert confirmed is not None and confirmed.status is ImportStatus.CONFIRMED
+
+
+async def test_all_unconfirmed_expires_every_validated_row_regardless_of_ttl(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """`--after-restore`: staging is not backed up (§10.9), so every
+    `validated` row survives a restore already unconfirmable, whatever its
+    own `expires_at` says."""
+    await _seed_user(sessions, "admin-1")
+    now = datetime.now(UTC)
+    repository = QuestionImportRepository(sessions)
+    await _seed_import(repository, "imp-past", expires_at=now - timedelta(hours=1))
+    await _seed_import(repository, "imp-future", expires_at=now + timedelta(days=7))
+
+    assert await repository.count_expirable(now, all_unconfirmed=True) == 2
+    assert await repository.mark_expired(now, all_unconfirmed=True) == 2
+
+    past = await repository.get("imp-past")
+    future = await repository.get("imp-future")
+    assert past is not None and past.status is ImportStatus.EXPIRED
+    assert future is not None and future.status is ImportStatus.EXPIRED
+
+
+async def test_retirable_staged_returns_expired_and_confirmed_rows_with_a_staged_key(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """Neither a still-`validated` row nor an already-`cleaned` one (its
+    `staged_key` already `NULL`) may show up here — that column is what
+    makes the whole machine idempotent."""
+    await _seed_user(sessions, "admin-1")
+    now = datetime.now(UTC)
+    repository = QuestionImportRepository(sessions)
+    await _seed_import(repository, "imp-validated", expires_at=now + timedelta(hours=1))
+    await _seed_import(repository, "imp-expired", expires_at=now - timedelta(hours=1))
+    await repository.create(
+        import_id="imp-confirmed",
+        uploaded_by="admin-1",
+        upload_sha256="sha",
+        filename="c.csv",
+        staged_key="imp-confirmed/c.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        expires_at=now + timedelta(hours=1),
+    )
+    assert await repository.apply_if_confirmable(
+        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+    ) is True
+    assert await repository.mark_expired(now, all_unconfirmed=False) == 1
+    await repository.mark_cleaned("imp-expired")
+    cleaned = await repository.get("imp-expired")
+    assert cleaned is not None and cleaned.status is ImportStatus.CLEANED
+
+    staged = dict(await repository.retirable_staged())
+    assert staged == {"imp-confirmed": "imp-confirmed/c.csv"}
+
+
+async def test_mark_cleaned_only_flips_expired_to_cleaned_and_always_clears_staged_key(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """§9.3's third step: `confirmed` stays `confirmed` — that row is the
+    audit trail — but loses its `staged_key` all the same."""
+    await _seed_user(sessions, "admin-1")
+    now = datetime.now(UTC)
+    repository = QuestionImportRepository(sessions)
+    await _seed_import(repository, "imp-expired", expires_at=now - timedelta(hours=1))
+    await repository.mark_expired(now, all_unconfirmed=False)
+    await repository.create(
+        import_id="imp-confirmed",
+        uploaded_by="admin-1",
+        upload_sha256="sha",
+        filename="c.csv",
+        staged_key="imp-confirmed/c.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        expires_at=now + timedelta(hours=1),
+    )
+    assert await repository.apply_if_confirmable(
+        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+    ) is True
+
+    await repository.mark_cleaned("imp-expired")
+    await repository.mark_cleaned("imp-confirmed")
+    await repository.mark_cleaned("no-such-row")  # a no-op, not an error
+
+    expired = await repository.get("imp-expired")
+    confirmed = await repository.get("imp-confirmed")
+    assert expired is not None
+    assert expired.status is ImportStatus.CLEANED
+    assert expired.staged_key is None
+    assert confirmed is not None
+    assert confirmed.status is ImportStatus.CONFIRMED
+    assert confirmed.staged_key is None

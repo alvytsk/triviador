@@ -318,6 +318,26 @@ class FakeMediaAssets:
     async def get(self, asset_id: str) -> MediaAssetRecord | None:
         return self.records.get(asset_id)
 
+    async def unreferenced(self) -> tuple[MediaAssetRecord, ...]:
+        """No route under `tests/api/` exercises `media-gc` — it is a CLI
+        command, not an HTTP one (§10.4) — so nothing here tracks which
+        records a question or event actually names. Every record counts
+        as unreferenced, which is honest for a fake nothing ever attaches
+        to anything: `tests/db/test_media_gc.py` is what proves the real
+        two-way check against actual questions and events."""
+        return tuple(self.records.values())
+
+    async def claim_unreferenced(self) -> tuple[MediaAssetRecord, ...]:
+        claimed = tuple(self.records.values())
+        self.records.clear()
+        return claimed
+
+    async def all_storage_keys(self) -> frozenset[str]:
+        return frozenset(r.storage_key for r in self.records.values())
+
+    async def delete(self, asset_id: str) -> None:
+        self.records.pop(asset_id, None)
+
 
 def _to_summary(record: QuestionDetailRecord, *, updated_at: datetime) -> QuestionSummaryRecord:
     """`QuestionSummaryRecord` and `QuestionDetailRecord` share every field
@@ -510,6 +530,73 @@ class FakeImports:
 
     async def get(self, import_id: str) -> ImportRecord | None:
         return self.records.get(import_id)
+
+    def add(
+        self,
+        import_id: str,
+        *,
+        status: ImportStatus,
+        staged_key: str | None,
+        expires_at: datetime,
+        uploaded_by: str = "admin-1",
+        upload_sha256: str = "0" * 64,
+        filename: str = "questions.csv",
+        row_count: int = 1,
+        rejected_count: int = 0,
+        report: dict[str, Any] | None = None,
+    ) -> ImportRecord:
+        """`tests/imports/test_retire.py`'s seam: places a row directly in
+        whatever state §9.3 says it should already be in, rather than
+        walking it there through `create`/`apply_if_confirmable` — the
+        retirement machine's tests are about what happens *from* a given
+        state, not about how a row gets there."""
+        record = ImportRecord(
+            import_id=import_id,
+            uploaded_by=uploaded_by,
+            upload_sha256=upload_sha256,
+            filename=filename,
+            staged_key=staged_key,
+            row_count=row_count,
+            rejected_count=rejected_count,
+            report=report or {},
+            status=status,
+            expires_at=expires_at,
+        )
+        self.records[import_id] = record
+        return record
+
+    async def count_expirable(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        return sum(
+            1
+            for r in self.records.values()
+            if r.status is ImportStatus.VALIDATED and (all_unconfirmed or r.expires_at < now)
+        )
+
+    async def mark_expired(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        count = 0
+        for import_id, record in list(self.records.items()):
+            if record.status is not ImportStatus.VALIDATED:
+                continue
+            if not all_unconfirmed and record.expires_at >= now:
+                continue
+            self.records[import_id] = replace(record, status=ImportStatus.EXPIRED)
+            count += 1
+        return count
+
+    async def retirable_staged(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (import_id, record.staged_key)
+            for import_id, record in self.records.items()
+            if record.staged_key is not None
+            and record.status in (ImportStatus.EXPIRED, ImportStatus.CONFIRMED)
+        )
+
+    async def mark_cleaned(self, import_id: str) -> None:
+        record = self.records.get(import_id)
+        if record is None:
+            return
+        status = ImportStatus.CLEANED if record.status is ImportStatus.EXPIRED else record.status
+        self.records[import_id] = replace(record, status=status, staged_key=None)
 
     async def apply_if_confirmable(
         self,
