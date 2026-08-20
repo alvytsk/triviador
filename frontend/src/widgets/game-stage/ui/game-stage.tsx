@@ -22,11 +22,14 @@ import { MapBoard } from "./map-board";
  * kinds, via `usePickRegion`/`useSelectTarget` — mounted only for the turn
  * kind that is actually live, so at most one `useCommand()` instance from
  * this widget is ever pending at once (a question turn's own command lives
- * in `<QuestionDock>`, mounted separately, for the same reason: two
- * concurrent `useCommand()` instances would each react to *every* `error`
- * frame regardless of which one sent the command that provoked it, and the
- * only thing that keeps that harmless here is that exactly one of
- * pick/target/answer is ever the live turn).
+ * in `<QuestionDock>`, mounted separately, for the same reason). That is
+ * *not* what keeps concurrent `useCommand()` instances from cross-talking,
+ * though — `pages/game/ui/board-view.tsx` also mounts `useSurrender`
+ * persistently, alongside all three, so more than one instance genuinely is
+ * live at once. What keeps them isolated is `useCommand` itself
+ * (`shared/api/command.ts`): each instance only accepts an `error` whose
+ * `command_id` is in its own `pending` set, so a rejection meant for one
+ * command can never surface as another's `failure`.
  */
 export function GameStage({ state }: { state: ClientGameState }) {
   const select = useBoardStore((s) => s.select);

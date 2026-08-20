@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { gameState, snapshot } from "../../../testing/factories";
@@ -33,6 +33,25 @@ function Probe() {
           ? `${command.failure.commandId}:${command.failure.code}:${command.failure.message}`
           : ""}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Two independent `useCommand` instances sharing one socket — the real
+ * shape of `board-view.tsx`, which mounts `useSurrender` persistently
+ * alongside whichever of pick/target/answer is live. Each instance gets its
+ * own labelled controls so a test can address either one specifically.
+ */
+function TwoProbes() {
+  return (
+    <div>
+      <div data-testid="probe-a">
+        <Probe />
+      </div>
+      <div data-testid="probe-b">
+        <Probe />
+      </div>
     </div>
   );
 }
@@ -93,8 +112,43 @@ describe("useCommand", () => {
     );
 
     // The mismatched id never touched this command's own membership in
-    // `pending` — `Set.delete` on an id that isn't there is a no-op.
+    // `pending` — `Set.delete` on an id that isn't there is a no-op. It must
+    // not touch `failure` either: an error this instance never sent is not
+    // this instance's to surface.
     expect(screen.getByTestId("pending")).toHaveTextContent(commandId);
+    expect(screen.getByTestId("failure")).toHaveTextContent("");
+  });
+
+  it("keeps one instance's failure isolated from a second instance's error, on a shared socket", async () => {
+    const harness = renderWithApp(<TwoProbes />);
+    act(() => harness.socket.last().open());
+
+    const probeA = within(screen.getByTestId("probe-a"));
+    const probeB = within(screen.getByTestId("probe-b"));
+
+    // Only A sends — B's `pending` is empty, so B holds no command_id at all.
+    await userEvent.click(probeA.getByRole("button", { name: "send" }));
+    const commandId = harness.socket.last().frames()[0]?.command_id as string;
+    expect(probeB.getByTestId("pending")).toHaveTextContent("");
+
+    // The server answers with A's real command_id, but this asserts the
+    // general case: an error for an id a given instance never sent (here,
+    // literally every id, since B never sent one) must never populate that
+    // instance's `failure` — the bug board-view.tsx's useSurrender hit,
+    // where a rejected surrender rendered its code inside the answer dock.
+    act(() =>
+      harness.socket.last().deliver({
+        type: "error",
+        command_id: commandId,
+        code: "region_not_free",
+        message: "That region is already taken.",
+      }),
+    );
+
+    expect(probeA.getByTestId("failure")).toHaveTextContent(
+      `${commandId}:region_not_free:That region is already taken.`,
+    );
+    expect(probeB.getByTestId("failure")).toHaveTextContent("");
   });
 
   it("clears everything pending on a game.update", async () => {

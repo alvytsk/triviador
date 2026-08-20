@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ErrorCode } from "./generated/errors";
 import type { ClientFrame } from "./messages";
 import { useSocket } from "./socket-context";
@@ -54,21 +54,33 @@ export function useCommand() {
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [failure, setFailure] = useState<CommandFailure | null>(null);
 
+  // Mirrors `pending` so `onMessage` — a stable callback registered once per
+  // `client`, not re-registered on every `pending` change — can check
+  // membership against the latest value rather than whatever `pending` held
+  // when the effect last ran. `pending` itself stays membership-guarded via
+  // `Set.delete`'s no-op-if-absent; `failure` needs the same guard,
+  // explicitly, because unlike `delete` there is no free no-op for "set a
+  // field" — every earlier version of this hook set it unconditionally.
+  const pendingRef = useRef(pending);
+  useEffect(() => {
+    pendingRef.current = pending;
+  }, [pending]);
+
   useEffect(() => {
     if (client === null) return;
     return client.onMessage((message) => {
       if (message.type === "error") {
-        if (message.command_id !== null) {
+        const commandId = message.command_id;
+        // An error with no command_id (a connection-level rejection, not a
+        // command rejection) or one this instance never sent is not this
+        // instance's to react to — see socket-status.tsx for the former.
+        if (commandId !== null && pendingRef.current.has(commandId)) {
           setPending((held) => {
             const next = new Set(held);
-            next.delete(message.command_id as string);
+            next.delete(commandId);
             return next;
           });
-          setFailure({
-            commandId: message.command_id,
-            code: message.code,
-            message: message.message,
-          });
+          setFailure({ commandId, code: message.code, message: message.message });
         }
         return;
       }
