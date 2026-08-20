@@ -27,6 +27,8 @@ import httpx
 import pytest
 import pytest_asyncio
 import structlog
+from fastapi import FastAPI
+from fastapi.routing import APIRoute
 
 from tests.api.fakes import (
     FakeClock,
@@ -154,6 +156,29 @@ def map_root(tmp_path: Path) -> Path:
 
 def replace_deps(deps: AppDependencies, **overrides: object) -> AppDependencies:
     return _replace(deps, **overrides)  # type: ignore[arg-type]
+
+
+def api_routes(app: FastAPI) -> tuple[APIRoute, ...]:
+    """Every `APIRoute` the app can serve, however deeply included.
+
+    `app.routes` holds `_IncludedRouter` wrappers rather than the routes
+    themselves (FastAPI 0.141's lazy `include_router`), and a wrapper is
+    not an `APIRoute` — so the naive filter finds nothing and every check
+    built on it is silently inert. Descending `original_router` is reading
+    a private attribute, which is the price of the check being real; if a
+    FastAPI upgrade removes it, `test_the_walk_reaches_real_routes` fails
+    loudly instead of the gates quietly passing.
+    """
+    found: list[APIRoute] = []
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        if isinstance(route, APIRoute):
+            found.append(route)
+        included = getattr(route, "original_router", None)
+        if included is not None:
+            stack.extend(included.routes)
+    return tuple(found)
 
 
 @pytest_asyncio.fixture

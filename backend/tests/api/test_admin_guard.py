@@ -9,10 +9,10 @@ no routes, and it covers Task 4's first one automatically.
 
 import httpx
 import pytest
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
 
-from tests.api.conftest import ORIGIN, _seed_admin
+from tests.api.conftest import ORIGIN, _seed_admin, api_routes
 from triviador.api.app import create_app
 from triviador.api.deps import AdminPrincipal, AppDependencies, current_admin
 from triviador.api.http.admin import build_admin_router
@@ -63,22 +63,61 @@ async def test_an_admin_gets_through(probe_app: object, deps: AppDependencies) -
     assert response.json() == {"user_id": "admin"}
 
 
-def test_every_admin_route_is_guarded(deps: AppDependencies) -> None:
-    app = create_app(deps)
-    unguarded = [
+def unguarded_admin_routes(app: FastAPI) -> list[str]:
+    """Every `/api/admin` path whose dependency tree lacks `current_admin`."""
+    return [
         route.path
-        for route in app.routes
-        if isinstance(route, APIRoute)
-        and route.path.startswith("/api/admin")
-        and current_admin not in _dependency_calls(route)
+        for route in api_routes(app)
+        if route.path.startswith("/api/admin") and current_admin not in _dependency_calls(route)
     ]
-    assert unguarded == []
+
+
+def test_the_walk_reaches_real_routes(deps: AppDependencies) -> None:
+    """The self-check, and the reason it exists.
+
+    `app.routes` does **not** contain `APIRoute` objects in the FastAPI
+    this project pins (0.141.1): `include_router` appends an
+    `_IncludedRouter` wrapper and resolves lazily, so the obvious
+    `[r for r in app.routes if isinstance(r, APIRoute)]` yields an empty
+    list — and every "no unguarded routes" assertion built on it passes
+    forever, including for a route with no guard at all.
+
+    So this module asserts that its own walk finds something known before
+    any test asserts what the walk did not find. A detector that returns
+    nothing is indistinguishable from a codebase with nothing to detect.
+    """
+    paths = {route.path for route in api_routes(create_app(deps))}
+    assert "/api/games" in paths
+    assert len(paths) >= 10
+
+
+def test_every_admin_route_is_guarded(deps: AppDependencies) -> None:
+    assert unguarded_admin_routes(create_app(deps)) == []
+
+
+def test_the_check_sees_an_unguarded_admin_route(deps: AppDependencies) -> None:
+    """A guard nobody has watched fail is a guard nobody can trust — the
+    same discipline `tests/test_layering.py` applies to its import gates.
+
+    The rogue router is mounted directly on the app, bypassing
+    `build_admin_router`, which is precisely how a future task would
+    introduce the hole this check exists to catch.
+    """
+    rogue = APIRouter(prefix="/api/admin")
+
+    @rogue.get("/rogue")
+    async def _rogue() -> dict[str, str]:
+        return {}
+
+    app = create_app(deps)
+    app.include_router(rogue)
+    assert unguarded_admin_routes(app) == ["/api/admin/rogue"]
 
 
 def _dependency_calls(route: APIRoute) -> set[object]:
     """Every callable in the route's dependency tree, router-level included.
 
-    FastAPI flattens a router's `dependencies=` into each route's
+    FastAPI merges a router's `dependencies=` into each route's
     `Dependant`, so a structural check can see them — but only by walking,
     since `current_principal` sits one level below `current_admin`.
     """
