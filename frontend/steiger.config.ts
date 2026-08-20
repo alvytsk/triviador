@@ -41,11 +41,17 @@ export default defineConfig([
   {
     files: ["./src/widgets/**"],
     rules: {
-      // `game-stage` (Task 11 of Plan 6) draws the board; the game screen
-      // that mounts it is Task 12. Between the two tasks this slice has
-      // *zero* references rather than one, which is the same "not built yet,
-      // not a merge candidate" situation entities/ and features/ are already
-      // exempted for above — just caught one task earlier in the sequence.
+      // Same reasoning as entities/ and features/ above, one layer up:
+      // `game-stage`, `player-strip`, `question-dock`, `results` and
+      // `turn-dock` are each mounted from exactly one place —
+      // `pages/game` — because this branch ships exactly one game screen.
+      // Verified by running steiger with this exemption removed: all five
+      // widget slices fire `fsd/insignificant-slice`, none zero. The
+      // decomposition is still the spec's (§9.5 names each of these as its
+      // own piece of the one game screen) and not a sign four of the five
+      // should fold into their one caller; a second screen that reuses one
+      // of them is what would prove the split earns its keep, not a count
+      // this file should chase back to zero.
       "fsd/insignificant-slice": "off",
     },
   },
