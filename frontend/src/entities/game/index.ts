@@ -7,7 +7,6 @@ export {
   deadlineIdOf,
   deadlineOf,
   isYourTurn,
-  playerById,
   turnKindOf,
   youPlayer,
   yourAnswer,

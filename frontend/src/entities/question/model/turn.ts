@@ -6,7 +6,3 @@ export function questionOf(state: ClientGameState): ClientQuestion | null {
   const turn = turnOf(state);
   return turn !== null && "question" in turn ? turn.question : null;
 }
-
-export function isNumericTurn(state: ClientGameState): boolean {
-  return questionOf(state)?.kind === "numeric";
-}

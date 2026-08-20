@@ -1,1 +1,1 @@
-export { isNumericTurn, questionOf } from "./model/turn";
+export { questionOf } from "./model/turn";

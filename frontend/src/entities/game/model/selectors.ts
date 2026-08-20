@@ -26,10 +26,6 @@ export function youPlayer(state: ClientGameState): ClientPlayer | null {
   return state.players.find((p) => p.player_id === id) ?? null;
 }
 
-export function playerById(state: ClientGameState, playerId: string): ClientPlayer | null {
-  return state.players.find((p) => p.player_id === playerId) ?? null;
-}
-
 export function turnKindOf(state: ClientGameState): string | null {
   return turnOf(state)?.kind ?? null;
 }

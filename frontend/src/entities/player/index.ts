@@ -1,1 +1,1 @@
-export { orderedPlayers, seatColorOf } from "./model/seats";
+export { orderedPlayers } from "./model/seats";
