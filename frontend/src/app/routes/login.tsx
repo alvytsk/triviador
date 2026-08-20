@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
+import { LoginPage } from "@/pages/login";
 
 /**
  * Placeholder. `_authed`'s guard (`beforeLoad`) already redirects here with
@@ -45,5 +46,5 @@ export const loginSearchSchema = z.object({
 
 export const Route = createFileRoute("/login")({
   validateSearch: loginSearchSchema,
-  component: () => null,
+  component: LoginPage,
 });

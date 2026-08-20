@@ -27,4 +27,15 @@ export default defineConfig([
       "fsd/insignificant-slice": "off",
     },
   },
+  {
+    files: ["./src/features/**"],
+    rules: {
+      // Same reasoning as entities/ above, one layer up: `sign-in` and
+      // `redeem-invite` (§10.1) are each one user intention with its own
+      // mutation and its own form, and each is currently mounted from one
+      // page. That is FSD's boundary for what a feature is, not a sign that
+      // two features should be merged into their one caller.
+      "fsd/insignificant-slice": "off",
+    },
+  },
 ]);
