@@ -26,6 +26,9 @@ export default {
     "removeStyleElement",
     "removeScripts",
     "removeDimensions",
-    { name: "removeAttrs", params: { attrs: "(style|class|transform|fill|stroke|stroke-width|opacity)" } },
+    {
+      name: "removeAttrs",
+      params: { attrs: "(style|class|transform|fill|stroke|stroke-width|opacity)" },
+    },
   ],
 };

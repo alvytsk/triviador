@@ -21,7 +21,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const dir = resolve(import.meta.dirname, "../shared/api/generated");
+const dir = resolve(import.meta.dirname, "../src/shared/api/generated");
 const modules = ["public.ts", "ws.ts", "errors.ts"];
 
 for (const name of modules) {
