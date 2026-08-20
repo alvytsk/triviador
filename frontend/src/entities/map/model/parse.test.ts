@@ -90,11 +90,13 @@ describe("parseMapSvg", () => {
     expect(error.message).toMatch(/no path/);
   });
 
-  describe("the drift guard — four inputs a code review found the two validators disagreeing on", () => {
-    // Same four documents, byte-for-byte, as backend/tests/maps/test_svg_validator.py's
-    // "the drift guard" block. Each one used to get a different verdict from the two
-    // sides; asserting both here and there means the next drift fails a test instead
-    // of waiting for someone's browser.
+  describe("the drift guard — five inputs a code review found the two validators disagreeing on", () => {
+    // Same five documents, byte-for-byte, as backend/tests/maps/test_svg_validator.py's
+    // "the drift guard" block (the fifth was added a round later, once a re-review was
+    // asked to hunt for a sibling of the fourth rather than just confirm it was fixed).
+    // Each one used to get a different verdict from the two sides; asserting both here
+    // and there means the next drift fails a test instead of waiting for someone's
+    // browser.
 
     it("accepts xmlns:xlink on the root — a namespace declaration, not content", () => {
       const doc =
@@ -108,7 +110,19 @@ describe("parseMapSvg", () => {
 
     it("rejects a root with no xmlns at all — it would not render as SVG in a browser", () => {
       const doc = `<svg viewBox="0 0 100 100">${GOOD}</svg>`;
-      expect(() => parseMapSvg(doc, IDS)).toThrow(/not an SVG/);
+      let caught: MapContractError | null = null;
+      try {
+        parseMapSvg(doc, IDS);
+      } catch (e) {
+        caught = e as MapContractError;
+      }
+      expect(caught?.message).toMatch(/not an SVG/);
+      // Both validators now reject the root *and* each un-namespaced child
+      // (the fifth drift, below) rather than only the root, so the problem
+      // counts agree too: wrong root + 2 "not allowed" paths + one joined
+      // "regions with no path" — four on each side, not the 4-vs-1 split a
+      // re-review flagged before the child check was tightened to match.
+      expect(caught?.problems).toHaveLength(4);
     });
 
     it("rejects an empty viewBox — present but unusable", () => {
@@ -129,6 +143,26 @@ describe("parseMapSvg", () => {
       // and both regions are missing (reported as one joined item) — four,
       // not the one this parser used to short-circuit to.
       expect(caught?.problems).toHaveLength(4);
+    });
+
+    it('rejects a <path xmlns=""> — the fifth drift, and the sibling of the fourth', () => {
+      // A re-review was asked to hunt for a fifth disagreement rather than
+      // confirm the fourth was fixed, and found this: `validator.py`'s root
+      // check was tightened to require SVG_NS exactly, but its *child*
+      // check kept the old `child_ns not in (SVG_NS, "")` leniency one
+      // function below — the identical bug, missed because the instruction
+      // named the root and not its sibling. `xmlns=""` un-namespaces a
+      // `<path>` under XML's own rule for an empty default-namespace
+      // declaration; a browser drops it from the SVG tree exactly as it
+      // would an unrecognised tag. TypeScript's child check was never
+      // lenient here (it always compared with strict equality to SVG_NS),
+      // so this test is a one-sided guard: it exists to catch Python
+      // drifting loose again, not because this file needed a fix too.
+      const doc =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+        '<path xmlns="" id="a" d="M0 0h1v1z"/><path id="b" d="M2 2h1v1z"/>' +
+        "</svg>";
+      expect(() => parseMapSvg(doc, IDS)).toThrow(/is not allowed/);
     });
   });
 

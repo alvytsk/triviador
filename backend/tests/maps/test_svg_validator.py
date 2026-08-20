@@ -170,6 +170,26 @@ def test_a_wrong_root_reports_every_other_problem_too() -> None:
     assert len(problems) == 4
 
 
+def test_an_unnamespaced_path_is_rejected() -> None:
+    """The fifth drift, found by a re-review hunting for a sibling of the
+    root-namespace bug fixed above: `xmlns=""` on a `<path>` un-namespaces
+    it under XML's own rule for an empty default-namespace declaration, and
+    a browser drops it from the SVG rendering tree exactly as it would an
+    unrecognised tag. `validate_svg`'s child check used the same lenient
+    `child_ns not in (SVG_NS, "")` pattern the root check was tightened away
+    from in the previous round — same bug, one function down, missed
+    because the instruction named the root and not its sibling. TypeScript's
+    child check was never lenient here, so this is a one-sided fix, not a
+    shared test of a shared change."""
+    doc = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        '<path xmlns="" id="a" d="M0 0h1v1z"/><path id="b" d="M2 2h1v1z"/>'
+        "</svg>"
+    )
+    problems = validate_svg(doc, REGIONS)
+    assert any("is not allowed" in p for p in problems)
+
+
 def test_the_shipped_czechia_map_satisfies_the_contract() -> None:
     """The build-time half of §8.1. This is the gate that makes "a map is a
     two-file drop" safe: the drop is checked here, in the repository, rather

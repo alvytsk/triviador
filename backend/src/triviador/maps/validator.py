@@ -75,7 +75,15 @@ def validate_svg(source: str, region_ids: Collection[RegionId]) -> tuple[str, ..
     seen: list[str] = []
     for child in root:
         child_ns, child_tag = _split(child.tag)
-        if child_tag != "path" or child_ns not in (SVG_NS, ""):
+        if child_tag != "path" or child_ns != SVG_NS:
+            # Same tightening as the root, and for the same reason: an
+            # `xmlns=""` on a `<path>` un-namespaces it (XML's own rule for
+            # an empty default-namespace declaration), and a browser drops
+            # it from the SVG rendering tree exactly as it would drop an
+            # unrecognised tag. Accepting it here would be the same
+            # lenient-and-wrong disagreement with the DOM this function's
+            # root check was already fixed for — it was just missed one
+            # function below.
             problems.append(f"<{child_tag}> is not allowed: every region is a top-level <path>")
             continue
         problems.extend(_path_problems(child, seen))
