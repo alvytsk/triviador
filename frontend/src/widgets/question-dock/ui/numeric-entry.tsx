@@ -51,15 +51,22 @@ function isValidNumericAnswer(trimmed: string): boolean {
  * `disabled`, and revealed-correct is `resolved !== null` — shown as
  * `resolved.correct_value`, still a string, never parsed.
  *
- * Submit is disabled both externally (`disabled`, the dock's three reasons
- * — expired / already answered / sending) and locally (the typed value
- * isn't a legal decimal string yet, or is over the wire's 40-character
- * cap). Silently disabling for the second reason and saying nothing would
- * be the same mistake this dock's `reason` paragraph exists to avoid one
- * level up: `Field`'s own `error` carries the local reason, so a malformed
- * or over-length value is never a dead button with no explanation.
- * `maxLength` on the input itself keeps the over-length case from being
- * typeable at all, rather than only refusing it after the fact.
+ * Submit is disabled both externally (`disabled`, the dock's four reasons —
+ * expired / already answered / sending / not your turn) and locally (the
+ * typed value isn't a legal decimal string yet, or is over the wire's
+ * 40-character cap). Silently disabling for the second reason and saying
+ * nothing would be the same mistake this dock's `reason` paragraph exists
+ * to avoid one level up: `Field`'s own `error` carries the local reason, so
+ * a malformed or over-length value is never a dead button with no
+ * explanation — but only once the player has actually typed something.
+ * `touched` (set the first time `onChange` fires) gates that error: an
+ * untouched field is always invalid too (`isValidNumericAnswer` requires a
+ * non-empty string), and showing the error before a single keystroke would
+ * paint every numeric question red, `aria-invalid`, on open — and `Field`
+ * hides `hint` whenever `error` is set, so that would hide the unit behind
+ * a message about input nobody has entered yet. `maxLength` on the input
+ * itself keeps the over-length case from being typeable at all, rather than
+ * only refusing it after the fact.
  */
 export function NumericEntry({
   unit,
@@ -75,8 +82,10 @@ export function NumericEntry({
   onSubmit: (value: string) => void;
 }) {
   const [value, setValue] = useState("");
+  const [touched, setTouched] = useState(false);
   const trimmed = value.trim();
   const valid = isValidNumericAnswer(trimmed);
+  const showError = touched && !valid;
 
   return (
     <form
@@ -90,13 +99,16 @@ export function NumericEntry({
         <Field
           label="Your answer"
           value={value}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setTouched(true);
+            setValue(event.target.value);
+          }}
           disabled={disabled}
           inputMode="decimal"
           autoComplete="off"
           maxLength={MAX_LENGTH}
           hint={unit ?? undefined}
-          error={valid ? undefined : "Enter a number the server can read — e.g. 12, -3.5, 1e3."}
+          error={showError ? "Enter a number the server can read — e.g. 12, -3.5, 1e3." : undefined}
         />
       </div>
       <Button type="submit" disabled={disabled || !valid}>

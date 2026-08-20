@@ -1,4 +1,4 @@
-import { deadlineIdOf, deadlineOf, yourAnswer as yourAnswerOf } from "@/entities/game";
+import { deadlineIdOf, deadlineOf, isYourTurn, yourAnswer as yourAnswerOf } from "@/entities/game";
 import { questionOf } from "@/entities/question";
 import { SubmitAnswerStatus, useSubmitAnswer } from "@/features/submit-answer";
 import { type ClientGameState, type QuestionResolvedEvent, useSocket } from "@/shared/api";
@@ -39,15 +39,21 @@ export function QuestionDock({
 
   if (question === null) return null;
 
-  // Three separate reasons input is disabled, and the dock says which
-  // (never a generic "can't answer").
+  // Four separate reasons input is disabled, and the dock says which (never
+  // a generic "can't answer"). The last is `isYourTurn` — a seated bystander
+  // during someone else's battle_duel, neutral_challenge or final_tiebreak
+  // must not see an enabled choice list, because the projection sends the
+  // question to everyone but the server rejects a non-participant's answer
+  // with `not_your_turn` (see `isYourTurn`'s own doc comment).
   const reason = expired
     ? "Time is up."
     : already !== null
       ? "Answer sent."
       : answer.isSending
         ? "Sending…"
-        : null;
+        : !isYourTurn(state)
+          ? "Not your turn."
+          : null;
   const disabled = reason !== null;
 
   return (

@@ -74,15 +74,13 @@ describe("QuestionDock", () => {
     },
   );
 
-  it.each(["NaN", "Infinity", ""])(
+  it.each(["NaN", "Infinity"])(
     "refuses %j with a visible reason and sends nothing",
     async (typed) => {
       const harness = renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
       act(() => harness.socket.last().open());
 
-      if (typed !== "") {
-        await userEvent.type(screen.getByLabelText("YOUR ANSWER"), typed);
-      }
+      await userEvent.type(screen.getByLabelText("YOUR ANSWER"), typed);
 
       expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
       expect(screen.getByText(/enter a number the server can read/i)).toBeInTheDocument();
@@ -91,6 +89,27 @@ describe("QuestionDock", () => {
       expect(harness.socket.last().frames()).toHaveLength(0);
     },
   );
+
+  it("opens on an untouched numeric field with no error shown and the unit visible, Submit still disabled", () => {
+    renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
+
+    const input = screen.getByLabelText("YOUR ANSWER");
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(screen.queryByText(/enter a number the server can read/i)).not.toBeInTheDocument();
+    expect(screen.getByText("km")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+  });
+
+  it("shows the error once the field has been touched and left invalid — even back at empty", async () => {
+    renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
+
+    const input = screen.getByLabelText("YOUR ANSWER");
+    await userEvent.type(input, "abc");
+    await userEvent.clear(input);
+
+    expect(screen.getByText(/enter a number the server can read/i)).toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-invalid", "true");
+  });
 
   it("caps typing at 40 characters and refuses a 41st with a visible reason", async () => {
     const harness = renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
@@ -170,5 +189,65 @@ describe("QuestionDock", () => {
 
     expect(screen.queryAllByTestId("choice-correct")).toHaveLength(0);
     expect(screen.queryAllByTestId("choice-incorrect")).toHaveLength(0);
+  });
+
+  // Default gameState() seats u1/u2/u3 and `you.player_id` is u1. Each of
+  // these three turns excludes u1 from the participant list, so the
+  // projection still sends the question but the server would reject u1's
+  // answer with not_your_turn — the exact bug isYourTurn's fix exists for
+  // (see the ledger's whole-branch review, Important #1).
+  it("disables input for a seated bystander during another pair's battle_duel", () => {
+    const bystanderDuel = {
+      kind: "battle_duel" as const,
+      attacker_id: "u2",
+      defender_id: "u3",
+      region_id: "praha",
+      tiebreak: false,
+      question: question(),
+      answered: [] as readonly string[],
+      your_answer: null,
+      deadline_at: deadline(),
+      deadline_id: 21,
+      your_options: { pick: [] as readonly string[], attack: [] as readonly string[] },
+    };
+    renderWithApp(<QuestionDock state={gameState({ turn: bystanderDuel })} />);
+
+    expect(screen.getByRole("button", { name: "Labe" })).toBeDisabled();
+    expect(screen.getByText("Not your turn.")).toBeInTheDocument();
+  });
+
+  it("disables input for a seated bystander during another player's neutral_challenge", () => {
+    const bystanderNeutral = {
+      kind: "neutral_challenge" as const,
+      attacker_id: "u2",
+      region_id: "praha",
+      question: question(),
+      answered: [] as readonly string[],
+      your_answer: null,
+      deadline_at: deadline(),
+      deadline_id: 22,
+      your_options: { pick: [] as readonly string[], attack: [] as readonly string[] },
+    };
+    renderWithApp(<QuestionDock state={gameState({ turn: bystanderNeutral })} />);
+
+    expect(screen.getByRole("button", { name: "Labe" })).toBeDisabled();
+    expect(screen.getByText("Not your turn.")).toBeInTheDocument();
+  });
+
+  it("disables input for a seated bystander during a final_tiebreak between others", () => {
+    const bystanderFinal = {
+      kind: "final_tiebreak" as const,
+      contenders: ["u2", "u3"],
+      question: question(),
+      answered: [] as readonly string[],
+      your_answer: null,
+      deadline_at: deadline(),
+      deadline_id: 23,
+      your_options: { pick: [] as readonly string[], attack: [] as readonly string[] },
+    };
+    renderWithApp(<QuestionDock state={gameState({ turn: bystanderFinal })} />);
+
+    expect(screen.getByRole("button", { name: "Labe" })).toBeDisabled();
+    expect(screen.getByText("Not your turn.")).toBeInTheDocument();
   });
 });
