@@ -133,7 +133,7 @@ def _write(body: QuestionWriteRequest) -> QuestionWrite:
 async def create_question(
     body: QuestionWriteRequest, deps: Deps, principal: AdminPrincipal
 ) -> QuestionSaved:
-    record = await deps.questions_admin.create(_write(body), created_by=str(principal.user_id))
+    record = await deps.questions_admin.create(_write(body))
     duplicates = await deps.questions_admin.duplicates_of(
         body.prompt, excluding=record.question_id
     )

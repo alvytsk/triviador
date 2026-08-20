@@ -165,7 +165,7 @@ class QuestionAdminRepository:
             unit=numeric.unit if numeric is not None else None,
         )
 
-    async def create(self, write: QuestionWrite, *, created_by: str) -> QuestionDetailRecord:
+    async def create(self, write: QuestionWrite) -> QuestionDetailRecord:
         _validate(write)
         question_id = str(uuid4())
         async with self._sessionmaker() as session, session.begin():

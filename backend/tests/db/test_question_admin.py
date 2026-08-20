@@ -190,7 +190,6 @@ async def test_a_multiple_choice_question_needs_four_choices_and_one_correct(
                 numeric_answer=None,
                 unit=None,
             ),
-            created_by="admin-1",
         )
 
 
@@ -216,5 +215,4 @@ async def test_a_non_finite_numeric_answer_is_rejected_even_off_the_schema(
                 numeric_answer=Decimal("NaN"),
                 unit=None,
             ),
-            created_by="admin-1",
         )

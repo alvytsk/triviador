@@ -348,7 +348,7 @@ class FakeQuestionAdmin:
     async def get(self, question_id: str) -> QuestionDetailRecord | None:
         return self.records.get(question_id)
 
-    async def create(self, write: QuestionWrite, *, created_by: str) -> QuestionDetailRecord:
+    async def create(self, write: QuestionWrite) -> QuestionDetailRecord:
         record = QuestionDetailRecord(
             question_id=str(uuid4()),
             kind=write.kind,
