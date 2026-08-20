@@ -23,6 +23,7 @@
         "username_taken",
         "map_unknown",
         "preset_unknown",
+        "media_rejected",
         "no_default_preset",
         "server_busy",
         "server_restarting",

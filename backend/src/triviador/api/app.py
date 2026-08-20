@@ -33,16 +33,19 @@ from triviador.config import Settings, startup_problems
 from triviador.db.engine import EnginePing, create_engine, sessionmaker_for
 from triviador.db.repositories.auth import InviteRepository, SessionRepository, UserRepository
 from triviador.db.repositories.games import GameRepository
+from triviador.db.repositories.media import MediaAssetRepository
 from triviador.db.repositories.presets import PresetRepository
 from triviador.db.security import Argon2Hasher
 from triviador.db.unit_of_work import UnitOfWork
 from triviador.maps.registry import MapRegistry
+from triviador.media.pipeline import ImageNormalizer
 from triviador.runtime.clock import SystemClock
 from triviador.runtime.loader import GameLoader
 from triviador.runtime.manager import GameManager
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.reaper import Reaper
 from triviador.runtime.watchdog import Watchdog
+from triviador.storage.s3 import S3MediaStore
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,13 @@ def build_dependencies(settings: Settings) -> BuiltApp:
     uow = UnitOfWork(sessions)
     games = GameRepository(sessions)
     rng = random.Random()
+    media_store = S3MediaStore(
+        endpoint_url=settings.s3_endpoint_url,
+        region=settings.s3_region,
+        access_key_id=settings.s3_access_key_id,
+        secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        bucket=settings.media_bucket,
+    )
 
     manager = GameManager(
         loader=GameLoader(uow=uow, maps=maps_registry),
@@ -145,6 +155,13 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         games=games,
         maps=maps_registry,
         presets=PresetRepository(sessions),
+        media_store=media_store,
+        media_assets=MediaAssetRepository(sessions),
+        normalizer=ImageNormalizer(
+            max_bytes=settings.media_max_bytes,
+            max_pixels=settings.media_max_pixels,
+            target_px=settings.media_target_px,
+        ),
     )
     return BuiltApp(
         deps=deps,

@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
+from triviador.services.admin import MediaAssetRecord
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     RedeemOutcome,
@@ -20,6 +21,7 @@ from triviador.services.identity import (
     UserRole,
 )
 from triviador.services.ports import GameSummary, PresetRecord
+from triviador.services.storage import ObjectHead, StoredObject
 
 T0 = datetime(2026, 8, 18, 12, 0, tzinfo=UTC)
 
@@ -231,3 +233,69 @@ class FakePresets:
 
     async def get_default(self) -> PresetRecord | None:
         return self.presets.get("default")
+
+
+class FakeMediaStore:
+    """In-memory `MediaStore`. Keeps `put` calls so a test can assert the
+    `Cache-Control` the route asked for without a live Garage."""
+
+    def __init__(self, clock: FakeClock | None = None) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.metadata: dict[str, tuple[str, str | None]] = {}
+        # Write times, so a test can age an object past the gc grace
+        # period without sleeping.
+        self.written: dict[str, datetime] = {}
+        self._clock = clock or FakeClock()
+
+    async def put(
+        self, key: str, data: bytes, *, content_type: str, cache_control: str | None = None
+    ) -> None:
+        self.objects[key] = data
+        self.metadata[key] = (content_type, cache_control)
+        self.written[key] = self._clock.now()
+
+    async def open(self, key: str) -> bytes | None:
+        return self.objects.get(key)
+
+    async def head(self, key: str) -> ObjectHead | None:
+        if key not in self.objects:
+            return None
+        content_type, cache_control = self.metadata[key]
+        return ObjectHead(
+            len(self.objects[key]), content_type, cache_control, self.written[key]
+        )
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+
+    async def list_objects(self, *, prefix: str = "") -> tuple[StoredObject, ...]:
+        return tuple(
+            StoredObject(key=key, byte_size=len(self.objects[key]), last_modified=self.written[key])
+            for key in sorted(self.objects)
+            if key.startswith(prefix)
+        )
+
+
+class FakeMediaAssets:
+    """In-memory `MediaAssetPort`."""
+
+    def __init__(self) -> None:
+        self.records: dict[str, MediaAssetRecord] = {}
+
+    async def ensure(self, **kwargs: object) -> tuple[MediaAssetRecord, bool]:
+        asset_id = str(kwargs["asset_id"])
+        if asset_id in self.records:
+            return self.records[asset_id], False
+        record = MediaAssetRecord(
+            asset_id=asset_id,
+            mime_type=str(kwargs["mime_type"]),
+            width=int(kwargs["width"]),  # type: ignore[call-overload]
+            height=int(kwargs["height"]),  # type: ignore[call-overload]
+            byte_size=int(kwargs["byte_size"]),  # type: ignore[call-overload]
+            storage_key=str(kwargs["storage_key"]),
+        )
+        self.records[asset_id] = record
+        return record, True
+
+    async def get(self, asset_id: str) -> MediaAssetRecord | None:
+        return self.records.get(asset_id)

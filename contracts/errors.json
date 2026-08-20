@@ -8,6 +8,7 @@
     "internal_error",
     "invite_invalid",
     "map_unknown",
+    "media_rejected",
     "method_not_allowed",
     "no_default_preset",
     "not_found",

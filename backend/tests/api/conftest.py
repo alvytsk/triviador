@@ -37,6 +37,8 @@ from tests.api.fakes import (
     FakeGameCatalog,
     FakeHasher,
     FakeInvites,
+    FakeMediaAssets,
+    FakeMediaStore,
     FakePresets,
     FakeSessions,
     FakeUsers,
@@ -57,6 +59,7 @@ from triviador.domain.game.rules import GameRules
 from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.maps.registry import MapRegistry
+from triviador.media.pipeline import ImageNormalizer
 from triviador.runtime.errors import PermanentReplayFailure
 from triviador.runtime.manager import Live
 from triviador.runtime.materialiser import Materialiser
@@ -305,6 +308,13 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         games=games,
         maps=MapRegistry(root=map_root),
         presets=FakePresets(),
+        media_store=FakeMediaStore(clock),
+        media_assets=FakeMediaAssets(),
+        normalizer=ImageNormalizer(
+            max_bytes=settings.media_max_bytes,
+            max_pixels=settings.media_max_pixels,
+            target_px=settings.media_target_px,
+        ),
     )
 
 

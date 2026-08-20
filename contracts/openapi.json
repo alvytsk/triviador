@@ -835,6 +835,55 @@
         "title": "Me",
         "type": "object"
       },
+      "MediaAssetSummary": {
+        "additionalProperties": false,
+        "description": "What the editor needs to show a thumbnail and store a reference.\n\n`url` is built by the server from `media_public_base`, exactly as the\nprojection does for in-game question media (\u00a78.7) \u2014 the client never\nconcatenates a base with a key, so the two can never disagree.",
+        "properties": {
+          "byte_size": {
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "width",
+          "height",
+          "byte_size"
+        ],
+        "title": "MediaAssetSummary",
+        "type": "object"
+      },
       "NeutralTurn": {
         "additionalProperties": false,
         "properties": {
@@ -1300,6 +1349,28 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/admin/media": {
+      "post": {
+        "operationId": "upload_media_api_admin_media_post",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaAssetSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Upload Media",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
     "/api/auth/login": {
       "post": {
         "operationId": "login_api_auth_login_post",

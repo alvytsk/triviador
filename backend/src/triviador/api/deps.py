@@ -21,6 +21,7 @@ from triviador.api.errors import ApiError, ApiErrorCode
 from triviador.api.schemas.ws import LobbyGame, LobbyMessage
 from triviador.config import Settings
 from triviador.db.security import token_digest
+from triviador.services.admin import MediaAssetPort
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     InviteStore,
@@ -30,10 +31,12 @@ from triviador.services.identity import (
     UserStore,
 )
 from triviador.services.ports import Clock, DatabaseProbe, GameCatalogPort, MapProvider, PresetPort
+from triviador.services.storage import MediaStore
 
 if TYPE_CHECKING:
     from triviador.api.ws.broadcaster import WsBroadcaster
     from triviador.api.ws.hub import Hub
+    from triviador.media.pipeline import ImageNormalizer
     from triviador.runtime.manager import GameManager
 
 
@@ -94,6 +97,9 @@ class AppDependencies:
     games: GameCatalogPort
     maps: MapProvider
     presets: PresetPort
+    media_store: MediaStore
+    media_assets: MediaAssetPort
+    normalizer: "ImageNormalizer"
 
     async def lobby_message(
         self, kind: Literal["lobby.snapshot", "lobby.update"]
@@ -130,6 +136,7 @@ class AppDependencies:
 
         from triviador.api.ws.broadcaster import WsBroadcaster
         from triviador.api.ws.hub import Hub
+        from triviador.media.pipeline import ImageNormalizer
         from triviador.runtime.manager import GameManager
         from triviador.runtime.materialiser import Materialiser
 
@@ -163,6 +170,9 @@ class AppDependencies:
             games=unusable,
             maps=unusable,
             presets=unusable,
+            media_store=unusable,
+            media_assets=unusable,
+            normalizer=ImageNormalizer(max_bytes=1, max_pixels=1, target_px=1),
         )
 
 
