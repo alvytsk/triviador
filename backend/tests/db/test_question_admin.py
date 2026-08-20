@@ -12,14 +12,7 @@ async def _bank(sessions: async_sessionmaker[AsyncSession]) -> None:
     await _seed_category(sessions)
     await _seed_category(sessions, "cat-2", slug="film", name="Film")
     await _seed_mc_question(sessions, "q-mc", prompt="Who painted the Velvet Revolution mural?")
-    # `difficulty="easy"` explicitly: `_seed_numeric_question`'s own default
-    # is "medium" (see `tests/db/conftest.py`), and
-    # `test_each_filter_narrows_the_list`'s `difficulty="easy"` case expects
-    # all three seeded questions back — that only holds if every question
-    # in this bank actually is "easy".
-    await _seed_numeric_question(
-        sessions, "q-num", prompt="In which year did it begin?", difficulty="easy"
-    )
+    await _seed_numeric_question(sessions, "q-num", prompt="In which year did it begin?")
     await _seed_mc_question(sessions, "q-off", prompt="Retired question", is_active=False)
 
 
@@ -60,7 +53,10 @@ async def test_a_percent_in_the_search_is_a_literal_not_a_wildcard(
         (QuestionFilters(kind="numeric"), ["q-num"]),
         (QuestionFilters(is_active=False), ["q-off"]),
         (QuestionFilters(has_media=True), []),
-        (QuestionFilters(difficulty="easy"), ["q-mc", "q-num", "q-off"]),
+        # `q-num`'s difficulty is `_seed_numeric_question`'s own default,
+        # "medium" — different from `_seed_mc_question`'s "easy" default —
+        # so this row is a real exclusion, not the whole bank coming back.
+        (QuestionFilters(difficulty="easy"), ["q-mc", "q-off"]),
     ],
 )
 async def test_each_filter_narrows_the_list(
