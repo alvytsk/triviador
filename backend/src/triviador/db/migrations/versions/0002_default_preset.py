@@ -11,8 +11,6 @@ Revision ID: 0002_default_preset
 Revises: 0001_initial
 """
 
-import json
-
 import sqlalchemy as sa
 from alembic import op
 
@@ -38,7 +36,7 @@ def upgrade() -> None:
         sa.text(
             "INSERT INTO rule_presets (id, name, is_default, rules, version, is_active) "
             "VALUES ('default', 'Default', true, :rules, 1, true)"
-        ).bindparams(sa.bindparam("rules", json.dumps(DEFAULT_PRESET_RULES), type_=sa.JSON))
+        ).bindparams(sa.bindparam("rules", DEFAULT_PRESET_RULES, type_=sa.JSON))
     )
 
 

@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tests.db.conftest import DATABASE_URL, _run_upgrade_head, alembic_config
 from triviador.db.base import Base
+from triviador.db.engine import sessionmaker_for
+from triviador.db.repositories.presets import PresetRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -117,3 +119,39 @@ async def test_downgrade_is_not_offered(migrated_schema: None, engine: AsyncEngi
     async with engine.connect() as conn:
         tables = await conn.run_sync(_table_names)
     assert tables >= EXPECTED_TABLES, "downgrade must not modify the schema before raising"
+
+
+async def test_the_default_preset_migration_writes_a_readable_object(engine: AsyncEngine) -> None:
+    """Regression test for a double-JSON-encode bug in 0002's `upgrade()`:
+    it used to bind `json.dumps(DEFAULT_PRESET_RULES)` — already a string —
+    with `type_=sa.JSON`, which serializes it a *second* time. The row's
+    `rules` column ended up a JSONB string scalar holding JSON text, not a
+    JSONB object, so `PresetRepository.get_default()` raised on every
+    freshly migrated database. That call is exactly what `POST /api/games`
+    makes when `preset_id` is null, so the bug meant no game could ever be
+    created against a fresh deployment.
+
+    Deliberately uses neither `clean_db` nor `default_preset`: the latter
+    re-inserts this row through the ORM with a correctly-shaped dict, which
+    is precisely what hid this bug for two plans — every other test that
+    touched `rule_presets` read that fixture's row, never the migration's
+    own. This rebuilds the schema from nothing (the same DROP/CREATE/upgrade
+    `test_upgrade_head_from_empty_database` runs) and reads back only what
+    `upgrade()` itself wrote.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await _run_upgrade_head(DATABASE_URL)
+
+    async with engine.connect() as conn:
+        kind = (
+            await conn.execute(
+                text("SELECT jsonb_typeof(rules) FROM rule_presets WHERE id = 'default'")
+            )
+        ).scalar_one()
+    assert kind == "object"
+
+    preset = await PresetRepository(sessionmaker_for(engine)).get_default()
+    assert preset is not None
+    assert preset.rules.player_count == 3
