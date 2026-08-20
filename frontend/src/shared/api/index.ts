@@ -10,6 +10,11 @@
 // pin one canonical binding per duplicated name: `errors.ts` wins for the
 // two error enums it exists to own, `public.ts` wins for the client-state
 // types it shares with `ws.ts`.
+//
+// To whoever extends this file (Tasks 4, 5, 7): new exports go in the explicit lists
+// above. If a newly-duplicated name shows up, it will surface as a TS2308 error rather
+// than silently — fix that by pinning the canonical module for that name here, never by
+// dropping the name.
 
 export type { ApiErrorCode, RejectCode } from "./generated/errors";
 export * from "./generated/errors";
