@@ -1,9 +1,11 @@
+from dataclasses import replace as dc_replace
 from datetime import timedelta
 
 import httpx
 import pytest
 import pytest_asyncio
 
+from tests.api.conftest import ORIGIN
 from tests.api.fakes import (
     FakeCategories,
     FakeClock,
@@ -13,7 +15,10 @@ from tests.api.fakes import (
 )
 from tests.imports.test_parse import MC, NUM, csv_bytes, zip_bytes
 from tests.media.test_pipeline import png
+from triviador.api.app import create_app
 from triviador.api.deps import AppDependencies
+from triviador.config import Settings
+from triviador.media.pipeline import ImageNormalizer
 
 pytestmark = pytest.mark.asyncio
 
@@ -275,3 +280,34 @@ async def test_an_unknown_category_in_the_file_is_created_by_confirm(
     created = (await dry_run(admin_client, csv_bytes(NUM), "b.csv")).json()
     await confirm(admin_client, created["import_id"])
     assert {c.slug for c in deps.categories.records.values()} == {"history"}
+
+
+async def test_a_media_limit_tightened_since_the_dry_run_is_409_not_500(
+    admin_client: httpx.AsyncClient, deps: AppDependencies, settings: Settings
+) -> None:
+    """§9.3 re-validates media at confirm time against whatever limits
+    `ImageNormalizer` currently carries — built from settings at process
+    start, not at dry-run time. An operator who tightens `media_max_bytes`
+    between an admin's dry-run and their confirm (well inside
+    `IMPORT_TTL_HOURS`) makes an image that passed then fail now. That is
+    an ordinary "run the dry-run again", not a server fault; without the
+    route catching `MediaRejected`, this would reach the catch-all handler
+    as a 500 instead of the 409 every other unconfirmable-import case gets.
+    """
+    body = zip_bytes(csv_bytes(MC.replace(",,,", ",,,river.png")), {"river.png": png(40, 20)})
+    created = (await dry_run(admin_client, body, "bank.zip")).json()
+
+    # A fresh `ImageNormalizer` with `max_bytes=1`, mirroring a redeploy
+    # that shipped a tighter limit — `dc_replace` keeps every other field
+    # (crucially `staging_store` and `imports`) pointing at the exact same
+    # objects the dry-run above already wrote to.
+    tightened = dc_replace(deps, normalizer=ImageNormalizer(max_bytes=1, max_pixels=1, target_px=1))
+    transport = httpx.ASGITransport(app=create_app(tightened), raise_app_exceptions=False)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver", headers={"Origin": ORIGIN}
+    ) as tightened_client:
+        tightened_client.cookies.set(settings.session_cookie_name, "tok-admin")
+        response = await confirm(tightened_client, created["import_id"])
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "import_not_confirmable"

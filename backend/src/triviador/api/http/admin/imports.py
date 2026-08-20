@@ -237,11 +237,28 @@ async def confirm_import(
 
     parsed = parse_upload(staged, filename=record.filename)
     normalized: dict[str, NormalizedImage] = {}
-    for row in parsed.rows:
-        if row.media_file is not None and row.media_file not in normalized:
-            normalized[row.media_file] = await deps.normalizer.normalize(
-                parsed.media[row.media_file]
-            )
+    try:
+        for row in parsed.rows:
+            if row.media_file is not None and row.media_file not in normalized:
+                normalized[row.media_file] = await deps.normalizer.normalize(
+                    parsed.media[row.media_file]
+                )
+    except MediaRejected as exc:
+        # Dry-run validated these exact bytes — the sha match above proves
+        # they *are* the same bytes — so this is unreachable within one
+        # running process. It is not unreachable across a deploy: the
+        # limits live on `ImageNormalizer`, built from settings at process
+        # start, and an operator who tightens `media_max_bytes` between an
+        # admin's dry-run and their confirm (well inside `IMPORT_TTL_HOURS`)
+        # makes an image that passed then fail now. That is an ordinary
+        # "run the dry-run again", not a server fault, and letting it reach
+        # the catch-all handler would report it as a 500.
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE,
+            409,
+            f"{exc.reason}; the media limits changed since this upload was validated — "
+            "run the dry-run again",
+        ) from exc
     for image in normalized.values():
         await deps.media_store.put(
             image.storage_key,
