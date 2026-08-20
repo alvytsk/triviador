@@ -90,6 +90,48 @@ describe("parseMapSvg", () => {
     expect(error.message).toMatch(/no path/);
   });
 
+  describe("the drift guard — four inputs a code review found the two validators disagreeing on", () => {
+    // Same four documents, byte-for-byte, as backend/tests/maps/test_svg_validator.py's
+    // "the drift guard" block. Each one used to get a different verdict from the two
+    // sides; asserting both here and there means the next drift fails a test instead
+    // of waiting for someone's browser.
+
+    it("accepts xmlns:xlink on the root — a namespace declaration, not content", () => {
+      const doc =
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" ' +
+        'viewBox="0 0 100 100">' +
+        GOOD +
+        "</svg>";
+      const parsed = parseMapSvg(doc, IDS);
+      expect(parsed.regions).toHaveLength(2);
+    });
+
+    it("rejects a root with no xmlns at all — it would not render as SVG in a browser", () => {
+      const doc = `<svg viewBox="0 0 100 100">${GOOD}</svg>`;
+      expect(() => parseMapSvg(doc, IDS)).toThrow(/not an SVG/);
+    });
+
+    it("rejects an empty viewBox — present but unusable", () => {
+      const doc = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="">${GOOD}</svg>`;
+      expect(() => parseMapSvg(doc, IDS)).toThrow(/viewBox/);
+    });
+
+    it("reports all four problems on a wrong root, not just the first", () => {
+      const doc = '<html viewBox="" bogus="1"></html>';
+      let caught: MapContractError | null = null;
+      try {
+        parseMapSvg(doc, IDS);
+      } catch (e) {
+        caught = e as MapContractError;
+      }
+      expect(caught).toBeInstanceOf(MapContractError);
+      // root is <html>, viewBox is empty, "bogus" is a disallowed attribute,
+      // and both regions are missing (reported as one joined item) — four,
+      // not the one this parser used to short-circuit to.
+      expect(caught?.problems).toHaveLength(4);
+    });
+  });
+
   it("agrees with the Python validator about the shipped map", () => {
     // The claim §8.1 makes is that build time and run time enforce *the same*
     // contract. `backend/tests/maps/test_svg_validator.py` asserts this file

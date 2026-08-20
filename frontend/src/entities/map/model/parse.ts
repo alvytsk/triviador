@@ -1,6 +1,11 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PATH_ATTRS = new Set(["id", "d", "fill-rule", "clip-rule"]);
-const ROOT_ATTRS = new Set(["xmlns", "viewBox", "width", "height"]);
+// `xmlns` and `xmlns:*` are not in this whitelist and never checked against
+// it — they are namespace declarations, not content, and the loop below
+// skips them structurally before the whitelist check ever runs. That mirrors
+// the Python side, where ElementTree folds them out of `root.attrib`
+// entirely rather than reporting them as attributes at all.
+const ROOT_ATTRS = new Set(["viewBox", "width", "height"]);
 
 export interface ParsedRegion {
   id: string;
@@ -52,13 +57,20 @@ export function parseMapSvg(source: string, regionIds: readonly string[]): Parse
   }
 
   const root = document.documentElement;
+  // Appended, not thrown: a wrong-but-parseable root (an HTML error page in
+  // place of the SVG is the real-world version of this) still has a tree
+  // worth scanning, and an operator wants every problem in one report, not
+  // one line followed by a second run once this one is fixed. Only a
+  // genuine parse failure above — where no tree exists at all — short-
+  // circuits; this mirrors `validate_svg` on the Python side exactly.
   if (root.namespaceURI !== SVG_NS || root.localName !== "svg") {
-    throw new MapContractError([`the root element is <${root.localName}>, not an SVG <svg>`]);
+    problems.push(`the root element is <${root.localName}>, not an SVG <svg>`);
   }
 
   const viewBox = root.getAttribute("viewBox");
   if (viewBox === null || viewBox.trim() === "") problems.push("the root <svg> has no viewBox");
   for (const attribute of Array.from(root.attributes)) {
+    if (attribute.name === "xmlns" || attribute.name.startsWith("xmlns:")) continue;
     if (!ROOT_ATTRS.has(attribute.name)) {
       problems.push(`the root <svg> carries a disallowed attribute: ${attribute.name}`);
     }

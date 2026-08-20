@@ -84,7 +84,25 @@ export function MapBoard({
               role="button"
               aria-label={region.id}
               aria-disabled={!isOffered}
+              // Only an offered region is really a button — non-offered ones keep
+              // role="button" for a consistent accessible name, but claiming
+              // focusability and a keyboard interaction they cannot fulfil would be
+              // worse than claiming no role at all.
+              tabIndex={isOffered ? 0 : undefined}
               onClick={isOffered ? () => onSelect(region.id) : undefined}
+              onKeyDown={
+                isOffered
+                  ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        // Space also scrolls the page by default on a
+                        // focusable non-form element; Enter has no such
+                        // default to prevent.
+                        if (event.key === " ") event.preventDefault();
+                        onSelect(region.id);
+                      }
+                    }
+                  : undefined
+              }
             />
           </Fragment>
         );

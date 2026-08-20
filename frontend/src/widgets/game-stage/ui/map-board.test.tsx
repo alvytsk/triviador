@@ -72,6 +72,26 @@ describe("MapBoard", () => {
     expect(onSelect).toHaveBeenCalledWith("plzensky");
   });
 
+  it("is keyboard-activatable on an offered region only", async () => {
+    withMap();
+    const onSelect = vi.fn();
+    renderWithApp(<MapBoard state={stateWithPicking()} onSelect={onSelect} />);
+    const offered = await screen.findByLabelText("plzensky");
+    const notOffered = screen.getByLabelText("stredocesky");
+
+    expect(offered).toHaveAttribute("tabindex", "0");
+    expect(notOffered).not.toHaveAttribute("tabindex");
+
+    offered.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledWith("plzensky");
+
+    onSelect.mockClear();
+    offered.focus();
+    await userEvent.keyboard(" ");
+    expect(onSelect).toHaveBeenCalledWith("plzensky");
+  });
+
   it("does nothing when a region that is not offered is clicked", async () => {
     withMap();
     const onSelect = vi.fn();

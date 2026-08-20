@@ -59,9 +59,15 @@ def validate_svg(source: str, region_ids: Collection[RegionId]) -> tuple[str, ..
 
     problems: list[str] = []
     namespace, local = _split(root.tag)
-    if local != "svg" or namespace not in (SVG_NS, ""):
+    if local != "svg" or namespace != SVG_NS:
+        # No `""` allowance: an `<svg>` with no `xmlns` at all does not
+        # render as SVG in a browser, so accepting it here would be the
+        # lenient-and-wrong side of a disagreement with the DOM, which
+        # always requires the namespace to resolve.
         problems.append(f"root element is <{local}> in namespace {namespace!r}, not an SVG <svg>")
-    if "viewBox" not in root.attrib:
+    if not root.attrib.get("viewBox", "").strip():
+        # Not just "missing": an empty `viewBox=""` is present but unusable,
+        # and the DOM-side parser already rejects it on exactly this test.
         problems.append("root <svg> has no viewBox")
     for name in sorted(set(root.attrib) - ROOT_ATTRS):
         problems.append(f"root <svg> carries a disallowed attribute: {name}")

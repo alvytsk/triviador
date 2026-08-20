@@ -120,6 +120,56 @@ def test_unparseable_input_is_a_problem_not_an_exception() -> None:
     assert validate_svg("not xml at all", REGIONS) != ()
 
 
+GOOD_PATHS = '<path id="a" d="M0 0h1v1z"/><path id="b" d="M2 2h1v1z"/>'
+
+
+def test_xmlns_xlink_on_the_root_is_accepted() -> None:
+    """A namespace declaration, not content. ElementTree folds it out of
+    `root.attrib` entirely (see `ROOT_ATTRS`'s comment); this asserts the
+    outcome that follows from that, not the mechanism."""
+    doc = (
+        '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+        f'viewBox="0 0 100 100">{GOOD_PATHS}</svg>'
+    )
+    assert validate_svg(doc, REGIONS) == ()
+
+
+def test_a_root_with_no_xmlns_at_all_is_rejected() -> None:
+    """An `<svg>` with no `xmlns` does not render as SVG in a browser, so
+    accepting it here would be the lenient-and-wrong side of a disagreement
+    with the DOM, which always requires the namespace to resolve."""
+    doc = f'<svg viewBox="0 0 100 100">{GOOD_PATHS}</svg>'
+    problems = validate_svg(doc, REGIONS)
+    assert any("not an SVG" in p for p in problems)
+
+
+def test_an_empty_viewbox_is_rejected() -> None:
+    """Present but unusable — distinct from `test_missing_viewbox_is_a_problem`,
+    which never sets the attribute at all."""
+    doc = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="">{GOOD_PATHS}</svg>'
+    problems = validate_svg(doc, REGIONS)
+    assert any("viewBox" in p for p in problems)
+
+
+def test_a_wrong_root_reports_every_other_problem_too() -> None:
+    """The drift guard: this input, and the three above, are the exact four
+    documents `frontend/src/entities/map/model/parse.test.ts`'s "drift
+    guard" block asserts against `parseMapSvg`. A code review found the two
+    validators disagreeing on all four; asserting the same outcome in both
+    suites means the next disagreement fails a test instead of shipping.
+
+    Four problems, not one: wrong root, empty viewBox, the disallowed
+    "bogus" attribute, and both regions missing (reported as one joined
+    item). No `<path>` at all means nothing here depends on how a `<path>`
+    child is scanned — only that scanning a wrong root doesn't stop after
+    the first thing wrong with it, which is what `validate_svg` has always
+    done and what the TypeScript side used to not do.
+    """
+    doc = '<html viewBox="" bogus="1"></html>'
+    problems = validate_svg(doc, REGIONS)
+    assert len(problems) == 4
+
+
 def test_the_shipped_czechia_map_satisfies_the_contract() -> None:
     """The build-time half of §8.1. This is the gate that makes "a map is a
     two-file drop" safe: the drop is checked here, in the repository, rather
