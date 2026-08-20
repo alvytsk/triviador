@@ -84,6 +84,11 @@ export {
 } from "./messages";
 export { apiFetch, apiSend } from "./rest";
 export {
+  SocketConnectionContext,
+  type SocketHandle,
+  useSocket,
+} from "./socket-context";
+export {
   createSocketClient,
   type SocketClient,
   type SocketClosed,

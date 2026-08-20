@@ -15,6 +15,7 @@ import {
   createSocketClient,
   type Narration,
   type SocketClient,
+  SocketConnectionContext,
   type SocketStatus,
 } from "@/shared/api";
 import { createDispatcher } from "./dispatcher";
@@ -100,7 +101,16 @@ export function SocketProvider({
     [send, status, offsetMs, bus, client],
   );
 
-  return <SocketContext.Provider value={value}>{children}</SocketContext.Provider>;
+  return (
+    <SocketContext.Provider value={value}>
+      {/* `SocketConnectionContext` (`shared/api/socket-context.ts`) is the
+          public slice of this exact same `value` — send/status/offsetMs/
+          client, no `bus` — that a screen below `app/` is allowed to read.
+          See that file for why this is a second context object rather than
+          this one being exported directly. */}
+      <SocketConnectionContext.Provider value={value}>{children}</SocketConnectionContext.Provider>
+    </SocketContext.Provider>
+  );
 }
 
 export function useSocket(): SocketContextValue {
