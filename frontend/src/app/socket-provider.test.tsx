@@ -37,4 +37,15 @@ describe("SocketProvider", () => {
     act(() => harness.socket.last().serverClose(1006));
     expect(harness.getByRole("status")).toHaveTextContent("Reconnecting");
   });
+
+  it("shows the quiet 'not connected' banner on a terminal close", () => {
+    const harness = renderWithApp(<SocketStatusBanner />);
+    act(() => harness.socket.last().open());
+    // 4401/4403 are terminal — the client gives up on reconnecting entirely
+    // (§11.1), which is the one state this banner exists to make unmissable.
+    act(() => harness.socket.last().serverClose(4401));
+    const banner = harness.getByRole("status");
+    expect(banner).toHaveTextContent("Not connected");
+    expect(banner.className).toContain("border-ink-dim"); // the "quiet" tone
+  });
 });
