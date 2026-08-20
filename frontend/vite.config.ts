@@ -56,6 +56,13 @@ export default defineConfig({
       target: "react",
       autoCodeSplitting: true,
       routesDirectory: "./src/app/routes",
+      // Generated next to the routes it describes, not at `src/routeTree.gen.ts`
+      // (the plugin's default) — `main.tsx` imports it from here, and both
+      // `biome.json` and `steiger.config.ts` already exempt this exact path.
+      generatedRouteTree: "./src/app/routes/routeTree.gen.ts",
+      // Otherwise the generator scans its own output as a candidate route
+      // file every run and warns that it exports no `Route`.
+      routeFileIgnorePattern: "\\.gen\\.ts$",
     }),
     react(),
     tailwindcss(),
