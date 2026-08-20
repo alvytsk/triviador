@@ -3,6 +3,7 @@ import { createMemoryHistory, createRouter, RouterContextProvider } from "@tanst
 import { type RenderResult, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, vi } from "vitest";
+import { createEventBus, type EventBus } from "@/app/event-bus";
 import { createQueryClient } from "@/app/query-client";
 import { routeTree } from "@/app/routes/routeTree.gen";
 import { SocketProvider } from "@/app/socket-provider";
@@ -47,6 +48,11 @@ export interface AppHarness extends RenderResult {
   socket: ReturnType<typeof fakeSocketFactory>;
   client: SocketClient;
   router: ReturnType<typeof createTestRouter>;
+  /** The real `EventBus` `SocketProvider`'s dispatcher emits narration onto
+   *  — see `SocketProvider`'s `bus` prop for why this exists: it is the one
+   *  way a test outside `app/` can observe whether narration actually fired
+   *  for a given message, real production dispatcher and all. */
+  bus: EventBus;
 }
 
 /**
@@ -94,7 +100,8 @@ export function renderWithApp(
   const socket = fakeSocketFactory();
   const client = createSocketClient({ url: "/ws", socketFactory: socket.factory });
   const router = createTestRouter(queryClient, options.initialPath ?? "/");
-  options.seed?.({ queryClient, socket, client, router });
+  const bus = createEventBus();
+  options.seed?.({ queryClient, socket, client, router, bus });
 
   // `wrapper`, not a hand-nested tree: `RenderResult.rerender` re-invokes
   // whatever was passed as `wrapper` around the new element, but it does not
@@ -104,7 +111,7 @@ export function renderWithApp(
   function Wrapper({ children }: { children: ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <SocketProvider enabled client={client}>
+        <SocketProvider enabled client={client} bus={bus}>
           <RouterContextProvider router={router}>{children}</RouterContextProvider>
         </SocketProvider>
       </QueryClientProvider>
@@ -112,5 +119,5 @@ export function renderWithApp(
   }
 
   const result = render(ui, { wrapper: Wrapper });
-  return { ...result, queryClient, socket, client, router };
+  return { ...result, queryClient, socket, client, router, bus };
 }

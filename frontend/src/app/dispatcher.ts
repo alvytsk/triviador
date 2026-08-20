@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { gameKey, lobbyKey } from "@/entities/game";
 import { type GameSnapshot, parseClientEvent, type ServerMessage } from "@/shared/api";
 import type { EventBus } from "./event-bus";
+import type { PresenceStore } from "./use-presence";
 
 /**
  * §9.3's merge rule, and the only one in the application.
@@ -36,8 +37,12 @@ export function writeGame(queryClient: QueryClient, gameId: string, incoming: Ga
  * updates. Deriving it means the REST race and the gap rule are settled by
  * the same number.
  */
-export function createDispatcher(deps: { queryClient: QueryClient; bus: EventBus }) {
-  const { queryClient, bus } = deps;
+export function createDispatcher(deps: {
+  queryClient: QueryClient;
+  bus: EventBus;
+  presence: PresenceStore;
+}) {
+  const { queryClient, bus, presence } = deps;
 
   function lastSeq(gameId: string): number | null {
     return queryClient.getQueryData<GameSnapshot>(gameKey(gameId))?.seq ?? null;
@@ -75,13 +80,19 @@ export function createDispatcher(deps: { queryClient: QueryClient; bus: EventBus
           queryClient.setQueryData(lobbyKey(), message.games);
           return;
 
+        case "game.presence":
+          // Task 14: fed into `PresenceStore`, never the query cache — see
+          // `app/use-presence.ts`'s doc comment for why `game.presence` gets
+          // a store of its own rather than a place beside `GameSnapshot`.
+          presence.update(message.game_id, message.connected);
+          return;
+
         case "hello":
         case "pong":
-        case "game.presence":
         case "error":
-          // Presence is rendered from a subscription of its own (Task 14) and
-          // errors are correlated by `command_id` at the call site (Task 13).
-          // Neither is state, and neither belongs in a cache.
+          // Errors are correlated by `command_id` at the call site (Task
+          // 13); `hello`/`pong` carry nothing worth keeping. Neither is
+          // state, and neither belongs in a cache.
           return;
       }
     },

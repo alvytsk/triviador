@@ -5,6 +5,7 @@ import type { GameSnapshot, ServerMessage } from "@/shared/api";
 import { snapshot } from "../../testing/factories";
 import { createDispatcher, writeGame } from "./dispatcher";
 import { createEventBus } from "./event-bus";
+import { createPresenceStore } from "./use-presence";
 
 // The brief's fixtures carried only `type`, `region_id`, and the actor id;
 // the generated schemas (drifted since the brief was written) also require
@@ -29,10 +30,11 @@ const CAPTURED = {
 function setup() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const bus = createEventBus();
-  const dispatcher = createDispatcher({ queryClient, bus });
+  const presence = createPresenceStore();
+  const dispatcher = createDispatcher({ queryClient, bus, presence });
   const narrated: unknown[] = [];
   bus.subscribe("g1", (event) => narrated.push(event));
-  return { queryClient, bus, dispatcher, narrated };
+  return { queryClient, bus, presence, dispatcher, narrated };
 }
 
 function update(seq: number, baseSeq: number, events: unknown[] = []): ServerMessage {
@@ -227,9 +229,8 @@ describe("the dispatcher", () => {
     expect(queryClient.getQueryData(lobbyKey())).toEqual(games);
   });
 
-  it("ignores presence and error messages rather than writing them anywhere", () => {
+  it("ignores an error message entirely — it never reaches a cache", () => {
     const { dispatcher, queryClient } = setup();
-    dispatcher.handle({ type: "game.presence", game_id: "g1", connected: ["u1"] } as ServerMessage);
     dispatcher.handle({
       type: "error",
       code: "not_your_turn",
@@ -237,6 +238,13 @@ describe("the dispatcher", () => {
       command_id: "c1",
     } as ServerMessage);
     expect(cached(queryClient)).toBeUndefined();
+  });
+
+  it("feeds game.presence into the presence store, never the query cache", () => {
+    const { dispatcher, queryClient, presence } = setup();
+    dispatcher.handle({ type: "game.presence", game_id: "g1", connected: ["u1"] } as ServerMessage);
+    expect(cached(queryClient)).toBeUndefined();
+    expect(presence.snapshot("g1")).toEqual(["u1"]);
   });
 });
 

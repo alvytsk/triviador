@@ -2,9 +2,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { GamePage } from "@/pages/game";
-import type { QuestionResolvedEvent } from "@/shared/api";
+import type { GameAbortedEvent, QuestionResolvedEvent } from "@/shared/api";
 import { gameQueryOptions } from "../game-query";
 import { useNarration } from "../socket-provider";
+import { usePresence } from "../use-presence";
 
 /**
  * The loader pre-warms `["game", id]` through `gameQueryOptions`'s one merge
@@ -30,7 +31,13 @@ import { useNarration } from "../socket-provider";
  * `question_resolved` event in state, clears it on `question_presented`
  * (the event the schema itself documents as "the cue" a fresh question
  * turn has begun — see `questionPresentedEventSchema`), and hands the
- * result down through `<GamePage>` the same way it hands down `game`.
+ * result down through `<GamePage>` the same way it hands down `game`. Task
+ * 14 adds `game_aborted` to the same subscription, for `<Results>`.
+ *
+ * `usePresence` (`app/use-presence.ts`) is behind the identical wall, for
+ * the identical reason — `<PlayerStrip>` cannot call it either — so this
+ * route reads it too and hands the connected roster down as
+ * `connectedPlayerIds`.
  */
 export const Route = createFileRoute("/_authed/games/$gameId")({
   loader: ({ context, params }) =>
@@ -40,10 +47,21 @@ export const Route = createFileRoute("/_authed/games/$gameId")({
     const queryClient = useQueryClient();
     const game = useQuery(gameQueryOptions(gameId, queryClient));
     const [resolvedQuestion, setResolvedQuestion] = useState<QuestionResolvedEvent | null>(null);
+    const [aborted, setAborted] = useState<GameAbortedEvent | null>(null);
     useNarration(gameId, (event) => {
       if (event.type === "question_resolved") setResolvedQuestion(event);
       else if (event.type === "question_presented") setResolvedQuestion(null);
+      else if (event.type === "game_aborted") setAborted(event);
     });
-    return <GamePage gameId={gameId} game={game} resolvedQuestion={resolvedQuestion} />;
+    const connectedPlayerIds = usePresence(gameId);
+    return (
+      <GamePage
+        gameId={gameId}
+        game={game}
+        resolvedQuestion={resolvedQuestion}
+        aborted={aborted}
+        connectedPlayerIds={connectedPlayerIds}
+      />
+    );
   },
 });

@@ -1,8 +1,14 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useGameSubscription } from "@/entities/game";
-import { ApiFetchError, type GameSnapshot, type QuestionResolvedEvent } from "@/shared/api";
+import {
+  ApiFetchError,
+  type GameAbortedEvent,
+  type GameSnapshot,
+  type QuestionResolvedEvent,
+} from "@/shared/api";
 import { useMediaPrefetch } from "@/shared/lib";
 import { Banner } from "@/shared/ui";
+import { Results } from "@/widgets/results";
 import { BoardView } from "./board-view";
 import { RoomView } from "./room-view";
 
@@ -52,15 +58,26 @@ function GameError({ error }: { error: unknown }) {
  * the route subscribes and passes the latest event down. It defaults to
  * `null` so this page still renders standalone, without a route, the way
  * this file's own tests already do.
+ *
+ * `aborted` (`game_aborted`'s narration event) and `connectedPlayerIds`
+ * (Task 14's `usePresence`, `app/use-presence.ts`) travel the identical
+ * route-level hand-off, for the identical reason: `usePresence` sits behind
+ * the same `fsd/forbidden-imports` wall as `useNarration`. Both default to
+ * `null` — "no `game_aborted` has arrived" and "no `game.presence` has
+ * arrived" respectively — so this page keeps rendering standalone.
  */
 export function GamePage({
   gameId,
   game,
   resolvedQuestion = null,
+  aborted = null,
+  connectedPlayerIds = null,
 }: {
   gameId: string;
   game: UseQueryResult<GameSnapshot, Error>;
   resolvedQuestion?: QuestionResolvedEvent | null;
+  aborted?: GameAbortedEvent | null;
+  connectedPlayerIds?: readonly string[] | null;
 }) {
   useGameSubscription(gameId);
   useMediaPrefetch(game.data?.state.media_prefetch ?? NO_MEDIA);
@@ -69,9 +86,14 @@ export function GamePage({
   if (game.isError) return <GameError error={game.error} />;
 
   const state = game.data.state;
-  return state.phase === "lobby" ? (
-    <RoomView state={state} />
-  ) : (
-    <BoardView state={state} resolved={resolvedQuestion} />
+  if (state.phase === "lobby") return <RoomView state={state} />;
+  // Full time (§9.1's ranked scoreboard) and a game the server ended early
+  // both hand off to `<Results>` instead of the board — see that widget for
+  // why the two share one component rather than two.
+  if (state.phase === "finished" || state.phase === "aborted") {
+    return <Results state={state} aborted={aborted} />;
+  }
+  return (
+    <BoardView state={state} resolved={resolvedQuestion} connectedPlayerIds={connectedPlayerIds} />
   );
 }

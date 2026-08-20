@@ -20,6 +20,7 @@ import {
 } from "@/shared/api";
 import { createDispatcher } from "./dispatcher";
 import { createEventBus, type EventBus } from "./event-bus";
+import { createPresenceStore, PresenceProvider } from "./use-presence";
 
 interface SocketContextValue {
   send(frame: ClientFrame): void;
@@ -46,14 +47,26 @@ export function SocketProvider({
   children,
   enabled,
   client: injected,
+  bus: injectedBus,
 }: {
   children: ReactNode;
   enabled: boolean;
   client?: SocketClient;
+  /** Test-only: `testing/render.tsx` injects its own `EventBus` so a test
+   *  can subscribe directly and observe whether the dispatcher actually
+   *  emitted narration for a given message — the one way to prove Spec 1B
+   *  §8.2's gap rule from outside `app/`, which nothing below this layer
+   *  may import (see `pages/game/ui/full-game.test.tsx`). Production never
+   *  passes this; `bus` stays exactly as internal as it always was. */
+  bus?: EventBus;
 }) {
   const queryClient = useQueryClient();
-  const bus = useMemo(() => createEventBus(), []);
-  const dispatcher = useMemo(() => createDispatcher({ queryClient, bus }), [queryClient, bus]);
+  const bus = useMemo(() => injectedBus ?? createEventBus(), [injectedBus]);
+  const presence = useMemo(() => createPresenceStore(), []);
+  const dispatcher = useMemo(
+    () => createDispatcher({ queryClient, bus, presence }),
+    [queryClient, bus, presence],
+  );
   const [client, setClient] = useState<SocketClient | null>(injected ?? null);
   const [status, setStatus] = useState<SocketStatus>(injected?.status() ?? "closed");
 
@@ -103,12 +116,19 @@ export function SocketProvider({
 
   return (
     <SocketContext.Provider value={value}>
-      {/* `SocketConnectionContext` (`shared/api/socket-context.ts`) is the
-          public slice of this exact same `value` — send/status/offsetMs/
-          client, no `bus` — that a screen below `app/` is allowed to read.
-          See that file for why this is a second context object rather than
-          this one being exported directly. */}
-      <SocketConnectionContext.Provider value={value}>{children}</SocketConnectionContext.Provider>
+      <PresenceProvider value={presence}>
+        {/* `SocketConnectionContext` (`shared/api/socket-context.ts`) is the
+            public slice of this exact same `value` — send/status/offsetMs/
+            client, no `bus` — that a screen below `app/` is allowed to read.
+            See that file for why this is a second context object rather than
+            this one being exported directly. `PresenceProvider` is a third,
+            separate context (`app/use-presence.ts`) for the same reason
+            `bus` is kept out of the public one: nothing below `app/` may
+            call `usePresence` either. */}
+        <SocketConnectionContext.Provider value={value}>
+          {children}
+        </SocketConnectionContext.Provider>
+      </PresenceProvider>
     </SocketContext.Provider>
   );
 }
