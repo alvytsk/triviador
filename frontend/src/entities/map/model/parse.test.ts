@@ -37,14 +37,20 @@ describe("parseMapSvg", () => {
     expect(() => parseMapSvg(svg(body), IDS)).toThrow(MapContractError);
   });
 
-  it.each(['transform="translate(5,5)"', 'href="#x"', 'style="fill:red"', 'onclick="x()"'])(
-    "rejects the disallowed attribute %s",
-    (attr) => {
-      expect(() =>
-        parseMapSvg(svg(`<path id="a" d="M0 0z" ${attr}/><path id="b" d="M1 1z"/>`), IDS),
-      ).toThrow(/disallowed attribute/);
-    },
-  );
+  it.each([
+    'transform="translate(5,5)"',
+    'href="#x"',
+    'style="fill:red"',
+    'onclick="x()"',
+    // The whitelist rejects this by omission, same as the other three — no
+    // special case was added for it, and round 4 found the omission had a
+    // gap next to it (case A below), not in this list.
+    'xlink:href="#x" xmlns:xlink="http://www.w3.org/1999/xlink"',
+  ])("rejects the disallowed attribute %s", (attr) => {
+    expect(() =>
+      parseMapSvg(svg(`<path id="a" d="M0 0z" ${attr}/><path id="b" d="M1 1z"/>`), IDS),
+    ).toThrow(/disallowed attribute/);
+  });
 
   it("rejects a missing viewBox", () => {
     expect(() => parseMapSvg(svg(GOOD, ""), IDS)).toThrow(/viewBox/);
@@ -90,13 +96,15 @@ describe("parseMapSvg", () => {
     expect(error.message).toMatch(/no path/);
   });
 
-  describe("the drift guard — five inputs a code review found the two validators disagreeing on", () => {
-    // Same five documents, byte-for-byte, as backend/tests/maps/test_svg_validator.py's
-    // "the drift guard" block (the fifth was added a round later, once a re-review was
-    // asked to hunt for a sibling of the fourth rather than just confirm it was fixed).
-    // Each one used to get a different verdict from the two sides; asserting both here
-    // and there means the next drift fails a test instead of waiting for someone's
-    // browser.
+  describe("the drift guard — eight inputs a code review found the two validators disagreeing on", () => {
+    // Same eight documents, byte-for-byte, as backend/tests/maps/test_svg_validator.py's
+    // "the drift guard" block. Cases 1-5 came from two rounds of input-probing; 6-8 came
+    // from a round that instead paired every conditional branch in validator.py against
+    // every branch in parse.ts, looking for a branch with no counterpart — a different
+    // method that found two more divergences in one pass. Each case used to get a
+    // different verdict from the two sides (case 8 is same-verdict but different-count,
+    // see its own comment); asserting both here and there means the next drift fails a
+    // test instead of waiting for someone's browser.
 
     it("accepts xmlns:xlink on the root — a namespace declaration, not content", () => {
       const doc =
@@ -163,6 +171,60 @@ describe("parseMapSvg", () => {
         '<path xmlns="" id="a" d="M0 0h1v1z"/><path id="b" d="M2 2h1v1z"/>' +
         "</svg>";
       expect(() => parseMapSvg(doc, IDS)).toThrow(/is not allowed/);
+    });
+
+    it("accepts an xmlns redeclaration on a <path> — round 4's divergence A", () => {
+      // Round 1's fix skipped `xmlns`/`xmlns:*` in the *root* attribute
+      // loop only. Python cannot see those attributes on a `<path>` either
+      // — ElementTree folds namespace declarations out of `element.attrib`
+      // for every element, not just the root — so a `<path>` that
+      // redeclares its own namespace was fine there and wrongly rejected
+      // here, because this file's path-attribute loop never got the same
+      // skip. Real SVG editors do emit per-element `xmlns` redeclarations,
+      // so ordinary tool output reached this. `isNamespaceDeclaration` is
+      // now shared by both loops for exactly this reason.
+      const doc =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+        '<path xmlns="http://www.w3.org/2000/svg" id="a" d="M0 0h1v1z"/>' +
+        '<path id="b" d="M2 2h1v1z"/>' +
+        "</svg>";
+      const parsed = parseMapSvg(doc, IDS);
+      expect(parsed.regions).toHaveLength(2);
+    });
+
+    it("does not let a DOCTYPE mentioned only inside a comment decide the verdict — round 4's divergence B", () => {
+      // This file used to reject on a raw `/<!DOCTYPE/i` regex over the
+      // whole source, run *before* parsing — so a comment that merely
+      // mentions the text "<!DOCTYPE" short-circuited every other check,
+      // where Python's rejection (via `defusedxml`'s `forbid_dtd`) is
+      // structural and never even sees this as a DOCTYPE. The check is now
+      // `document.doctype !== null`, read after parsing, which is the
+      // genuine equivalent.
+      const doc =
+        "<!-- <!DOCTYPE fake> -->" +
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${GOOD}</svg>`;
+      const parsed = parseMapSvg(doc, IDS);
+      expect(parsed.regions).toHaveLength(2);
+    });
+
+    it("reports one message per child of a non-flat <path>, naming each tag — round 4's cosmetic finding", () => {
+      // Not an accept/reject drift — both sides already rejected a <path>
+      // with children — but Python has always emitted one message per
+      // descendant and this file emitted one generic message total, so a
+      // problem count taken as evidence of which branch fired (as one
+      // round of review already did, on the no-xmlns case) would have lied
+      // here. Two children, two messages, each naming its tag.
+      const doc = svg('<path id="a" d="M0 0z"><rect/><circle/></path><path id="b" d="M1 1z"/>');
+      let caught: MapContractError | null = null;
+      try {
+        parseMapSvg(doc, IDS);
+      } catch (e) {
+        caught = e as MapContractError;
+      }
+      expect(caught?.problems).toEqual([
+        "<path> has a child <rect>; the file must be flat",
+        "<path> has a child <circle>; the file must be flat",
+      ]);
     });
   });
 

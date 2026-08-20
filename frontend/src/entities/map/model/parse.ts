@@ -1,11 +1,20 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PATH_ATTRS = new Set(["id", "d", "fill-rule", "clip-rule"]);
-// `xmlns` and `xmlns:*` are not in this whitelist and never checked against
-// it — they are namespace declarations, not content, and the loop below
-// skips them structurally before the whitelist check ever runs. That mirrors
-// the Python side, where ElementTree folds them out of `root.attrib`
-// entirely rather than reporting them as attributes at all.
+// `xmlns` and `xmlns:*` are not in either whitelist below and never checked
+// against them — they are namespace declarations, not content, and
+// `isNamespaceDeclaration` skips them structurally, at every level, before
+// either whitelist check ever runs. That mirrors the Python side, where
+// ElementTree folds them out of `element.attrib` for every element (root or
+// child) rather than reporting them as attributes at all. One function
+// shared by both loops, rather than the same two-line check written twice,
+// because that duplication is exactly how round 4's divergence happened:
+// the root loop got the skip, the path loop didn't, and nothing forced them
+// to agree.
 const ROOT_ATTRS = new Set(["viewBox", "width", "height"]);
+
+function isNamespaceDeclaration(name: string): boolean {
+  return name === "xmlns" || name.startsWith("xmlns:");
+}
 
 export interface ParsedRegion {
   id: string;
@@ -44,16 +53,22 @@ export class MapContractError extends Error {
 export function parseMapSvg(source: string, regionIds: readonly string[]): ParsedMap {
   const problems: string[] = [];
 
-  if (/<!DOCTYPE/i.test(source)) {
-    // No DTD, no entities (§8.1). `DOMParser` will not expand external
-    // entities, but a DOCTYPE has no legitimate reason to be in a normalized
-    // map and refusing it is one line.
-    throw new MapContractError(["the file carries a DOCTYPE"]);
-  }
-
   const document = new DOMParser().parseFromString(source, "image/svg+xml");
   if (document.getElementsByTagName("parsererror").length > 0) {
     throw new MapContractError(["the file is not parseable as XML"]);
+  }
+
+  // Structural, not textual: a `document.doctype !== null` check after
+  // parsing is the genuine equivalent of Python's `forbid_dtd`, which also
+  // rejects during the parse rather than by scanning the source text first.
+  // A raw `/<!DOCTYPE/i` regex over the whole source — this function's
+  // previous approach — lets a substring inside an XML comment decide the
+  // verdict, which is not what "the file carries a DOCTYPE" is supposed to
+  // mean. `DOMParser` will not fetch an external DTD or expand an external
+  // entity regardless of which way this check runs, so nothing about parsing
+  // the document first weakens what §8.1 asks for.
+  if (document.doctype !== null) {
+    throw new MapContractError(["the file carries a DOCTYPE"]);
   }
 
   const root = document.documentElement;
@@ -70,7 +85,7 @@ export function parseMapSvg(source: string, regionIds: readonly string[]): Parse
   const viewBox = root.getAttribute("viewBox");
   if (viewBox === null || viewBox.trim() === "") problems.push("the root <svg> has no viewBox");
   for (const attribute of Array.from(root.attributes)) {
-    if (attribute.name === "xmlns" || attribute.name.startsWith("xmlns:")) continue;
+    if (isNamespaceDeclaration(attribute.name)) continue;
     if (!ROOT_ATTRS.has(attribute.name)) {
       problems.push(`the root <svg> carries a disallowed attribute: ${attribute.name}`);
     }
@@ -83,10 +98,16 @@ export function parseMapSvg(source: string, regionIds: readonly string[]): Parse
       problems.push(`<${child.localName}> is not allowed: every region is a top-level <path>`);
       continue;
     }
-    if (child.children.length > 0) {
-      problems.push(`<path> has children; the file must be flat`);
+    // One message per child, naming its tag — not one generic "has
+    // children" message — so a problem count taken as evidence of which
+    // branch fired (as one round of review already did) stays true on both
+    // sides: Python's `for descendant in child` has always emitted one line
+    // per descendant this way.
+    for (const descendant of Array.from(child.children)) {
+      problems.push(`<path> has a child <${descendant.localName}>; the file must be flat`);
     }
     for (const attribute of Array.from(child.attributes)) {
+      if (isNamespaceDeclaration(attribute.name)) continue;
       if (!PATH_ATTRS.has(attribute.name)) {
         problems.push(`<path> carries a disallowed attribute: ${attribute.name}`);
       }
