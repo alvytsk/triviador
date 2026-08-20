@@ -408,8 +408,16 @@ async def default_preset(clean_db: None, sessions: async_sessionmaker[AsyncSessi
     deactivates the default gets a fresh active one next time, and nothing
     depends on the order tests happen to run in.
 
-    The row is inserted from the migration's own frozen literal, so this
-    fixture cannot drift from what a real database actually contains.
+    The row is inserted from the same frozen literal (`DEFAULT_PRESET_RULES`)
+    migration 0002 seeds from, so the *values* here cannot drift from what
+    that migration intends to write. That is not the same guarantee as "this
+    fixture proves the migration wrote a usable row" — it inserts through the
+    ORM directly, bypassing `upgrade()`'s own SQL entirely, so a bug in how
+    that SQL encodes `rules` (there was one: see
+    `test_the_default_preset_migration_writes_a_readable_object` in
+    `tests/db/test_migrations.py`) would still pass every test built on this
+    fixture. Whether `upgrade()` itself produces a row `PresetRepository` can
+    read is that other test's job, not this fixture's.
     """
     from triviador.db.seed import DEFAULT_PRESET_RULES
 

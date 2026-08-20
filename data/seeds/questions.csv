@@ -1,0 +1,33 @@
+kind,category_slug,category_name,difficulty,prompt,unit,answer,choice_1,choice_2,choice_3,choice_4,correct_index
+numeric,history,History,easy,"In which year did the Velvet Revolution begin?",,1989,,,,,
+numeric,history,History,medium,"In which year was Charles University in Prague founded?",,1348,,,,,
+numeric,history,History,easy,"In which year did the Second World War end in Europe?",,1945,,,,,
+numeric,history,History,medium,"In which year did Czechoslovakia split into two countries?",,1993,,,,,
+numeric,history,History,medium,"In which year was the Eiffel Tower completed?",,1889,,,,,
+numeric,history,History,easy,"In which year did a human first walk on the Moon?",,1969,,,,,
+numeric,geography,Geography,easy,"How many regions does the Czech Republic have, counting Prague?",,14,,,,,
+numeric,geography,Geography,medium,"How many countries share a land border with the Czech Republic?",,4,,,,,
+numeric,geography,Geography,hard,"How high is Sněžka, the highest peak in the Czech Republic?",m,1603,,,,,
+numeric,geography,Geography,hard,"How long is the river Vltava?",km,430,,,,,
+numeric,geography,Geography,hard,"What is the area of the Czech Republic?",km²,78866,,,,,
+numeric,science,Science,easy,"At what temperature does water boil at sea level?",°C,100,,,,,
+numeric,science,Science,easy,"At what temperature does water freeze, in degrees Fahrenheit?",°F,32,,,,,
+numeric,science,Science,medium,"How many bones are there in an adult human body?",,206,,,,,
+numeric,science,Science,medium,"How many elements does the periodic table contain?",,118,,,,,
+numeric,culture,Culture,medium,"How many keys does a standard full-size piano have?",,88,,,,,
+numeric,culture,Culture,easy,"How many strings does a violin have?",,4,,,,,
+numeric,sport,Sport,easy,"How many players from one team are on the pitch in a football match?",,11,,,,,
+multiple_choice,geography,Geography,easy,"Which river flows through Prague?",,,Vltava,Labe,Morava,Odra,0
+multiple_choice,geography,Geography,easy,"What is the capital of Slovakia?",,,Bratislava,Brno,Vienna,Kraków,0
+multiple_choice,geography,Geography,medium,"Which Czech region has Brno as its capital?",,,Jihomoravský,Zlínský,Olomoucký,Vysočina,0
+multiple_choice,geography,Geography,easy,"Which is the largest ocean?",,,Pacific,Atlantic,Indian,Arctic,0
+multiple_choice,geography,Geography,medium,"Which mountain range is the traditional boundary between Europe and Asia?",,,Ural,Caucasus,Alps,Carpathians,0
+multiple_choice,geography,Geography,easy,"Which Czech city is home to the Pilsner Urquell brewery?",,,Plzeň,České Budějovice,Brno,Olomouc,0
+multiple_choice,science,Science,medium,"Which of these is a noble gas?",,,Argon,Nitrogen,Oxygen,Chlorine,0
+multiple_choice,science,Science,easy,"Which planet orbits closest to the Sun?",,,Mercury,Venus,Mars,Earth,0
+multiple_choice,science,Science,medium,"Which metal is liquid at room temperature?",,,Mercury,Lead,Tin,Zinc,0
+multiple_choice,science,Science,easy,"What is the chemical symbol for gold?",,,Au,Ag,Go,Gd,0
+multiple_choice,culture,Culture,medium,"Who composed the opera Rusalka?",,,Antonín Dvořák,Bedřich Smetana,Leoš Janáček,Bohuslav Martinů,0
+multiple_choice,culture,Culture,hard,"Who painted the Slav Epic?",,,Alfons Mucha,Josef Lada,Max Švabinský,František Kupka,0
+multiple_choice,sport,Sport,easy,"In which sport is the Stanley Cup awarded?",,,Ice hockey,Football,Basketball,Tennis,0
+multiple_choice,sport,Sport,medium,"Which country hosted the 2016 Summer Olympics?",,,Brazil,China,United Kingdom,Japan,0

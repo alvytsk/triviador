@@ -1,0 +1,53 @@
+@import "tailwindcss";
+@import "@fontsource/bebas-neue/400.css";
+@import "@fontsource/barlow/400.css";
+@import "@fontsource/barlow/500.css";
+@import "@fontsource/barlow/600.css";
+
+@theme {
+  /* Bebas names and counts — players, scores, the clock, buttons.
+     Barlow says anything a player has to read — prompts, answers, hints.
+     All-caps condensed at 24px over a Czech question sentence is a
+     readability problem, and the question is the one thing on screen that
+     must never be hard to read. */
+  --font-display: "Bebas Neue", Impact, sans-serif;
+  --font-sans: "Barlow", "Helvetica Neue", sans-serif;
+
+  --color-base: #0b0b1a;
+  --color-stage: #0e0e20;
+  --color-panel: #15152c;
+  --color-panel-you: #1b1b36;
+  --color-raised: #1c1c38;
+  --color-line: #2b2b52;
+  --color-line-strong: #3a3a63;
+  --color-track: #24243f;
+  --color-ink: #f7f5ee;
+  --color-ink-dim: #7a7a99;
+  --color-ink-faint: #6f6f92;
+  --color-gold: #ffd24a;
+  --color-gold-bright: #ffe68a;
+  --color-good: #7de08a;
+  --color-bad: #ff5c7a;
+  --color-region-free: #252544;
+  --color-region-out: #1a1a30;
+}
+
+:root {
+  /* §8.1: region appearance is derived, never stored. A territory's fill is
+     `var(--seat-N)` where N is `ClientPlayer.seat` — nothing anywhere holds
+     a colour, so a re-seat or a re-render cannot disagree with the strip.
+     Four hues far enough apart in both hue and lightness to survive
+     deuteranopia; colour is never the only signal, because the player strip
+     always names every player. */
+  --seat-0: #ff4757;
+  --seat-1: #22d3ee;
+  --seat-2: #a78bfa;
+  --seat-3: #a3e635;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}

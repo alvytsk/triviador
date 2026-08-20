@@ -1,0 +1,8 @@
+# msw's postinstall is self-swallowing (`.catch(() => void 0)`) and only concerns the
+# browser service worker, which this project never uses — tests use `msw/node`, which works
+# fine with the postinstall never having run. This entry refuses the build script rather than
+# approving it, so this project runs no third-party install scripts at all; it exists to make
+# that refusal explicit (and silence pnpm's ERR_PNPM_IGNORED_BUILDS warning), not to grant a
+# permission.
+ignoredBuiltDependencies:
+  - msw

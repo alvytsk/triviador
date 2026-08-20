@@ -46,8 +46,12 @@ the same failure on every recovery replay. `_materialize` raises
 its transaction and the game is still in `LOBBY`.
 """
 
+import hashlib
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
+from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,7 +69,14 @@ from triviador.domain.questions.types import (
     QuestionSnapshot,
 )
 
-__all__ = ["InsufficientQuestions", "MalformedQuestion", "QuestionBank"]
+__all__ = [
+    "InsufficientQuestions",
+    "MalformedQuestion",
+    "QuestionBank",
+    "QuestionSeeder",
+    "SeedQuestion",
+    "prompt_digest",
+]
 
 
 class QuestionBank:
@@ -188,3 +199,103 @@ class QuestionBank:
                 )
             )
         return tuple(snapshots)
+
+
+# --- seeding -----------------------------------------------------------------
+# Deliberately *not* the admin write path. Plan 7 owns question editing, and
+# with it the rule that every semantic edit bumps `questions.version` — the
+# invariant this module's `FOR SHARE` lock depends on. `QuestionSeeder` only
+# ever inserts whole new questions, so there is no edit for that rule to
+# govern, and it must stay that way: an `UPDATE` added here is Plan 7's admin
+# path written in the wrong module and outside the rule that keeps the lock
+# meaningful.
+
+
+def prompt_digest(prompt: str) -> str:
+    """Whitespace- and case-insensitive.
+
+    Re-running the seed after reflowing a line in the CSV must not insert a
+    second copy of a question the bank already has, and `questions.prompt_hash`
+    is the only column that could tell the two apart.
+    """
+    return hashlib.sha256(" ".join(prompt.split()).casefold().encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class SeedQuestion:
+    kind: QuestionKind
+    category_slug: str
+    category_name: str
+    difficulty: Difficulty
+    prompt: str
+    unit: str | None
+    correct_value: Decimal | None
+    choices: tuple[str, ...]
+    correct_index: int | None
+
+
+class QuestionSeeder:
+    """Wraps one `AsyncSession` belonging to the caller's open transaction,
+    exactly as `QuestionBank` does. Never opens or commits one itself."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def ensure_category(self, slug: str, name: str) -> str:
+        existing = await self._session.scalar(select(Category).where(Category.slug == slug))
+        if existing is not None:
+            return existing.id
+        category = Category(id=str(uuid4()), slug=slug, name=name)
+        self._session.add(category)
+        await self._session.flush()
+        return category.id
+
+    async def ensure(self, question: SeedQuestion) -> bool:
+        """True if it was inserted, False if the bank already had it."""
+        digest = prompt_digest(question.prompt)
+        if await self._session.scalar(select(Question.id).where(Question.prompt_hash == digest)):
+            return False
+
+        row = Question(
+            id=str(uuid4()),
+            version=1,
+            kind=question.kind.value,
+            prompt=question.prompt,
+            category_id=await self.ensure_category(question.category_slug, question.category_name),
+            difficulty=question.difficulty.value,
+            media_asset_id=None,
+            is_active=True,
+            prompt_hash=digest,
+        )
+        self._session.add(row)
+        await self._session.flush()
+
+        if question.kind is QuestionKind.NUMERIC:
+            self._session.add(
+                QuestionNumeric(
+                    question_id=row.id, correct_value=question.correct_value, unit=question.unit
+                )
+            )
+        else:
+            for idx, text in enumerate(question.choices):
+                self._session.add(
+                    QuestionChoice(
+                        question_id=row.id,
+                        idx=idx,
+                        text=text,
+                        is_correct=idx == question.correct_index,
+                        media_asset_id=None,
+                    )
+                )
+        return True
+
+    async def active_counts(self) -> dict[QuestionKind, int]:
+        rows = await self._session.execute(
+            select(Question.kind, func.count())
+            .where(Question.is_active.is_(True))
+            .group_by(Question.kind)
+        )
+        counts = dict.fromkeys(QuestionKind, 0)
+        for kind, count in rows.all():
+            counts[QuestionKind(kind)] = count
+        return counts
