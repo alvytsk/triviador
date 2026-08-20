@@ -3012,7 +3012,7 @@ This is the task Plan 3 pointed at. `db/repositories/questions.py`'s docstring s
 **Interfaces:**
 - Produces:
   - `services.admin.QuestionWrite(kind, prompt, category_id, difficulty, media_asset_id, choices, numeric_answer, unit)`
-  - `QuestionAdminPort.create(write, *, created_by) -> QuestionDetailRecord`
+  - `QuestionAdminPort.create(write) -> QuestionDetailRecord`
   - `QuestionAdminPort.update(question_id, write) -> QuestionDetailRecord | None`
   - `QuestionAdminPort.set_active(question_id, *, is_active) -> QuestionDetailRecord | None`
   - `QuestionAdminPort.duplicates_of(prompt, *, excluding) -> tuple[str, ...]`
@@ -3160,7 +3160,13 @@ class QuestionWrite:
 ...and extend `QuestionAdminPort`:
 
 ```python
-    async def create(self, write: QuestionWrite, *, created_by: str) -> QuestionDetailRecord: ...
+    async def create(self, write: QuestionWrite) -> QuestionDetailRecord:
+        """No `created_by`. Spec 1 §7's schema gives `media_assets` a
+        creator and deliberately gives `questions` none — a question is
+        bank content, not a user's artifact, and Spec 2's analytics read
+        its statistics rather than its authorship. Threading an admin id
+        in here would be a parameter the row has nowhere to put."""
+        ...
     async def update(
         self, question_id: str, write: QuestionWrite
     ) -> QuestionDetailRecord | None: ...
@@ -3215,7 +3221,7 @@ def _validate(write: QuestionWrite) -> None:
 
 
 class QuestionAdminRepository:   # ...continues
-    async def create(self, write: QuestionWrite, *, created_by: str) -> QuestionDetailRecord:
+    async def create(self, write: QuestionWrite) -> QuestionDetailRecord:
         _validate(write)
         question_id = str(uuid4())
         async with self._sessionmaker() as session, session.begin():
@@ -3495,7 +3501,7 @@ def _write(body: QuestionWriteRequest) -> QuestionWrite:
 async def create_question(
     body: QuestionWriteRequest, deps: Deps, principal: AdminPrincipal
 ) -> QuestionSaved:
-    record = await deps.questions_admin.create(_write(body), created_by=str(principal.user_id))
+    record = await deps.questions_admin.create(_write(body))
     duplicates = await deps.questions_admin.duplicates_of(
         body.prompt, excluding=record.question_id
     )
