@@ -58,7 +58,7 @@ describe("QuestionDock", () => {
     expect(typeof payload.value).toBe("string");
   });
 
-  it.each(["1e3", "1E-3", "-42", "0.1000000000000000000001"])(
+  it.each(["1e3", "1E-3", "-42", "0.1000000000000000000001", ".5", "5.", "1".repeat(40)])(
     "sends %s to the wire byte-identical — the server's grammar, not a stricter client one",
     async (typed) => {
       const harness = renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
@@ -91,6 +91,29 @@ describe("QuestionDock", () => {
       expect(harness.socket.last().frames()).toHaveLength(0);
     },
   );
+
+  it("caps typing at 40 characters and refuses a 41st with a visible reason", async () => {
+    const harness = renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
+    act(() => harness.socket.last().open());
+    const input = screen.getByLabelText("YOUR ANSWER");
+
+    // `maxLength` stops a real keystroke from ever landing a 41st
+    // character — the same "refused keystroke the player can see" the
+    // input aid is for. A pasted or scripted value can still bypass the
+    // DOM's own keystroke-level enforcement, so the validity check behind
+    // it is asserted directly too: a 41-character value set past that
+    // enforcement must still refuse, visibly, exactly like any other
+    // malformed input.
+    await userEvent.type(input, "1".repeat(41));
+    expect((input as HTMLInputElement).value).toHaveLength(40);
+
+    fireEvent.change(input, { target: { value: "1".repeat(41) } });
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    expect(screen.getByText(/enter a number the server can read/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(harness.socket.last().frames()).toHaveLength(0);
+  });
 
   it("disables choices and sends nothing once the local deadline has passed", () => {
     vi.useFakeTimers();
