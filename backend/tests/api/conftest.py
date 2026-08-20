@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from dataclasses import replace as _replace
 from datetime import timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 import pytest
@@ -158,26 +159,61 @@ def replace_deps(deps: AppDependencies, **overrides: object) -> AppDependencies:
     return _replace(deps, **overrides)  # type: ignore[arg-type]
 
 
-def api_routes(app: FastAPI) -> tuple[APIRoute, ...]:
-    """Every `APIRoute` the app can serve, however deeply included.
+class MountedRoute(NamedTuple):
+    """One route as the app actually serves it.
 
-    `app.routes` holds `_IncludedRouter` wrappers rather than the routes
-    themselves (FastAPI 0.141's lazy `include_router`), and a wrapper is
-    not an `APIRoute` — so the naive filter finds nothing and every check
-    built on it is silently inert. Descending `original_router` is reading
-    a private attribute, which is the price of the check being real; if a
-    FastAPI upgrade removes it, `test_the_walk_reaches_real_routes` fails
-    loudly instead of the gates quietly passing.
+    Three fields because FastAPI 0.141 splits what used to be one object:
+    `route` is the raw `APIRoute`, `path` is where it is *reachable* (the
+    raw `route.path` carries only its own router's prefix), and `guards`
+    are the dependencies its ancestors impose (a router-level
+    `dependencies=[...]` never reaches the route's own `dependant`).
     """
-    found: list[APIRoute] = []
-    stack = list(app.routes)
+
+    path: str
+    route: APIRoute
+    guards: frozenset[object]
+
+
+def api_routes(app: FastAPI) -> tuple[MountedRoute, ...]:
+    """Every route the app can serve, with its real path and its inherited guards.
+
+    Three facts about FastAPI 0.141's lazy `include_router`, each verified
+    against this project's own app rather than assumed, and each one a
+    silent-pass bug if you get it wrong:
+
+    1. `app.routes` holds `_IncludedRouter` wrappers, not `APIRoute`s. The
+       obvious `isinstance(r, APIRoute)` filter over it returns **nothing**,
+       so any "no bad routes found" assertion built on it passes forever.
+    2. A route's own `path` carries only the prefix of the router it was
+       defined on. Mounting a `/questions` router inside a `/api/admin`
+       router leaves the raw path at `/questions`; the missing half lives on
+       `include_context.prefix`.
+    3. A router-level `dependencies=[Depends(current_admin)]` — the entire
+       mechanism of the admin guard — is **not** merged into the route's
+       `dependant`. It lives on `include_context.dependencies`, which is why
+       `guards` is collected separately here.
+
+    Reading three private attributes is the price of the check being real.
+    `test_the_walk_reaches_real_routes` is the tripwire: if a FastAPI
+    upgrade renames any of them, it fails loudly rather than letting the
+    gates pass quietly.
+    """
+    found: list[MountedRoute] = []
+    stack: list[tuple[object, str, frozenset[object]]] = [(app.router, "", frozenset())]
     while stack:
-        route = stack.pop()
-        if isinstance(route, APIRoute):
-            found.append(route)
-        included = getattr(route, "original_router", None)
-        if included is not None:
-            stack.extend(included.routes)
+        router, base, guards = stack.pop()
+        for route in getattr(router, "routes", ()):
+            if isinstance(route, APIRoute):
+                found.append(MountedRoute(base + route.path, route, guards))
+            included = getattr(route, "original_router", None)
+            if included is None:
+                continue
+            context = getattr(route, "include_context", None)
+            prefix = getattr(context, "prefix", "") or ""
+            inherited = tuple(getattr(context, "dependencies", ()) or ())
+            stack.append(
+                (included, base + prefix, guards | {d.dependency for d in inherited})
+            )
     return tuple(found)
 
 

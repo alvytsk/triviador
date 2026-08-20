@@ -25,6 +25,21 @@ async def _probe(principal: AdminPrincipal) -> dict[str, str]:
     return {"user_id": str(principal.user_id)}
 
 
+# Deliberately distinct from `probe`: `probe`'s handler takes `principal:
+# AdminPrincipal`, so `current_admin` is already in its own `dependant`
+# from the parameter alone, independent of any router `dependencies=`.
+# Using `probe` to test whether a *router's* guard is what protects a
+# route would never observe a missing guard — the parameter protects it
+# regardless. `bare` carries no guard anywhere, so it is only ever
+# protected by whichever wrapper it is included into.
+bare = APIRouter()
+
+
+@bare.get("/probe")
+async def _bare_probe() -> dict[str, str]:
+    return {}
+
+
 @pytest.fixture
 def probe_app(deps: AppDependencies) -> object:
     app = create_app(deps)
@@ -64,11 +79,20 @@ async def test_an_admin_gets_through(probe_app: object, deps: AppDependencies) -
 
 
 def unguarded_admin_routes(app: FastAPI) -> list[str]:
-    """Every `/api/admin` path whose dependency tree lacks `current_admin`."""
+    """Every `/api/admin` path that `current_admin` does not protect.
+
+    Both halves matter. A route can carry the guard in its own dependency
+    tree (a per-route `Depends`) or inherit it from the router it was
+    included into (`build_admin_router`'s `dependencies=`), and in FastAPI
+    0.141 those are two different places — checking only the first reports
+    every correctly-guarded admin route as unguarded, and checking only the
+    second misses a route mounted some other way.
+    """
     return [
-        route.path
-        for route in api_routes(app)
-        if route.path.startswith("/api/admin") and current_admin not in _dependency_calls(route)
+        mounted.path
+        for mounted in api_routes(app)
+        if mounted.path.startswith("/api/admin")
+        and current_admin not in (mounted.guards | _dependency_calls(mounted.route))
     ]
 
 
@@ -86,7 +110,7 @@ def test_the_walk_reaches_real_routes(deps: AppDependencies) -> None:
     any test asserts what the walk did not find. A detector that returns
     nothing is indistinguishable from a codebase with nothing to detect.
     """
-    paths = {route.path for route in api_routes(create_app(deps))}
+    paths = {mounted.path for mounted in api_routes(create_app(deps))}
     assert "/api/games" in paths
     assert len(paths) >= 10
 
@@ -112,6 +136,54 @@ def test_the_check_sees_an_unguarded_admin_route(deps: AppDependencies) -> None:
     app = create_app(deps)
     app.include_router(rogue)
     assert unguarded_admin_routes(app) == ["/api/admin/rogue"]
+
+
+def test_the_walk_sees_a_route_mounted_the_way_every_admin_route_will_be(
+    deps: AppDependencies,
+) -> None:
+    """The topology every later task uses: a prefix-less sub-router,
+    included into `build_admin_router`, included into the app.
+
+    Its raw `APIRoute.path` is `/probe` — the `/api/admin` half lives on the
+    include context — and its guard is on that include context too, not in
+    its `dependant`. A walk that gets either wrong reports this route as
+    absent or as unguarded, and both failures are silent.
+
+    Uses `bare`, not `probe`: `probe`'s own handler already carries
+    `current_admin` via its `AdminPrincipal` parameter, so it would stay
+    "guarded" even if `build_admin_router` lost its `dependencies=`
+    entirely — proven by running this test with that line deleted and
+    watching it still pass. `bare` has no guard of its own, so this
+    assertion is actually exercising `build_admin_router`'s router-level
+    dependency, not standing next to it.
+    """
+    app = create_app(deps)
+    app.include_router(build_admin_router(bare))
+    assert "/api/admin/probe" in {mounted.path for mounted in api_routes(app)}
+    assert unguarded_admin_routes(app) == []
+
+
+def test_a_sub_router_mounted_without_the_guard_is_caught(deps: AppDependencies) -> None:
+    """The same topology, minus the guard: a bare `APIRouter(prefix=...)`
+    used in place of `build_admin_router`. This is the mistake the check
+    exists for, and it is not the same mistake as the rogue route — that one
+    bypasses the wrapper, this one builds the wrapper wrongly.
+
+    Deliberately `bare`, not `probe`: `probe`'s handler takes `principal:
+    AdminPrincipal`, so `current_admin` is already in its own `dependant`
+    from the parameter alone, independent of any router `dependencies=`.
+    Mounting `probe` here would leave it guarded no matter what this test
+    does to the wrapper, and the assertion below could never observe the
+    failure it exists to catch. `bare` carries no guard anywhere — not on
+    a parameter, not on a router — so it is only ever protected by
+    whichever wrapper it is included into, which is the one thing this
+    test varies.
+    """
+    unguarded_wrapper = APIRouter(prefix="/api/admin")
+    unguarded_wrapper.include_router(bare)
+    app = create_app(deps)
+    app.include_router(unguarded_wrapper)
+    assert unguarded_admin_routes(app) == ["/api/admin/probe"]
 
 
 def _dependency_calls(route: APIRoute) -> set[object]:
