@@ -251,11 +251,20 @@ async def test_an_admin_gets_through(probe_app: object, deps: AppDependencies) -
 
 
 def unguarded_admin_routes(app: FastAPI) -> list[str]:
-    """Every `/api/admin` path whose dependency tree lacks `current_admin`."""
+    """Every `/api/admin` path that `current_admin` does not protect.
+
+    Both halves matter. A route can carry the guard in its own dependency
+    tree (a per-route `Depends`) or inherit it from the router it was
+    included into (`build_admin_router`'s `dependencies=`), and in FastAPI
+    0.141 those are two different places — checking only the first reports
+    every correctly-guarded admin route as unguarded, and checking only the
+    second misses a route mounted some other way.
+    """
     return [
-        route.path
-        for route in api_routes(app)
-        if route.path.startswith("/api/admin") and current_admin not in _dependency_calls(route)
+        mounted.path
+        for mounted in api_routes(app)
+        if mounted.path.startswith("/api/admin")
+        and current_admin not in (mounted.guards | _dependency_calls(mounted.route))
     ]
 
 
@@ -273,13 +282,43 @@ def test_the_walk_reaches_real_routes(deps: AppDependencies) -> None:
     any test asserts what the walk did not find. A detector that returns
     nothing is indistinguishable from a codebase with nothing to detect.
     """
-    paths = {route.path for route in api_routes(create_app(deps))}
+    paths = {mounted.path for mounted in api_routes(create_app(deps))}
     assert "/api/games" in paths
     assert len(paths) >= 10
 
 
 def test_every_admin_route_is_guarded(deps: AppDependencies) -> None:
     assert unguarded_admin_routes(create_app(deps)) == []
+
+
+def test_the_walk_sees_a_route_mounted_the_way_every_admin_route_will_be(
+    deps: AppDependencies,
+) -> None:
+    """The topology every later task uses: a prefix-less sub-router,
+    included into `build_admin_router`, included into the app.
+
+    Its raw `APIRoute.path` is `/probe` — the `/api/admin` half lives on the
+    include context — and its guard is on that include context too, not in
+    its `dependant`. A walk that gets either wrong reports this route as
+    absent or as unguarded, and both failures are silent.
+    """
+    app = create_app(deps)
+    app.include_router(build_admin_router(probe))
+    assert "/api/admin/probe" in {mounted.path for mounted in api_routes(app)}
+    assert unguarded_admin_routes(app) == []
+
+
+def test_a_sub_router_mounted_without_the_guard_is_caught(deps: AppDependencies) -> None:
+    """The same topology, minus the guard: a bare `APIRouter(prefix=...)`
+    used in place of `build_admin_router`. This is the mistake the check
+    exists for, and it is not the same mistake as the rogue route below —
+    that one bypasses the wrapper, this one builds the wrapper wrongly.
+    """
+    unguarded_wrapper = APIRouter(prefix="/api/admin")
+    unguarded_wrapper.include_router(probe)
+    app = create_app(deps)
+    app.include_router(unguarded_wrapper)
+    assert unguarded_admin_routes(app) == ["/api/admin/probe"]
 
 
 def test_the_check_sees_an_unguarded_admin_route(deps: AppDependencies) -> None:
@@ -318,31 +357,66 @@ def _dependency_calls(route: APIRoute) -> set[object]:
 ```
 
 ...with `from fastapi import APIRouter, FastAPI` at the top of the module, and `api_routes`
-imported from `tests.api.conftest`.
+imported from `tests.api.conftest`. `NamedTuple` comes from `typing`.
 
 Add `api_routes` to `backend/tests/api/conftest.py`, beside the other shared helpers:
 
 ```python
-def api_routes(app: FastAPI) -> tuple[APIRoute, ...]:
-    """Every `APIRoute` the app can serve, however deeply included.
+class MountedRoute(NamedTuple):
+    """One route as the app actually serves it.
 
-    `app.routes` holds `_IncludedRouter` wrappers rather than the routes
-    themselves (FastAPI 0.141's lazy `include_router`), and a wrapper is
-    not an `APIRoute` — so the naive filter finds nothing and every check
-    built on it is silently inert. Descending `original_router` is reading
-    a private attribute, which is the price of the check being real; if a
-    FastAPI upgrade removes it, `test_the_walk_reaches_real_routes` fails
-    loudly instead of the gates quietly passing.
+    Three fields because FastAPI 0.141 splits what used to be one object:
+    `route` is the raw `APIRoute`, `path` is where it is *reachable* (the
+    raw `route.path` carries only its own router's prefix), and `guards`
+    are the dependencies its ancestors impose (a router-level
+    `dependencies=[...]` never reaches the route's own `dependant`).
     """
-    found: list[APIRoute] = []
-    stack = list(app.routes)
+
+    path: str
+    route: APIRoute
+    guards: frozenset[object]
+
+
+def api_routes(app: FastAPI) -> tuple[MountedRoute, ...]:
+    """Every route the app can serve, with its real path and its inherited guards.
+
+    Three facts about FastAPI 0.141's lazy `include_router`, each verified
+    against this project's own app rather than assumed, and each one a
+    silent-pass bug if you get it wrong:
+
+    1. `app.routes` holds `_IncludedRouter` wrappers, not `APIRoute`s. The
+       obvious `isinstance(r, APIRoute)` filter over it returns **nothing**,
+       so any "no bad routes found" assertion built on it passes forever.
+    2. A route's own `path` carries only the prefix of the router it was
+       defined on. Mounting a `/questions` router inside a `/api/admin`
+       router leaves the raw path at `/questions`; the missing half lives on
+       `include_context.prefix`.
+    3. A router-level `dependencies=[Depends(current_admin)]` — the entire
+       mechanism of the admin guard — is **not** merged into the route's
+       `dependant`. It lives on `include_context.dependencies`, which is why
+       `guards` is collected separately here.
+
+    Reading three private attributes is the price of the check being real.
+    `test_the_walk_reaches_real_routes` is the tripwire: if a FastAPI
+    upgrade renames any of them, it fails loudly rather than letting the
+    gates pass quietly.
+    """
+    found: list[MountedRoute] = []
+    stack: list[tuple[object, str, frozenset[object]]] = [(app.router, "", frozenset())]
     while stack:
-        route = stack.pop()
-        if isinstance(route, APIRoute):
-            found.append(route)
-        included = getattr(route, "original_router", None)
-        if included is not None:
-            stack.extend(included.routes)
+        router, base, guards = stack.pop()
+        for route in getattr(router, "routes", ()):
+            if isinstance(route, APIRoute):
+                found.append(MountedRoute(base + route.path, route, guards))
+            included = getattr(route, "original_router", None)
+            if included is None:
+                continue
+            context = getattr(route, "include_context", None)
+            prefix = getattr(context, "prefix", "") or ""
+            inherited = tuple(getattr(context, "dependencies", ()) or ())
+            stack.append(
+                (included, base + prefix, guards | {d.dependency for d in inherited})
+            )
     return tuple(found)
 ```
 
@@ -2011,7 +2085,7 @@ def test_every_exempt_upload_path_is_a_real_route(deps: AppDependencies) -> None
     from triviador.api.app import create_app
     from triviador.api.http.admin import UPLOAD_PATHS
 
-    paths = {r.path for r in api_routes(create_app(deps))}
+    paths = {mounted.path for mounted in api_routes(create_app(deps))}
     assert set(UPLOAD_PATHS) - paths == {"/api/admin/questions/import/dry-run"}
 ```
 
