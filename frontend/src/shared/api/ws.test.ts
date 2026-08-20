@@ -52,6 +52,15 @@ describe("createSocketClient", () => {
     client.close();
   });
 
+  it("throws when a known type's payload fails its schema", () => {
+    const { sockets, client } = setup();
+    sockets.last().open();
+    expect(() =>
+      sockets.last().deliver({ type: "game.presence", game_id: "g1", connected: "not-an-array" }),
+    ).toThrow();
+    client.close();
+  });
+
   it("queues frames sent before open and flushes them on open", () => {
     const { sockets, client } = setup();
     client.send({ type: "subscribe", topic: "lobby" });
@@ -101,6 +110,46 @@ describe("createSocketClient", () => {
     client.close();
   });
 
+  it("caps the reconnect backoff at RECONNECT_MAX_MS instead of growing forever", () => {
+    const { sockets, client } = setup();
+    sockets.last().open();
+
+    // Walk the delay up past its cap: 500 → 1000 → 2000 → 4000 → 8000 → 10000
+    // (capped). Mirrors the implementation's own doubling so each advance
+    // fires exactly the reconnect it should.
+    let delay: number = TIMING.RECONNECT_BASE_MS;
+    while (delay < TIMING.RECONNECT_MAX_MS) {
+      sockets.last().serverClose(1006);
+      vi.advanceTimersByTime(delay);
+      delay = Math.min(delay * 2, TIMING.RECONNECT_MAX_MS);
+    }
+    expect(delay).toBe(TIMING.RECONNECT_MAX_MS);
+    const createdAtCap = sockets.created.length;
+
+    // One more failure at the cap: the reconnect still takes RECONNECT_MAX_MS,
+    // not RECONNECT_MAX_MS * 2 — proof the doubling actually stopped.
+    sockets.last().serverClose(1006);
+    vi.advanceTimersByTime(TIMING.RECONNECT_MAX_MS - 1);
+    expect(sockets.created).toHaveLength(createdAtCap); // not yet
+    vi.advanceTimersByTime(1);
+    expect(sockets.created).toHaveLength(createdAtCap + 1);
+
+    client.close();
+  });
+
+  it("cancels a pending reconnect when close() races it", () => {
+    const { sockets, client } = setup();
+    sockets.last().open();
+    sockets.last().serverClose(1006);
+    expect(client.status()).toBe("reconnecting");
+
+    client.close(); // before the retry timer fires
+
+    vi.advanceTimersByTime(TIMING.RECONNECT_MAX_MS * 4);
+    expect(sockets.created).toHaveLength(1); // no reconnect was ever attempted
+    expect(client.status()).toBe("closed");
+  });
+
   it("resets the backoff once a connection stays open", () => {
     const { sockets, client } = setup();
     sockets.last().open();
@@ -133,6 +182,21 @@ describe("createSocketClient", () => {
     sockets.last().serverClose(4401);
     expect(codes).toContain(4401);
     client.close();
+  });
+
+  it("emits exactly one closed status, carrying code 1000, when close() is called explicitly", () => {
+    const { sockets, client } = setup();
+    const onStatus = vi.fn();
+    client.onStatus(onStatus);
+    sockets.last().open();
+    client.close();
+    // Not just "closed" among the calls — exactly these two calls, in this
+    // order, each exactly once. `close()` used to emit "closed" itself and
+    // then again from the `onclose` it drove, doubling every consumer that
+    // reacts to a closed transition (Task 7's provider, Task 8's shell).
+    expect(onStatus).toHaveBeenCalledTimes(2);
+    expect(onStatus).toHaveBeenNthCalledWith(1, "open", undefined);
+    expect(onStatus).toHaveBeenNthCalledWith(2, "closed", { code: 1000 });
   });
 
   it("stops pinging and never reconnects after close()", () => {

@@ -62,7 +62,7 @@ export function createSocketClient(options: {
   let socket: SocketLike | null = null;
   let current: SocketStatus = "connecting";
   let backoff: number = TIMING.RECONNECT_BASE_MS;
-  let pending: ClientFrame[] = [];
+  let pending: string[] = [];
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let pingSentAt = 0;
@@ -92,7 +92,7 @@ export function createSocketClient(options: {
       setStatus("open");
       const queued = pending;
       pending = [];
-      for (const frame of queued) opened.send(encodeClientFrame(frame));
+      for (const encoded of queued) opened.send(encoded);
       pingTimer = setInterval(() => {
         pingSentAt = now();
         opened.send(encodeClientFrame({ type: "ping" }));
@@ -117,7 +117,9 @@ export function createSocketClient(options: {
       stopTimers();
       socket = null;
       if (disposed) {
-        setStatus("closed", { code: event.code });
+        // `close()` already emitted the synchronous "closed" status (with
+        // code 1000) before driving this handler; emitting again here would
+        // double-fire every consumer that reacts to a closed transition.
         return;
       }
       if (TERMINAL_CLOSE_CODES.has(event.code)) {
@@ -137,9 +139,11 @@ export function createSocketClient(options: {
     send(frame) {
       // Encoded — and therefore schema-checked — even when queued, so a
       // malformed frame throws at the call site rather than on reconnect.
+      // The encoded string is what gets queued too, so a later flush sends
+      // it as-is instead of re-encoding.
       const encoded = encodeClientFrame(frame);
       if (socket !== null && current === "open") socket.send(encoded);
-      else pending.push(frame);
+      else pending.push(encoded);
     },
     onMessage(listener) {
       messageListeners.add(listener);
@@ -157,7 +161,12 @@ export function createSocketClient(options: {
       pending = [];
       const open = socket;
       socket = null;
-      setStatus("closed");
+      // Emitted synchronously, with the code, so a caller that reads
+      // `status()` right after `close()` never sees a stale value, and every
+      // "closed" event carries a code. The `onclose` this drives is a no-op
+      // for status (see the `disposed` branch above) so this is the only
+      // emission.
+      setStatus("closed", { code: 1000 });
       open?.close(1000);
     },
   };
