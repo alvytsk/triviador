@@ -1,14 +1,30 @@
-import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRouter, RouterProvider } from "@tanstack/react-router";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { server } from "../../testing/msw";
+import { Providers } from "./app-providers";
 import { createQueryClient } from "./query-client";
 import { routeTree } from "./routes/routeTree.gen";
 
 const ME = { user_id: "u1", username: "alexey", display_name: "Alexey", role: "player" };
+
+/** Every render below goes through the real `Providers` from
+ *  `app-providers.tsx` — the same tree `main.tsx` mounts — rather than a
+ *  hand-rolled `QueryClientProvider`. That means `SocketWhenSignedIn` also
+ *  mounts and issues its own `GET /api/auth/me` on every render here, which
+ *  is why every test below installs a handler for it: the point of using
+ *  the real providers is that a future provider dependency in `LoginPage`
+ *  or `SignInForm` fails *here*, not in a browser. */
+function meUnauthenticated() {
+  return http.get("/api/auth/me", () =>
+    HttpResponse.json(
+      { code: "unauthenticated", message: "no session", details: null },
+      { status: 401 },
+    ),
+  );
+}
 
 /** The real route tree, the real `LoginPage`, a memory history seeded at a
  *  given URL — this is `search.next` exercised end to end rather than just
@@ -20,16 +36,19 @@ function renderRouter(initial: string) {
   const history = createMemoryHistory({ initialEntries: [initial] });
   const router = createRouter({ routeTree, context: { queryClient }, history });
   const view = render(
-    <QueryClientProvider client={queryClient}>
+    <Providers queryClient={queryClient}>
       <RouterProvider router={router} />
-    </QueryClientProvider>,
+    </Providers>,
   );
   return { router, queryClient, ...view };
 }
 
 describe("the /login route's next, navigated end to end", () => {
   it("lands on next after a successful sign-in when next is a valid relative path", async () => {
-    server.use(http.post("/api/auth/login", () => HttpResponse.json(ME)));
+    server.use(
+      meUnauthenticated(),
+      http.post("/api/auth/login", () => HttpResponse.json(ME)),
+    );
     const { router } = renderRouter("/login?next=%2Fsomewhere");
 
     await waitFor(() => expect(screen.getByLabelText("USERNAME")).toBeInTheDocument());
@@ -40,6 +59,26 @@ describe("the /login route's next, navigated end to end", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/somewhere"));
   });
 
+  it("lands on / after a successful sign-in when there is no next at all", async () => {
+    server.use(
+      meUnauthenticated(),
+      http.post("/api/auth/login", () => HttpResponse.json(ME)),
+    );
+    const { router } = renderRouter("/login");
+
+    await waitFor(() => expect(screen.getByLabelText("USERNAME")).toBeInTheDocument());
+    await userEvent.type(screen.getByLabelText("USERNAME"), "alexey");
+    await userEvent.type(screen.getByLabelText("PASSWORD"), "hunter2hunter2");
+    await userEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    // `search.next ?? "/"` — the fallback branch. The `_authed` guard at
+    // `/` re-checks `/api/auth/me`, but the sign-in mutation already seeded
+    // that exact cache entry (`useSignIn`'s `onSuccess`), so the guard finds
+    // it without a second round trip and lets the match through rather than
+    // bouncing back to `/login`.
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+  });
+
   it("does not navigate off-origin when next fails validation", async () => {
     // `loginSearchSchema` rejects this before the route ever matches
     // successfully — `LoginPage` never mounts, `SignInForm.onDone` never
@@ -48,6 +87,7 @@ describe("the /login route's next, navigated end to end", () => {
     // router's own error UI: the location never leaves `/login`, and the
     // sign-in form — the only thing in this app that could call `navigate`
     // with `next` — never rendered.
+    server.use(meUnauthenticated());
     const { router } = renderRouter("/login?next=https%3A%2F%2Fevil.example%2F");
 
     await waitFor(() =>
