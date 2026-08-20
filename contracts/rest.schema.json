@@ -24,6 +24,7 @@
         "map_unknown",
         "preset_unknown",
         "media_rejected",
+        "slug_taken",
         "no_default_preset",
         "server_busy",
         "server_restarting",

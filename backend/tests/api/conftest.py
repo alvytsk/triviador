@@ -33,6 +33,7 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
 from tests.api.fakes import (
+    FakeCategories,
     FakeClock,
     FakeDatabase,
     FakeGameCatalog,
@@ -331,6 +332,7 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
                 )
             }
         ),
+        categories=FakeCategories(),
         normalizer=ImageNormalizer(
             max_bytes=settings.media_max_bytes,
             max_pixels=settings.media_max_pixels,

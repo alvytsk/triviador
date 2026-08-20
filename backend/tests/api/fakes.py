@@ -16,6 +16,7 @@ from triviador.db.repositories.questions import prompt_digest
 from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.services.admin import (
+    CategoryRecord,
     ChoiceRecord,
     MediaAssetRecord,
     QuestionDetailRecord,
@@ -23,6 +24,7 @@ from triviador.services.admin import (
     QuestionPage,
     QuestionSummaryRecord,
     QuestionWrite,
+    SlugTaken,
 )
 from triviador.services.identity import (
     AuthenticatedPrincipal,
@@ -417,3 +419,35 @@ def _choice_records(write: QuestionWrite) -> tuple[ChoiceRecord, ...] | None:
         ChoiceRecord(idx, text, is_correct, None)
         for idx, (text, is_correct) in enumerate(write.choices)
     )
+
+
+@dataclass
+class FakeCategories:
+    """In-memory `CategoryPort`.
+
+    Unlike `FakeQuestionAdmin.list`, which ignores its `filters` argument,
+    this fake mirrors the two behaviours the admin route contract actually
+    depends on: `create` raises `SlugTaken` on a duplicate slug rather than
+    silently overwriting, and `list` comes back ordered by slug the way
+    `CategoryRepository.list`'s `ORDER BY categories.slug` does.
+    """
+
+    records: dict[str, CategoryRecord] = field(default_factory=dict)
+
+    async def list(self) -> tuple[CategoryRecord, ...]:
+        return tuple(sorted(self.records.values(), key=lambda r: r.slug))
+
+    async def create(self, *, slug: str, name: str) -> CategoryRecord:
+        if any(r.slug == slug for r in self.records.values()):
+            raise SlugTaken(slug)
+        record = CategoryRecord(category_id=str(uuid4()), slug=slug, name=name)
+        self.records[record.category_id] = record
+        return record
+
+    async def rename(self, category_id: str, *, name: str) -> CategoryRecord | None:
+        existing = self.records.get(category_id)
+        if existing is None:
+            return None
+        updated = replace(existing, name=name)
+        self.records[category_id] = updated
+        return updated

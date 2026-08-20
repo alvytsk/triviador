@@ -32,6 +32,7 @@ from triviador.api.ws.hub import Hub
 from triviador.config import Settings, startup_problems
 from triviador.db.engine import EnginePing, create_engine, sessionmaker_for
 from triviador.db.repositories.auth import InviteRepository, SessionRepository, UserRepository
+from triviador.db.repositories.categories import CategoryRepository
 from triviador.db.repositories.games import GameRepository
 from triviador.db.repositories.media import MediaAssetRepository
 from triviador.db.repositories.presets import PresetRepository
@@ -159,6 +160,7 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         media_store=media_store,
         media_assets=MediaAssetRepository(sessions),
         questions_admin=QuestionAdminRepository(sessions),
+        categories=CategoryRepository(sessions),
         normalizer=ImageNormalizer(
             max_bytes=settings.media_max_bytes,
             max_pixels=settings.media_max_pixels,

@@ -164,3 +164,23 @@ class QuestionAdminPort(Protocol):
         digest, one round trip.
         """
         ...
+
+
+@dataclass(frozen=True)
+class CategoryRecord:
+    category_id: str
+    slug: str
+    name: str
+
+
+class SlugTaken(Exception):
+    """A category with that slug exists. Raised by the repository rather
+    than reported as a bool, because it is the *only* failure `create` has
+    and a bool return would put the burden of remembering that on every
+    caller."""
+
+
+class CategoryPort(Protocol):
+    async def list(self) -> tuple[CategoryRecord, ...]: ...
+    async def create(self, *, slug: str, name: str) -> CategoryRecord: ...
+    async def rename(self, category_id: str, *, name: str) -> CategoryRecord | None: ...

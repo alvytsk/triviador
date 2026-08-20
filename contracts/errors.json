@@ -16,6 +16,7 @@
     "preset_unknown",
     "server_busy",
     "server_restarting",
+    "slug_taken",
     "unauthenticated",
     "username_taken",
     "validation_failed"
