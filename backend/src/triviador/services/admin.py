@@ -109,8 +109,51 @@ class QuestionPage:
     total: int
 
 
+@dataclass(frozen=True)
+class QuestionWrite:
+    """One question as an admin submits it, in either kind.
+
+    Four choices, exactly one correct, is fixed rather than configurable —
+    Spec 1 §10.2: "a configurable count buys nothing and costs variability
+    in the answer grid". The tuple carries `(text, is_correct)` pairs in
+    display order; `idx` is the position, not a field an admin sets.
+    """
+
+    kind: str
+    prompt: str
+    category_id: str
+    difficulty: str
+    media_asset_id: str | None
+    choices: tuple[tuple[str, bool], ...] | None
+    numeric_answer: Decimal | None
+    unit: str | None
+
+
 class QuestionAdminPort(Protocol):
     async def list(
         self, filters: QuestionFilters, *, limit: int, offset: int
     ) -> QuestionPage: ...
     async def get(self, question_id: str) -> QuestionDetailRecord | None: ...
+    async def create(self, write: QuestionWrite, *, created_by: str) -> QuestionDetailRecord: ...
+    async def update(
+        self, question_id: str, write: QuestionWrite
+    ) -> QuestionDetailRecord | None: ...
+    async def set_active(
+        self, question_id: str, *, is_active: bool
+    ) -> QuestionDetailRecord | None: ...
+
+    async def duplicates_of(self, prompt: str, *, excluding: str | None = None) -> tuple[str, ...]:
+        """§10.2: a duplicate prompt is a warning, not a block —
+        legitimately similar phrasings exist. The comparison is
+        `prompt_digest`, the same whitespace- and case-insensitive hash
+        `seed-questions` already uses."""
+        ...
+
+    async def existing_prompt_digests(self, digests: frozenset[str]) -> frozenset[str]:
+        """Which of these the bank already has, in one query.
+
+        The import's warning channel (Task 7) asks this once per upload
+        rather than calling `duplicates_of` per row — same rule, same
+        digest, one round trip.
+        """
+        ...

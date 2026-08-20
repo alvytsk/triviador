@@ -46,6 +46,27 @@
         "title": "ChoiceView",
         "type": "object"
       },
+      "ChoiceWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "is_correct": {
+            "title": "Is Correct",
+            "type": "boolean"
+          },
+          "text": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "is_correct"
+        ],
+        "title": "ChoiceWrite",
+        "type": "object"
+      },
       "ClientChoice": {
         "additionalProperties": false,
         "description": "No `is_correct`. \u00a712.3 rejects byte-scanning as the test for this,\nbecause the correct answer's *text* is legitimate content \u2014 so the\nguarantee has to be that the flag has nowhere to live.",
@@ -1190,6 +1211,28 @@
         "title": "QuestionPageView",
         "type": "object"
       },
+      "QuestionSaved": {
+        "additionalProperties": false,
+        "description": "The saved question, plus \u00a710.2's duplicate *warning*.\n\nOne response rather than a 409 and a retry: the admin has already\nwritten the question, and the only useful thing to do with the\nsimilarity is show it beside what they saved.",
+        "properties": {
+          "duplicate_of": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Duplicate Of",
+            "type": "array"
+          },
+          "question": {
+            "$ref": "#/components/schemas/QuestionDetail"
+          }
+        },
+        "required": [
+          "question",
+          "duplicate_of"
+        ],
+        "title": "QuestionSaved",
+        "type": "object"
+      },
       "QuestionSummary": {
         "additionalProperties": false,
         "properties": {
@@ -1301,6 +1344,88 @@
           "answered"
         ],
         "title": "QuestionTurn",
+        "type": "object"
+      },
+      "QuestionWriteRequest": {
+        "additionalProperties": false,
+        "description": "Both kinds in one body, validated as a whole.\n\nA discriminated union of two request models would be tidier on paper\nand worse here: the editor is one form whose fields appear and\ndisappear, and a client posting `{kind: \"numeric\", choices: []}`\ndeserves the field-level error this shape gives it rather than \"no\nvariant matched\".",
+        "properties": {
+          "category_id": {
+            "title": "Category Id",
+            "type": "string"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChoiceWrite"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/QuestionKind"
+          },
+          "media_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Asset Id"
+          },
+          "numeric_answer": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numeric Answer"
+          },
+          "prompt": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "kind",
+          "prompt",
+          "category_id",
+          "difficulty"
+        ],
+        "title": "QuestionWriteRequest",
         "type": "object"
       },
       "ReadinessReport": {
@@ -1749,6 +1874,46 @@
           "admin",
           "admin"
         ]
+      },
+      "post": {
+        "operationId": "create_question_api_admin_questions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSaved"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Question",
+        "tags": [
+          "admin",
+          "admin"
+        ]
       }
     },
     "/api/admin/questions/{question_id}": {
@@ -1788,6 +1953,144 @@
           }
         },
         "summary": "Get Question",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      },
+      "patch": {
+        "operationId": "update_question_api_admin_questions__question_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "question_id",
+            "required": true,
+            "schema": {
+              "title": "Question Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionSaved"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Question",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/questions/{question_id}/activate": {
+      "post": {
+        "description": "The route Spec 1B \u00a76.1 does not list, and Spec 1 \u00a710.2 requires.\n\n\u00a710.2 puts `is_active` in the editor's common fields, so an admin must\nbe able to set it in both directions; \u00a76.1 lists only `deactivate`.\nTaken literally, retiring a question by mistake would be permanent \u2014\nfor a bank whose rows can never be deleted (\u00a77).\n\nIt is a route rather than a field on `PATCH` so that activity stays\noutside the semantic-edit path: `PATCH` always bumps\n`questions.version` (it rewrites prompt, choices and answer), and\nSpec 1 \u00a77 says toggling `is_active` must *not* bump it, or Spec 2\nwould read one question's statistics as two questions'. Two routes\nkeep both rules true without a comparison deciding which applies.",
+        "operationId": "activate_question_api_admin_questions__question_id__activate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "question_id",
+            "required": true,
+            "schema": {
+              "title": "Question Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Question",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/questions/{question_id}/deactivate": {
+      "post": {
+        "operationId": "deactivate_question_api_admin_questions__question_id__deactivate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "question_id",
+            "required": true,
+            "schema": {
+              "title": "Question Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate Question",
         "tags": [
           "admin",
           "admin"

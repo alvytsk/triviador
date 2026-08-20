@@ -1,3 +1,5 @@
+from typing import Any
+
 import httpx
 import pytest
 
@@ -51,3 +53,76 @@ async def test_a_missing_question_is_404(admin_client: httpx.AsyncClient) -> Non
     response = await admin_client.get("/api/admin/questions/nope")
     assert response.status_code == 404
     assert response.json()["code"] == "not_found"
+
+
+MC_BODY: dict[str, Any] = {
+    "kind": "multiple_choice",
+    "prompt": "Which river runs through Prague?",
+    "category_id": "cat-1",
+    "difficulty": "easy",
+    "media_asset_id": None,
+    "choices": [
+        {"text": "Vltava", "is_correct": True},
+        {"text": "Elbe", "is_correct": False},
+        {"text": "Morava", "is_correct": False},
+        {"text": "Ohře", "is_correct": False},
+    ],
+    "numeric_answer": None,
+    "unit": None,
+}
+
+
+async def test_creating_a_question_answers_201_with_the_saved_question(
+    admin_client: httpx.AsyncClient,
+) -> None:
+    response = await admin_client.post("/api/admin/questions", json=MC_BODY)
+    assert response.status_code == 201
+    assert response.json()["question"]["prompt"] == MC_BODY["prompt"]
+    assert response.json()["duplicate_of"] == []
+
+
+async def test_three_choices_is_a_validation_error(admin_client: httpx.AsyncClient) -> None:
+    body = {**MC_BODY, "choices": MC_BODY["choices"][:3]}
+    response = await admin_client.post("/api/admin/questions", json=body)
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_failed"
+
+
+async def test_two_correct_choices_is_a_validation_error(admin_client: httpx.AsyncClient) -> None:
+    choices = [dict(c) for c in MC_BODY["choices"]]
+    choices[1]["is_correct"] = True
+    response = await admin_client.post(
+        "/api/admin/questions", json={**MC_BODY, "choices": choices}
+    )
+    assert response.status_code == 422
+
+
+async def test_a_duplicate_prompt_is_a_warning_and_still_saves(
+    admin_client: httpx.AsyncClient,
+) -> None:
+    """§10.2: legitimately similar phrasings exist, so the duplicate hash
+    surfaces as a field on a 201, never as a 409."""
+    first = await admin_client.post("/api/admin/questions", json=MC_BODY)
+    second = await admin_client.post(
+        "/api/admin/questions", json={**MC_BODY, "prompt": "  which river RUNS through prague? "}
+    )
+    assert second.status_code == 201
+    assert second.json()["duplicate_of"] == [first.json()["question"]["id"]]
+
+
+async def test_patching_a_missing_question_is_404(admin_client: httpx.AsyncClient) -> None:
+    assert (await admin_client.patch("/api/admin/questions/nope", json=MC_BODY)).status_code == 404
+
+
+async def test_deactivate_and_activate_flip_the_flag_without_bumping_version(
+    admin_client: httpx.AsyncClient,
+) -> None:
+    """Both directions, because §10.2 puts `is_active` in the editor and a
+    bank whose rows can never be deleted (§7) needs retirement to be
+    reversible. Neither touches `version` — Spec 1 §7 again."""
+    created = (await admin_client.post("/api/admin/questions", json=MC_BODY)).json()["question"]
+    off = await admin_client.post(f"/api/admin/questions/{created['id']}/deactivate")
+    assert off.status_code == 200
+    assert (off.json()["is_active"], off.json()["version"]) == (False, created["version"])
+    on = await admin_client.post(f"/api/admin/questions/{created['id']}/activate")
+    assert (on.json()["is_active"], on.json()["version"]) == (True, created["version"])

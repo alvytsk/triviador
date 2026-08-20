@@ -1,9 +1,11 @@
+from decimal import Decimal
+
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tests.db.conftest import _seed_category, _seed_mc_question, _seed_numeric_question
 from triviador.db.repositories.question_admin import QuestionAdminRepository
-from triviador.services.admin import QuestionFilters
+from triviador.services.admin import QuestionFilters, QuestionWrite
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -81,3 +83,138 @@ async def test_get_returns_the_choices_and_the_numeric_answer(
     assert [c.text for c in mc.choices or ()] == ["A", "B"]
     assert numeric.choices is None and numeric.numeric_answer is not None
     assert await repository.get("nope") is None
+
+
+async def test_editing_a_choice_bumps_the_parent_version(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """The invariant `QuestionBank`'s `FOR SHARE` rests on: a choice lives
+    in `question_choices`, which the draw never locks, so an edit that did
+    not touch `questions` would be invisible to the lock entirely."""
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    before = await repository.get("q-mc")
+    assert before is not None
+    await repository.update(
+        "q-mc",
+        QuestionWrite(
+            kind="multiple_choice",
+            prompt=before.prompt,
+            category_id=before.category_id,
+            difficulty=before.difficulty,
+            media_asset_id=None,
+            choices=(("A", False), ("B", False), ("C", True), ("D", False)),
+            numeric_answer=None,
+            unit=None,
+        ),
+    )
+    after = await repository.get("q-mc")
+    assert after is not None
+    assert after.version == before.version + 1
+    assert [(c.text, c.is_correct) for c in after.choices or ()] == [
+        ("A", False), ("B", False), ("C", True), ("D", False)
+    ]
+
+
+async def test_deactivation_does_not_bump_the_version(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """Spec 1 §7: `is_active` is not a semantic edit, and bumping here
+    would make Spec 2 treat one question's statistics as two questions'."""
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    before = await repository.get("q-mc")
+    await repository.set_active("q-mc", is_active=False)
+    after = await repository.get("q-mc")
+    assert after is not None and before is not None
+    assert (after.is_active, after.version) == (False, before.version)
+
+
+async def test_an_edit_cannot_slip_past_a_pool_draw_in_flight(
+    engine: AsyncEngine, sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """Two transactions, one row.
+
+    A draws the question under `FOR SHARE` — what `QuestionBank` does
+    inside `StartGame`'s transaction. B then edits the same question. B
+    must block until A commits, because the edit bumps `version`, which is
+    an `UPDATE` on the locked row. If this test ever passes instantly, the
+    write path has stopped touching `questions` and the lock protects
+    nothing.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    write = QuestionWrite(
+        kind="multiple_choice",
+        prompt="Edited while the pool was being drawn",
+        category_id="cat-1",
+        difficulty="easy",
+        media_asset_id=None,
+        choices=(("A", True), ("B", False), ("C", False), ("D", False)),
+        numeric_answer=None,
+        unit=None,
+    )
+
+    async with sessions() as drawing:
+        async with drawing.begin():
+            await drawing.execute(
+                text("SELECT id FROM questions WHERE id = :id FOR SHARE"), {"id": "q-mc"}
+            )
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(repository.update("q-mc", write), timeout=1.0)
+        # The share lock is released by the COMMIT above; the same edit now
+        # completes, proving the timeout was the lock and not a deadlock or
+        # a broken statement.
+        updated = await asyncio.wait_for(repository.update("q-mc", write), timeout=5.0)
+    assert updated is not None and updated.prompt == write.prompt
+
+
+async def test_a_multiple_choice_question_needs_four_choices_and_one_correct(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    with pytest.raises(ValueError, match="four"):
+        await repository.create(
+            QuestionWrite(
+                kind="multiple_choice",
+                prompt="Three is not four",
+                category_id="cat-1",
+                difficulty="easy",
+                media_asset_id=None,
+                choices=(("A", True), ("B", False), ("C", False)),
+                numeric_answer=None,
+                unit=None,
+            ),
+            created_by="admin-1",
+        )
+
+
+async def test_a_non_finite_numeric_answer_is_rejected_even_off_the_schema(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """`QuestionWriteRequest` catches `Decimal("NaN")`/`Decimal("Infinity")`
+    with `is_finite()`, but the importer (Task 8) builds `QuestionWrite`
+    directly and never passes through that schema — so the repository has
+    to hold this invariant too, or a non-finite answer reaches PostgreSQL's
+    `NUMERIC`, which stores it without complaint."""
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    with pytest.raises(ValueError, match="finite"):
+        await repository.create(
+            QuestionWrite(
+                kind="numeric",
+                prompt="How many, really?",
+                category_id="cat-1",
+                difficulty="easy",
+                media_asset_id=None,
+                choices=None,
+                numeric_answer=Decimal("NaN"),
+                unit=None,
+            ),
+            created_by="admin-1",
+        )

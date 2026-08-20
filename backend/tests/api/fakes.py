@@ -10,15 +10,19 @@ being run on every change.
 import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
+from triviador.db.repositories.questions import prompt_digest
 from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.services.admin import (
+    ChoiceRecord,
     MediaAssetRecord,
     QuestionDetailRecord,
     QuestionFilters,
     QuestionPage,
     QuestionSummaryRecord,
+    QuestionWrite,
 )
 from triviador.services.identity import (
     AuthenticatedPrincipal,
@@ -343,3 +347,73 @@ class FakeQuestionAdmin:
 
     async def get(self, question_id: str) -> QuestionDetailRecord | None:
         return self.records.get(question_id)
+
+    async def create(self, write: QuestionWrite, *, created_by: str) -> QuestionDetailRecord:
+        record = QuestionDetailRecord(
+            question_id=str(uuid4()),
+            kind=write.kind,
+            prompt=write.prompt,
+            category_id=write.category_id,
+            category_slug=write.category_id,
+            difficulty=write.difficulty,
+            is_active=True,
+            version=1,
+            media_asset_id=write.media_asset_id,
+            choices=_choice_records(write),
+            numeric_answer=write.numeric_answer,
+            unit=write.unit,
+        )
+        self.records[record.question_id] = record
+        return record
+
+    async def update(self, question_id: str, write: QuestionWrite) -> QuestionDetailRecord | None:
+        existing = self.records.get(question_id)
+        if existing is None:
+            return None
+        updated = QuestionDetailRecord(
+            question_id=question_id,
+            kind=write.kind,
+            prompt=write.prompt,
+            category_id=write.category_id,
+            category_slug=existing.category_slug,
+            difficulty=write.difficulty,
+            is_active=existing.is_active,
+            version=existing.version + 1,
+            media_asset_id=write.media_asset_id,
+            choices=_choice_records(write),
+            numeric_answer=write.numeric_answer,
+            unit=write.unit,
+        )
+        self.records[question_id] = updated
+        return updated
+
+    async def set_active(
+        self, question_id: str, *, is_active: bool
+    ) -> QuestionDetailRecord | None:
+        existing = self.records.get(question_id)
+        if existing is None:
+            return None
+        updated = replace(existing, is_active=is_active)
+        self.records[question_id] = updated
+        return updated
+
+    async def duplicates_of(self, prompt: str, *, excluding: str | None = None) -> tuple[str, ...]:
+        digest = prompt_digest(prompt)
+        return tuple(
+            record.question_id
+            for record in self.records.values()
+            if record.question_id != excluding and prompt_digest(record.prompt) == digest
+        )
+
+    async def existing_prompt_digests(self, digests: frozenset[str]) -> frozenset[str]:
+        bank_digests = {prompt_digest(r.prompt) for r in self.records.values()}
+        return frozenset(digest for digest in digests if digest in bank_digests)
+
+
+def _choice_records(write: QuestionWrite) -> tuple[ChoiceRecord, ...] | None:
+    if write.choices is None:
+        return None
+    return tuple(
+        ChoiceRecord(idx, text, is_correct, None)
+        for idx, (text, is_correct) in enumerate(write.choices)
+    )
