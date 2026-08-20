@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from pydantic import SecretStr
 from sqlalchemy import text
 
 # `fastapi.testclient` re-exports Starlette's `TestClient`, which warns
@@ -45,6 +46,7 @@ with warnings.catch_warnings():
     from fastapi.testclient import TestClient
 
 from tests.runtime.integration.conftest import write_grid_map
+from tests.storage.conftest import ENDPOINT, KEY_ID, KEY_SECRET
 from triviador.config import Settings
 from triviador.domain.game.rules import GameRules
 
@@ -208,6 +210,13 @@ def client(seeded: Path) -> Iterator[TestClient]:
         cookie_secure=False,
         maps_root=seeded,
         log_format="console",
+        # Task 2 made these mandatory at startup. The suite does not touch
+        # object storage yet; it has to be *configured* to boot, which is
+        # the whole point of the assertion.
+        s3_endpoint_url=ENDPOINT,
+        s3_region="garage",
+        s3_access_key_id=KEY_ID,
+        s3_secret_access_key=SecretStr(KEY_SECRET),
     )
     with TestClient(build_app(settings), base_url="http://testserver") as client:
         client.headers["Origin"] = "http://testserver"

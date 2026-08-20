@@ -17,3 +17,25 @@ services:
       interval: 2s
       timeout: 3s
       retries: 15
+
+  # Test-only Garage, §9.1's two buckets. Same reasoning as postgres-test:
+  # a fixed loopback port that cannot collide with anything real, and no
+  # persistence. The S3 API is on 3900; `testing/garage-init.sh` runs once
+  # against it from the host.
+  garage-test:
+    image: dxflrs/garage:v1.1.0
+    environment:
+      GARAGE_ALLOW_WORLD_READABLE_SECRETS: "true"
+    volumes:
+      - ./testing/garage.toml:/etc/garage.toml:ro
+    ports:
+      - "127.0.0.1:3900:3900"
+      - "127.0.0.1:3903:3903"
+    tmpfs:
+      - /var/lib/garage/meta
+      - /var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

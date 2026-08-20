@@ -13,6 +13,7 @@ dependencies = [
     "argon2-cffi>=23.1",
     "structlog>=24.4",
     "defusedxml>=0.7.1",
+    "aioboto3>=15.5.0",
 ]
 
 [dependency-groups]
@@ -52,6 +53,14 @@ files = ["src/triviador", "tests"]
 # logic. Only the generated migration bodies are excluded: mypy cannot
 # usefully type `op.create_table(...)` call sequences.
 exclude = ["src/triviador/db/migrations/versions/"]
+
+# `aioboto3`/`botocore` ship no `py.typed` marker and no stub package covers
+# them fully, which is also why `storage/s3.py` types its client as `Any`
+# rather than pretending otherwise — the alternative is `strict` failing on
+# every S3 adapter file for a gap this project cannot close.
+[[tool.mypy.overrides]]
+module = ["aioboto3.*", "botocore.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
