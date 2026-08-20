@@ -68,10 +68,14 @@ export type Turn =
 /**
  * Recovers `state.turn`'s real type.
  *
- * This is a cast, not a re-parse. `clientGameStateSchema.parse()` has
- * already validated `turn` against exactly one of the seven schemas above,
- * via the `superRefine` described on `Turn` — that check is what makes this
- * cast sound. The runtime guarantee already holds by the time a
+ * This is a cast, not a re-parse. For a `ClientGameState` that arrived over
+ * the wire, `clientGameStateSchema.parse()` has already validated `turn`
+ * against exactly one of the seven schemas above, via the `superRefine`
+ * described on `Turn` — that check is what makes this cast sound there.
+ * (Test fixtures built by `testing/factories.ts` skip that parse entirely
+ * and are the caller's responsibility to keep honest; this function trusts
+ * its input either way, same as every other selector in this codebase.)
+ * The runtime guarantee, where it applies, already holds by the time a
  * `ClientGameState` exists; only the compile-time type was lost to the code
  * generator's `z.any()` fallback. Re-parsing here would re-check a fact
  * that is already established, on every render; this recovers the dropped

@@ -6,7 +6,16 @@ import {
   type YourOptions,
 } from "@/shared/api";
 
-const NO_OPTIONS: YourOptions = { pick: [], attack: [] };
+/** Frozen so a future consumer that pushes onto `your_options.pick` cannot
+ *  corrupt this shared default for every turnless state afterwards. The
+ *  cast recovers the mutable `YourOptions` shape callers expect from
+ *  `Object.freeze`'s `Readonly<...>` return type — nothing here is ever
+ *  actually mutated, so the shapes agree at runtime even though the types
+ *  disagree on paper. */
+const NO_OPTIONS: YourOptions = Object.freeze({
+  pick: Object.freeze([]),
+  attack: Object.freeze([]),
+}) as unknown as YourOptions;
 
 /** Who you are *in this game*. §8.7: the projection carries `you` precisely
  *  so the client never correlates `/api/auth/me` against the player list and
@@ -50,23 +59,56 @@ export function yourAnswer(state: ClientGameState): SubmittedValue | null {
 /**
  * The one definition of "you can act right now", so no two screens disagree.
  *
- * It is derived entirely from the projection's affordances (§8.8) plus
- * whether you have already answered — never from comparing `current_picker`
- * to your id, and never from a rule. A viewer who is offered nothing is
- * watching, whatever the turn says.
+ * Discriminated on `turn.kind` because the projection's participant facts
+ * differ by kind, and only two kinds (`expansion_picking`,
+ * `battle_target_select`) get a populated `your_options` from the server —
+ * see `backend/src/triviador/api/projection/turns.py`. Every
+ * question-bearing kind gets a default empty `YourOptions`, so for those
+ * kinds this reads the participant fields the projection already publishes
+ * for rendering (`attacker_id`, `defender_id`, `contenders`) rather than
+ * treating "you have a seat" as license to answer — a seated bystander in
+ * someone else's duel is watching, not playing, and the server rejects
+ * their answer with `not_your_turn`
+ * (`backend/src/triviador/domain/game/reducer.py`).
+ *
+ * The switch is exhaustive over `Turn`'s seven kinds by construction: the
+ * `default` branch assigns `turn` to a `never`-typed local, so an eighth
+ * kind that gains no case here is a compile error, not a silent `false`.
  */
 export function isYourTurn(state: ClientGameState): boolean {
   const turn = turnOf(state);
   if (turn === null) return false;
-  const options = yourOptions(state);
-  if (options.pick.length > 0 || options.attack.length > 0) return true;
-  if ("question" in turn && "your_answer" in turn) {
-    if (turn.your_answer !== null) return false;
-    // A question is only yours to answer if you are in it: `answered` lists
-    // participants who have replied, and the projection only sends a
-    // question to a viewer who may answer it or watch it. `you` being seated
-    // is the honest test.
-    return state.you.player_id !== null;
+  const youId = state.you.player_id;
+  switch (turn.kind) {
+    case "media_warmup":
+      // Nothing to do during warmup — it has no affordance and no question.
+      return false;
+    case "expansion_picking":
+    case "battle_target_select":
+      return turn.your_options.pick.length > 0 || turn.your_options.attack.length > 0;
+    case "expansion_question": {
+      // Spec 1 §3.3: every active player answers an expansion question, so
+      // the projection carries no participant list for this kind — unlike
+      // the restricted kinds below, "seated and not eliminated" *is* the
+      // participant test here, not a stand-in for one.
+      const you = youPlayer(state);
+      return you !== null && !you.is_eliminated && turn.your_answer === null;
+    }
+    case "battle_duel":
+      // Covers the tiebreak variant too: `tiebreak` is a flag on this same
+      // shape, not a different turn kind.
+      return (
+        youId !== null &&
+        (youId === turn.attacker_id || youId === turn.defender_id) &&
+        turn.your_answer === null
+      );
+    case "neutral_challenge":
+      return youId !== null && youId === turn.attacker_id && turn.your_answer === null;
+    case "final_tiebreak":
+      return youId !== null && turn.contenders.includes(youId) && turn.your_answer === null;
+    default: {
+      const exhaustive: never = turn;
+      return exhaustive;
+    }
   }
-  return false;
 }
