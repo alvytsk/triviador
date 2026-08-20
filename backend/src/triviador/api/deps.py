@@ -26,6 +26,7 @@ from triviador.services.identity import (
     InviteStore,
     PasswordHasher,
     SessionStore,
+    UserRole,
     UserStore,
 )
 from triviador.services.ports import Clock, DatabaseProbe, GameCatalogPort, MapProvider, PresetPort
@@ -192,3 +193,20 @@ async def current_principal(
 
 Principal = Annotated[AuthenticatedPrincipal, Depends(current_principal)]
 Deps = Annotated[AppDependencies, Depends(deps_of)]
+
+
+async def current_admin(principal: Principal) -> AuthenticatedPrincipal:
+    """403, not 404.
+
+    Spec 1B §9 makes `/admin/*` a lazily-loaded, role-guarded tree — the
+    client already knows the routes exist, because it decides whether to
+    load them from `Me.role`. Hiding them behind a 404 for a player would
+    buy nothing and would make a genuine typo indistinguishable from a
+    permission problem in the one place an operator debugs by curl.
+    """
+    if principal.role is not UserRole.ADMIN:
+        raise ApiError(ApiErrorCode.FORBIDDEN, 403, "administrator access required")
+    return principal
+
+
+AdminPrincipal = Annotated[AuthenticatedPrincipal, Depends(current_admin)]

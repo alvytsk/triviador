@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.errors import install_error_handlers
-from triviador.api.http import auth, games, health, maps
+from triviador.api.http import admin, auth, games, health, maps
 from triviador.api.logging import RequestContextMiddleware, configure_logging
 from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, OriginMiddleware
 from triviador.api.ws import endpoint
@@ -66,12 +66,17 @@ def create_app(
     # so an oversized body is refused without being read whatever its
     # origin.
     app.add_middleware(OriginMiddleware, allowed_origins=deps.settings.allowed_origins)
-    app.add_middleware(BodyLimitMiddleware, max_bytes=deps.settings.max_body_bytes)
+    app.add_middleware(
+        BodyLimitMiddleware,
+        max_bytes=deps.settings.max_body_bytes,
+        exempt_paths=admin.UPLOAD_PATHS,
+    )
     app.add_middleware(HostMiddleware, allowed_hosts=deps.settings.allowed_hosts)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(auth.router)
     app.include_router(maps.router)
     app.include_router(games.router)
+    app.include_router(admin.router)
     app.include_router(health.router)
     app.include_router(endpoint.router)
     install_error_handlers(app)

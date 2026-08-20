@@ -276,6 +276,7 @@ async def _second_client(
     *,
     user_id: str,
     token: str,
+    role: UserRole = UserRole.PLAYER,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """A second `httpx.AsyncClient` over the same `deps` (and so the same
     app, manager and hub) carrying a *different* user's session cookie —
@@ -285,7 +286,7 @@ async def _second_client(
         username=user_id,
         password_hash=deps.hasher.hash("correct horse"),
         display_name=user_id.upper(),
-        role=UserRole.PLAYER,
+        role=role,
     )
     await deps.sessions.create(
         session_id=SessionId(f"s-{user_id}"),
@@ -316,4 +317,34 @@ async def stranger_client(
 ) -> AsyncIterator[httpx.AsyncClient]:
     """A third signed-in user, `u3`, who never joins anything."""
     async for c in _second_client(deps, settings, user_id="u3", token="tok3"):
+        yield c
+
+
+async def _seed_admin(deps: AppDependencies) -> None:
+    """`admin` / `"tok-admin"`. Separate from `_second_client` because the
+    guard tests need the user without needing a client."""
+    await deps.users.create(
+        user_id=UserId("admin"),
+        username="admin",
+        password_hash=deps.hasher.hash("correct horse"),
+        display_name="Admin",
+        role=UserRole.ADMIN,
+    )
+    await deps.sessions.create(
+        session_id=SessionId("s-admin"),
+        user_id=UserId("admin"),
+        token_hash=token_digest("tok-admin"),
+        expires_at=deps.clock.now() + timedelta(days=30),
+    )
+
+
+@pytest_asyncio.fixture
+async def admin_client(
+    deps: AppDependencies, settings: Settings
+) -> AsyncIterator[httpx.AsyncClient]:
+    """`client`, signed in as an admin. Every `/api/admin` test starts here
+    and takes away whatever it is testing."""
+    async for c in _second_client(
+        deps, settings, user_id="admin", token="tok-admin", role=UserRole.ADMIN
+    ):
         yield c
