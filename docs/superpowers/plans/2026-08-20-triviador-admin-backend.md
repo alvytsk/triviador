@@ -2292,7 +2292,57 @@ In `backend/src/triviador/api/app.py`'s `build_dependencies`:
 
 In `backend/tests/api/conftest.py`'s `deps` fixture, add `media_store=FakeMediaStore()`, `media_assets=FakeMediaAssets()`, and a real `ImageNormalizer` built from the fixture's `settings`.
 
-- [ ] **Step 12: Run everything and commit**
+- [ ] **Step 12: Write the wiring test `services/storage.py` already promises**
+
+Task 2's `services/storage.py` docstring says "`tests/api/test_admin_wiring.py` asserts the two
+adapters carry different bucket names" — and until this step, that file does not exist. The claim
+matters: the two ports are structurally interchangeable (`MediaStore` is a superset of
+`ImportStagingStore`), so nothing but the composition root stops the staging adapter — holding raw
+uploads with unpublished answer keys — from being handed to a route that writes to the
+anonymously-readable media bucket. The type system cannot catch that swap; this test can.
+
+Create `backend/tests/api/test_admin_wiring.py`:
+
+```python
+"""The composition root is the only thing that tells the two object stores
+apart (§9.1). `services/storage.py`'s docstring says so; this file is what
+makes the claim true.
+"""
+
+import pytest
+from pydantic import SecretStr
+
+from triviador.api.app import build_dependencies
+from triviador.config import Settings
+
+
+@pytest.fixture
+def wired_settings() -> Settings:
+    return Settings(
+        database_url="postgresql+asyncpg://unused/unused",
+        allowed_origins=("http://box.lan",),
+        s3_access_key_id="GK111111111111111111111111",
+        s3_secret_access_key=SecretStr("2" * 64),
+    )
+
+
+def test_the_two_stores_are_bound_to_different_buckets(wired_settings: Settings) -> None:
+    """Swapping them would publish raw import uploads — answer keys
+    included — to the anonymously readable bucket, and no type error would
+    be raised, because `MediaStore` structurally satisfies
+    `ImportStagingStore`.
+    """
+    built = build_dependencies(wired_settings)
+    assert built.deps.media_store.bucket == wired_settings.media_bucket
+    assert built.deps.staging_store.bucket == wired_settings.staging_bucket
+    assert built.deps.media_store.bucket != built.deps.staging_store.bucket
+```
+
+`build_dependencies` constructs an `AsyncEngine` but opens no connection, so this test needs no
+database. `staging_store` arrives in Task 7 — until then, assert only the media half and add the
+staging assertions in that task's wiring step.
+
+- [ ] **Step 13: Run everything and commit**
 
 Run: `cd backend && uv run pytest -q && uv run mypy && uv run ruff check .`
 Expected: PASS.
