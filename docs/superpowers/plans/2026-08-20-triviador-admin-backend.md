@@ -143,6 +143,15 @@ frontend/src/shared/api/generated/admin.ts   CREATE  (by `pnpm codegen`; unused 
 
 6. **`media-gc` is one command that retires imports first and deletes blobs second.** §9.3's expiry machine and §10.4's asset sweep are separate rules, but they are the same operational moment ("the rare, destructive cleanup an operator runs"), and running the sweep before the retirement would leave a staged object alive for exactly one more cycle every time. Its `--after-restore` flag is §9.3's post-restore rule.
 
+8. **`POST /api/admin/questions/{id}/activate` exists, though §6.1 does not list it.** Spec 1 §10.2 puts `is_active` among the editor's common fields, so an admin must be able to set it both ways; Spec 1B §6.1 names only `deactivate`. A bank whose rows are never deleted (§7) and whose retirement is irreversible is a bank where one misclick permanently shrinks the question pool. It is a second route rather than a field on `PATCH` because `PATCH` always bumps `questions.version` and §7 requires that an activity toggle not bump it — two routes keep both rules true without a field comparison deciding which one applies.
+
+9. **The media write paths verify their blob after the row commits, and `media-gc` deletes rows before objects.** §10.4 says an asset is collectable when nothing references it, and §10.3 orders blob-before-transaction; neither says what happens when a sweep and an upload overlap, and two interleavings genuinely lose data:
+
+   - The sweep's orphan pass treats any object with no row as garbage — including one an upload wrote thirty milliseconds ago whose row has not committed yet.
+   - An unreferenced asset can acquire its first reference between the sweep's check and its delete, leaving a valid foreign key pointing at a missing object.
+
+   Three mechanics close them, and none of them holds a database transaction open across a network write. **Row-first deletion under `FOR UPDATE`**, with the reference check repeated inside that transaction: a concurrent `INSERT` into `questions` takes `FOR KEY SHARE` on the same `media_assets` row, so it cannot slip between the check and the delete. **A grace period** on the orphan pass (`media_gc_grace_minutes`, default 60): an object younger than that is presumed to belong to an upload in flight, and §10.3's failed-transaction orphans are not urgent. **Verify-after-commit** in both write paths: once the row is committed, the route `HEAD`s the blob and re-`PUT`s it if a sweep removed it in the window — one round trip on a LAN, and the only repair that needs no lock at all.
+
 7. **The `question_imports.status` values are closed by this plan**: `validated`, `confirmed`, `expired`, `cleaned`. Plan 3 deliberately left the column unconstrained because the spec named them only in prose. This plan is where the state machine is implemented, so it is also where the values become a `CheckConstraint`-free but code-enforced closed set — `imports/retire.py` owns every transition, and no other module writes the column.
 
 ---
@@ -536,7 +545,8 @@ git commit -m "feat(admin): guard the admin router and exempt the upload paths f
 
 **Interfaces:**
 - Produces:
-  - `triviador.services.storage.MediaStore` — `put(key, data, *, content_type, cache_control) -> None`, `open(key) -> bytes | None`, `delete(key) -> None`, `list_keys() -> tuple[str, ...]`
+  - `triviador.services.storage.MediaStore` — `put(key, data, *, content_type, cache_control) -> None`, `open(key) -> bytes | None`, `head(key) -> ObjectHead | None`, `delete(key) -> None`, `list_objects(*, prefix) -> tuple[StoredObject, ...]`
+  - `triviador.services.storage.ObjectHead(byte_size, content_type, cache_control, last_modified)` and `StoredObject(key, byte_size, last_modified)`
   - `triviador.services.storage.ImportStagingStore` — `put(key, data, *, content_type) -> None`, `open(key) -> bytes | None`, `delete(key) -> None`
   - `triviador.storage.s3.S3MediaStore(...)`, `triviador.storage.s3.S3ImportStagingStore(...)`
   - `Settings.s3_endpoint_url`, `.s3_region`, `.s3_access_key_id`, `.s3_secret_access_key`, `.media_bucket`, `.staging_bucket`, `.media_max_bytes`, `.media_max_pixels`, `.media_target_px`, `.import_max_bytes`, `.import_ttl_hours`
@@ -811,7 +821,7 @@ async def test_cache_control_is_stored_on_the_object(
     assert head.content_type == "image/webp"
 
 
-async def test_list_keys_paginates_past_one_thousand(
+async def test_list_objects_paginates_past_one_thousand(
     media_store: S3MediaStore, prefix: str
 ) -> None:
     """S3 truncates a listing at 1000 keys. `media-gc` compares the store
@@ -820,8 +830,18 @@ async def test_list_keys_paginates_past_one_thousand(
     never collected."""
     for i in range(1002):
         await media_store.put(f"{prefix}/{i}.webp", b"x", content_type="image/webp")
-    listed = [k for k in await media_store.list_keys(prefix=prefix)]
+    listed = await media_store.list_objects(prefix=prefix)
     assert len(listed) == 1002
+
+
+async def test_a_listing_carries_the_age_the_grace_period_needs(
+    media_store: S3MediaStore, prefix: str
+) -> None:
+    """`media-gc` skips objects younger than `media_gc_grace_minutes`,
+    which it can only do if the listing says how old they are."""
+    await media_store.put(f"{prefix}/fresh.webp", b"x", content_type="image/webp")
+    listed = await media_store.list_objects(prefix=f"{prefix}/fresh")
+    assert listed[0].last_modified.tzinfo is not None
 
 
 async def test_the_staging_store_writes_to_a_different_bucket(
@@ -854,7 +874,7 @@ answer keys included — and expires by lifecycle.
 They are declared as two Protocols rather than one store plus a prefix
 convention for the reason §9.1 states: the security boundary is the
 bucket, and a prefix bug in the wrong direction publishes unvalidated
-uploads. Structurally `MediaStore` is a superset (`list_keys`), so the
+uploads. Structurally `MediaStore` is a superset (`head`, `list_objects`), so the
 type system alone will not stop a caller from passing the wrong one — the
 composition root is where they are told apart, and
 `tests/api/test_admin_wiring.py` asserts the two adapters carry different
@@ -867,12 +887,29 @@ from typing import Protocol
 
 @dataclass(frozen=True)
 class ObjectHead:
-    """What a `HEAD` answers, and nothing more. `media-gc` needs sizes;
-    `test_s3.py` needs the cache header; nobody needs the body."""
+    """What a `HEAD` answers, and nothing more. `media-gc` needs ages;
+    the upload path needs to know the object is still there; nobody needs
+    the body."""
 
     byte_size: int
     content_type: str
     cache_control: str | None
+    last_modified: datetime
+
+
+@dataclass(frozen=True)
+class StoredObject:
+    """One entry of a listing.
+
+    `last_modified` is part of it because `media-gc`'s orphan pass is
+    age-aware: an object with no database row is either garbage from a
+    failed transaction (§10.3) or an upload whose row has not committed
+    yet, and only its age tells the two apart.
+    """
+
+    key: str
+    byte_size: int
+    last_modified: datetime
 
 
 class ImportStagingStore(Protocol):
@@ -898,8 +935,8 @@ class MediaStore(Protocol):
     async def head(self, key: str) -> ObjectHead | None: ...
     async def delete(self, key: str) -> None: ...
 
-    async def list_keys(self, *, prefix: str = "") -> tuple[str, ...]:
-        """Every key, paginated to exhaustion. `media-gc` compares this
+    async def list_objects(self, *, prefix: str = "") -> tuple[StoredObject, ...]:
+        """Every object, paginated to exhaustion. `media-gc` compares this
         listing against the database; a truncated one under-reports and
         leaves orphans uncollected forever."""
         ...
@@ -1043,21 +1080,33 @@ class S3MediaStore(_S3Base):
             byte_size=int(response["ContentLength"]),
             content_type=str(response.get("ContentType", "")),
             cache_control=response.get("CacheControl"),
+            last_modified=response["LastModified"],
         )
 
-    async def list_keys(self, *, prefix: str = "") -> tuple[str, ...]:
-        keys: list[str] = []
+    async def list_objects(self, *, prefix: str = "") -> tuple[StoredObject, ...]:
+        objects: list[StoredObject] = []
         async with self._client() as client:
             paginator = client.get_paginator("list_objects_v2")
             async for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix):
-                keys.extend(item["Key"] for item in page.get("Contents", ()))
-        return tuple(keys)
+                objects.extend(
+                    StoredObject(
+                        key=item["Key"],
+                        byte_size=int(item["Size"]),
+                        # botocore parses this into an aware datetime; the
+                        # grace period compares it against `clock.now()`,
+                        # which is also aware (§8.6 has no naive datetimes
+                        # anywhere in this system).
+                        last_modified=item["LastModified"],
+                    )
+                    for item in page.get("Contents", ())
+                )
+        return tuple(objects)
 ```
 
 - [ ] **Step 7: Run the store test against real Garage**
 
 Run: `cd backend && uv run pytest tests/storage -q`
-Expected: PASS (6 tests). If `test_list_keys_paginates_past_one_thousand` is slow (it writes 1002 objects), that is expected — it is the only test here that costs seconds, and it is the one that catches a truncation bug nothing else would.
+Expected: PASS (7 tests). If `test_list_objects_paginates_past_one_thousand` is slow (it writes 1002 objects), that is expected — it is the only test here that costs seconds, and it is the one that catches a truncation bug nothing else would.
 
 - [ ] **Step 8: Add the settings, and make an unconfigured deploy fail loudly**
 
@@ -1081,6 +1130,11 @@ In `backend/src/triviador/config.py`, add to `Settings` (after `media_public_bas
     media_target_px: int = 1280
     import_max_bytes: int = 33_554_432
     import_ttl_hours: int = 24
+    # `media-gc` leaves an object younger than this alone: with no
+    # database row it is indistinguishable from an upload whose row has
+    # not committed yet (Decision 9), and §10.3's failed-transaction
+    # orphans are never urgent.
+    media_gc_grace_minutes: int = 60
 ```
 
 ...with `from pydantic import SecretStr, field_validator` at the top. Then extend `startup_problems`:
@@ -1114,6 +1168,28 @@ TRIVIADOR_IMPORT_TTL_HOURS=24
 ```
 
 Update `backend/tests/api/test_settings.py`: every `startup_problems` case that expects "no problems" now needs S3 credentials set, and add one test asserting the new problem is reported when they are absent, plus one asserting a `SecretStr` holding `CHANGE_ME` is caught (the regression the `model_dump` change exists for).
+
+**And update the existing integration fixture in the same step.** `backend/tests/api/integration/conftest.py`'s `client` fixture calls `build_app(settings)`, and `build_app` raises `RuntimeError` on any `startup_problems` entry — so the moment this assertion lands, every test in that directory fails on a configuration error rather than on anything it is testing:
+
+```python
+    settings = Settings(
+        database_url=DATABASE_URL,
+        allowed_origins=("http://testserver",),
+        allowed_hosts=("testserver",),
+        cookie_secure=False,
+        maps_root=seeded,
+        log_format="console",
+        # Task 2 made these mandatory at startup. The suite does not touch
+        # object storage yet; it has to be *configured* to boot, which is
+        # the whole point of the assertion.
+        s3_endpoint_url=ENDPOINT,
+        s3_region="garage",
+        s3_access_key_id=KEY_ID,
+        s3_secret_access_key=SecretStr(KEY_SECRET),
+    )
+```
+
+...importing `ENDPOINT`, `KEY_ID` and `KEY_SECRET` from `tests.storage.conftest` and `SecretStr` from pydantic. Verify with `uv run pytest tests/api/integration -q` **before** moving on — this is the one change in Task 2 that can silently break a suite two directories away.
 
 - [ ] **Step 9: Extend the layering gate**
 
@@ -1671,15 +1747,20 @@ class FakeMediaStore:
     """In-memory `MediaStore`. Keeps `put` calls so a test can assert the
     `Cache-Control` the route asked for without a live Garage."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: FakeClock | None = None) -> None:
         self.objects: dict[str, bytes] = {}
         self.metadata: dict[str, tuple[str, str | None]] = {}
+        # Write times, so a test can age an object past the gc grace
+        # period without sleeping.
+        self.written: dict[str, datetime] = {}
+        self._clock = clock or FakeClock()
 
     async def put(
         self, key: str, data: bytes, *, content_type: str, cache_control: str | None = None
     ) -> None:
         self.objects[key] = data
         self.metadata[key] = (content_type, cache_control)
+        self.written[key] = self._clock.now()
 
     async def open(self, key: str) -> bytes | None:
         return self.objects.get(key)
@@ -1688,13 +1769,19 @@ class FakeMediaStore:
         if key not in self.objects:
             return None
         content_type, cache_control = self.metadata[key]
-        return ObjectHead(len(self.objects[key]), content_type, cache_control)
+        return ObjectHead(
+            len(self.objects[key]), content_type, cache_control, self.written[key]
+        )
 
     async def delete(self, key: str) -> None:
         self.objects.pop(key, None)
 
-    async def list_keys(self, *, prefix: str = "") -> tuple[str, ...]:
-        return tuple(k for k in sorted(self.objects) if k.startswith(prefix))
+    async def list_objects(self, *, prefix: str = "") -> tuple[StoredObject, ...]:
+        return tuple(
+            StoredObject(key=key, byte_size=len(self.objects[key]), last_modified=self.written[key])
+            for key in sorted(self.objects)
+            if key.startswith(prefix)
+        )
 
 
 class FakeMediaAssets:
@@ -1781,6 +1868,21 @@ async def test_an_svg_is_refused_with_a_reason(admin_client: httpx.AsyncClient) 
     response = await _upload(admin_client, SVG, "image/svg+xml")
     assert response.status_code == 415
     assert response.json()["code"] == "media_rejected"
+
+
+async def test_a_blob_deleted_between_put_and_row_is_restored(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """Decision 9's repair, driven directly: with the row committed and
+    the object gone, the route must put it back rather than answer 201 for
+    an asset that is not there."""
+    body = png(24, 24)
+    first = (await _upload(admin_client, body, "image/png")).json()
+    key = f"{first['id'][:2]}/{first['id']}.webp"
+    del deps.media_store.objects[key]
+    second = await _upload(admin_client, body, "image/png")
+    assert second.status_code == 200
+    assert key in deps.media_store.objects
 
 
 async def test_a_body_over_the_media_cap_is_refused_by_the_route(
@@ -1894,6 +1996,30 @@ async def read_capped(request: Request, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+async def repair_blob(deps: Deps, image: NormalizedImage) -> None:
+    """Make sure the object is still there now that the row is committed.
+
+    The window this closes: `media-gc`'s orphan pass deletes objects with
+    no database row, and between this route's `put` and its `ensure` there
+    *is* no row. A sweep running in that instant takes the blob and leaves
+    a row pointing at nothing — a broken image nobody can repair from the
+    editor, because re-uploading the same file produces the same content
+    hash and finds the row already present.
+
+    `media-gc` also skips objects younger than `media_gc_grace_minutes`,
+    so this repair should never fire. It costs one `HEAD` on a LAN and is
+    the only fix that needs no lock and no transaction spanning a network
+    write — see Decision 9.
+    """
+    if await deps.media_store.head(image.storage_key) is None:
+        await deps.media_store.put(
+            image.storage_key,
+            image.data,
+            content_type=image.mime_type,
+            cache_control=CACHE_CONTROL,
+        )
+
+
 def summary(image_id: str, *, media_base: str, width: int | None, height: int | None,
             byte_size: int) -> MediaAssetSummary:
     return MediaAssetSummary(
@@ -1932,6 +2058,7 @@ async def upload_media(
         storage_key=image.storage_key,
         created_by=str(principal.user_id),
     )
+    await repair_blob(deps, image)
     if not created:
         response.status_code = 200
     return summary(
@@ -2659,7 +2786,8 @@ This is the task Plan 3 pointed at. `db/repositories/questions.py`'s docstring s
   - `QuestionAdminPort.update(question_id, write) -> QuestionDetailRecord | None`
   - `QuestionAdminPort.set_active(question_id, *, is_active) -> QuestionDetailRecord | None`
   - `QuestionAdminPort.duplicates_of(prompt, *, excluding) -> tuple[str, ...]`
-  - `POST /api/admin/questions` → 201 `QuestionSaved{question, duplicate_of}`; `PATCH /api/admin/questions/{id}` → 200 same; `POST /api/admin/questions/{id}/deactivate` → 200 `QuestionDetail`
+  - `POST /api/admin/questions` → 201 `QuestionSaved{question, duplicate_of}`; `PATCH /api/admin/questions/{id}` → 200 same
+  - `POST /api/admin/questions/{id}/deactivate` and `POST /api/admin/questions/{id}/activate` → 200 `QuestionDetail` (see Decision 8)
 
 - [ ] **Step 1: Write the failing lock test — the important one**
 
@@ -2816,6 +2944,15 @@ class QuestionWrite:
         `prompt_digest`, the same whitespace- and case-insensitive hash
         `seed-questions` already uses."""
         ...
+
+    async def existing_prompt_digests(self, digests: frozenset[str]) -> frozenset[str]:
+        """Which of these the bank already has, in one query.
+
+        The import's warning channel (Task 7) asks this once per upload
+        rather than calling `duplicates_of` per row — same rule, same
+        digest, one round trip.
+        """
+        ...
 ```
 
 - [ ] **Step 4: Write the write paths**
@@ -2922,6 +3059,15 @@ class QuestionAdminRepository:   # ...continues
                 statement = statement.where(Question.id != excluding)
             return tuple((await session.execute(statement)).scalars().all())
 
+    async def existing_prompt_digests(self, digests: frozenset[str]) -> frozenset[str]:
+        if not digests:
+            return frozenset()
+        async with self._sessionmaker() as session:
+            rows = await session.execute(
+                select(Question.prompt_hash).where(Question.prompt_hash.in_(digests))
+            )
+            return frozenset(rows.scalars().all())
+
     @staticmethod
     def _write_children(session: AsyncSession, question_id: str, write: QuestionWrite) -> None:
         if write.kind == QuestionKind.NUMERIC.value:
@@ -3011,11 +3157,18 @@ async def test_patching_a_missing_question_is_404(admin_client: httpx.AsyncClien
     assert (await admin_client.patch("/api/admin/questions/nope", json=MC_BODY)).status_code == 404
 
 
-async def test_deactivate_flips_the_flag(admin_client: httpx.AsyncClient) -> None:
+async def test_deactivate_and_activate_flip_the_flag_without_bumping_version(
+    admin_client: httpx.AsyncClient
+) -> None:
+    """Both directions, because §10.2 puts `is_active` in the editor and a
+    bank whose rows can never be deleted (§7) needs retirement to be
+    reversible. Neither touches `version` — Spec 1 §7 again."""
     created = (await admin_client.post("/api/admin/questions", json=MC_BODY)).json()["question"]
-    response = await admin_client.post(f"/api/admin/questions/{created['id']}/deactivate")
-    assert response.status_code == 200
-    assert response.json()["is_active"] is False
+    off = await admin_client.post(f"/api/admin/questions/{created['id']}/deactivate")
+    assert off.status_code == 200
+    assert (off.json()["is_active"], off.json()["version"]) == (False, created["version"])
+    on = await admin_client.post(f"/api/admin/questions/{created['id']}/activate")
+    assert (on.json()["is_active"], on.json()["version"]) == (True, created["version"])
 ```
 
 Extend `FakeQuestionAdmin` in `backend/tests/api/fakes.py` with `create`, `update`, `set_active` and `duplicates_of` over its dict, reusing `prompt_digest` for the duplicate check so the fake and the repository agree on what "duplicate" means.
@@ -3134,14 +3287,31 @@ async def update_question(
 async def deactivate_question(
     question_id: str, deps: Deps, principal: AdminPrincipal
 ) -> QuestionDetail:
-    """§6.1 names only `deactivate`. Reactivation goes through `PATCH`'s
-    sibling `activate`? No — it does not exist, because Spec 1's surface
-    does not have it: a question is retired by deactivating it and
-    restored by the same route with `is_active=true` on the body, which
-    §6.1 does not define either. Retiring is the operation the spec names;
-    if reactivation is wanted later it is a route, not a hidden flag.
-    """
     record = await deps.questions_admin.set_active(question_id, is_active=False)
+    if record is None:
+        raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such question")
+    return detail(record)
+
+
+@router.post("/{question_id}/activate")
+async def activate_question(
+    question_id: str, deps: Deps, principal: AdminPrincipal
+) -> QuestionDetail:
+    """The route Spec 1B §6.1 does not list, and Spec 1 §10.2 requires.
+
+    §10.2 puts `is_active` in the editor's common fields, so an admin must
+    be able to set it in both directions; §6.1 lists only `deactivate`.
+    Taken literally, retiring a question by mistake would be permanent —
+    for a bank whose rows can never be deleted (§7).
+
+    It is a route rather than a field on `PATCH` so that activity stays
+    outside the semantic-edit path: `PATCH` always bumps
+    `questions.version` (it rewrites prompt, choices and answer), and
+    Spec 1 §7 says toggling `is_active` must *not* bump it, or Spec 2
+    would read one question's statistics as two questions'. Two routes
+    keep both rules true without a comparison deciding which applies.
+    """
+    record = await deps.questions_admin.set_active(question_id, is_active=True)
     if record is None:
         raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such question")
     return detail(record)
@@ -3528,14 +3698,17 @@ def test_each_row_level_rule(row: str, reason: str) -> None:
     assert reason in parsed.rejections[0].reason
 
 
-def test_a_duplicate_prompt_inside_one_file_is_rejected() -> None:
-    """Against the bank a duplicate is a warning (§10.2). Inside one
-    upload it is a rejection: the file would insert both copies in one
-    transaction, and neither the admin nor the importer can say which was
-    meant."""
+def test_a_duplicate_prompt_inside_one_file_is_a_warning_not_a_rejection() -> None:
+    """§10.2 is unambiguous: a prompt-digest match "surfaces a warning,
+    not a block", on save *and on import*. Rejecting here would also make
+    the upload unconfirmable (§10.3 gates confirm on `rejected == 0`), so
+    a file with one accidental repeat could never be applied at all —
+    which is a block wearing a warning's name."""
     parsed = parse_upload(csv_bytes(NUM, NUM), filename="b.csv")
-    assert len(parsed.rows) == 1
-    assert "duplicate" in parsed.rejections[0].reason
+    assert len(parsed.rows) == 2
+    assert parsed.rejections == ()
+    assert [n.line for n in parsed.notices] == [3]
+    assert "duplicate" in parsed.notices[0].reason
 
 
 def test_a_wrong_header_is_a_whole_upload_rejection() -> None:
@@ -3691,9 +3864,24 @@ class Rejection:
 
 
 @dataclass(frozen=True)
+class Notice:
+    """Something the admin should see and may ignore.
+
+    Separate from `Rejection` because the two have opposite consequences:
+    a rejection makes the upload unconfirmable (§10.3), a notice does not.
+    Collapsing them is how §10.2's "warning, not a block" quietly becomes
+    a block.
+    """
+
+    line: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class ParsedImport:
     rows: tuple[ParsedRow, ...] = ()
     rejections: tuple[Rejection, ...] = ()
+    notices: tuple[Notice, ...] = ()
     media: Mapping[str, bytes] = field(default_factory=dict)
 
 
@@ -3737,7 +3925,8 @@ def _parse_rows(text: str, media: Mapping[str, bytes], *, archive: bool) -> Pars
 
     rows: list[ParsedRow] = []
     rejections: list[Rejection] = []
-    seen: set[str] = set()
+    notices: list[Notice] = []
+    seen: dict[str, int] = {}
     for line, raw in enumerate(reader, start=2):
         try:
             row = _parse_row(line, raw, media, archive=archive)
@@ -3746,13 +3935,20 @@ def _parse_rows(text: str, media: Mapping[str, bytes], *, archive: bool) -> Pars
             continue
         digest = prompt_digest(row.prompt)
         if digest in seen:
-            rejections.append(
-                Rejection(line=line, reason="duplicate prompt inside this upload", raw=raw)
+            # A notice, and the row is still imported: §10.2 says a digest
+            # match is a warning on save *and on import*, and legitimately
+            # similar phrasings normalise to the same digest.
+            notices.append(
+                Notice(line=line, reason=f"same prompt as line {seen[digest]} of this upload")
             )
-            continue
-        seen.add(digest)
+        seen.setdefault(digest, line)
         rows.append(row)
-    return ParsedImport(rows=tuple(rows), rejections=tuple(rejections), media=media)
+    return ParsedImport(
+        rows=tuple(rows),
+        rejections=tuple(rejections),
+        notices=tuple(notices),
+        media=media,
+    )
 
 
 def _parse_row(
@@ -4072,6 +4268,17 @@ class ImportRejection(BaseModel):
     reason: str
 
 
+class ImportNotice(BaseModel):
+    """§10.2's warning channel: duplicate prompts, inside this upload or
+    already in the bank. Distinct from `ImportRejection` in the contract
+    as well as in the code, so 7B cannot render one as the other."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    line: int
+    reason: str
+
+
 class ImportSummary(BaseModel):
     """`confirmable` is computed by the server, not inferred by the client
     from `rejected_count == 0`. The rule is §10.3's, it also depends on
@@ -4087,6 +4294,7 @@ class ImportSummary(BaseModel):
     row_count: int
     rejected_count: int
     rejections: list[ImportRejection]
+    notices: list[ImportNotice]
     status: ImportStatus
     confirmable: bool
     expires_at: datetime
@@ -4123,8 +4331,16 @@ from fastapi.responses import PlainTextResponse
 from triviador.api.deps import AdminPrincipal, Deps
 from triviador.api.errors import ApiError, ApiErrorCode
 from triviador.api.http.admin.media import read_capped
-from triviador.api.schemas.admin.imports import ImportRejection, ImportSummary
-from triviador.imports.parse import ParsedImport, Rejection, UploadRejected, parse_upload
+from triviador.api.schemas.admin.imports import ImportNotice, ImportRejection, ImportSummary
+from triviador.imports.digest import prompt_digest
+from triviador.imports.parse import (
+    Notice,
+    ParsedImport,
+    ParsedRow,
+    Rejection,
+    UploadRejected,
+    parse_upload,
+)
 from triviador.media.pipeline import MediaRejected
 from triviador.services.admin import ImportRecord, ImportStatus
 
@@ -4133,10 +4349,21 @@ router = APIRouter(prefix="/questions/import", tags=["admin"])
 import hashlib
 
 
-def _summary(record: ImportRecord) -> ImportSummary:
+def _summary(record: ImportRecord, *, now: datetime) -> ImportSummary:
+    """`confirmable` is three facts, not two.
+
+    Status and rejection count are §10.3's rule; `expires_at` is §9.3's,
+    and leaving it out would show a green CONFIRM button on an import the
+    server will refuse — the client would then be the only place the
+    expiry rule was *not* applied.
+    """
     rejections = [
         ImportRejection(line=int(item["line"]), reason=str(item["reason"]))
         for item in record.report.get("rejections", ())
+    ]
+    notices = [
+        ImportNotice(line=int(item["line"]), reason=str(item["reason"]))
+        for item in record.report.get("notices", ())
     ]
     return ImportSummary(
         import_id=record.import_id,
@@ -4146,9 +4373,32 @@ def _summary(record: ImportRecord) -> ImportSummary:
         row_count=record.row_count,
         rejected_count=record.rejected_count,
         rejections=rejections,
+        notices=notices,
         status=record.status,
-        confirmable=record.status is ImportStatus.VALIDATED and record.rejected_count == 0,
+        confirmable=(
+            record.status is ImportStatus.VALIDATED
+            and record.rejected_count == 0
+            and record.expires_at > now
+        ),
         expires_at=record.expires_at,
+    )
+
+
+async def _bank_duplicates(deps: Deps, rows: Sequence[ParsedRow]) -> tuple[Notice, ...]:
+    """§10.2's other half: a prompt the bank already has is a warning here
+    too, and the dry-run report is the only screen that can show it before
+    the rows are applied.
+
+    One query for the whole file, not one per row: a 500-row import would
+    otherwise open 500 round trips to answer a question that is a single
+    `WHERE prompt_hash IN (...)`.
+    """
+    digests = {row.line: prompt_digest(row.prompt) for row in rows}
+    known = await deps.questions_admin.existing_prompt_digests(frozenset(digests.values()))
+    return tuple(
+        Notice(line=line, reason="a question with this prompt is already in the bank")
+        for line, digest in sorted(digests.items())
+        if digest in known
     )
 
 
@@ -4190,9 +4440,11 @@ async def dry_run(
     media_rejections = await _reject_unusable_media(deps, parsed)
     rejected = tuple(parsed.rejections) + media_rejections
     accepted = tuple(r for r in parsed.rows if r.line not in {x.line for x in media_rejections})
+    notices = tuple(parsed.notices) + await _bank_duplicates(deps, accepted)
 
     import_id = uuid.uuid4().hex
     staged_key = f"{import_id}/{x_filename.rsplit('/', 1)[-1]}"
+    now = deps.clock.now()
     record = await deps.imports.create(
         import_id=import_id,
         uploaded_by=str(principal.user_id),
@@ -4206,14 +4458,15 @@ async def dry_run(
             "rejections": [
                 {"line": r.line, "reason": r.reason, "raw": dict(r.raw)} for r in rejected
             ],
+            "notices": [{"line": n.line, "reason": n.reason} for n in notices],
         },
-        expires_at=deps.clock.now() + timedelta(hours=deps.settings.import_ttl_hours),
+        expires_at=now + timedelta(hours=deps.settings.import_ttl_hours),
     )
     await deps.staging_store.put(
         staged_key, raw, content_type="application/zip" if x_filename.endswith(".zip")
         else "text/csv"
     )
-    return _summary(record)
+    return _summary(record, now=now)
 
 
 @router.get("/{import_id}/rejected.csv", response_class=PlainTextResponse)
@@ -4261,8 +4514,8 @@ git commit -m "feat(admin): import dry-run — parse, validate, stage, write not
 
 **Interfaces:**
 - Produces:
-  - `services.admin.ImportPort.claim_for_confirm(import_id) -> ImportRecord | None` — locks the row `FOR UPDATE`, rechecks status/rejected/sha, and returns the record inside a transaction the caller finishes
-  - `services.admin.ImportPort.apply(import_id, *, questions, assets) -> ImportRecord` — the single transaction of §9.3
+  - `services.admin.ImportedImage(asset_id, mime_type, width, height, byte_size, storage_key)` and `services.admin.ImportedQuestion(category_slug, kind, prompt, difficulty, media_file, choices, numeric_answer, unit)` — plain data, so the port names neither a SQLAlchemy session nor a parser type
+  - `services.admin.ImportPort.apply_if_confirmable(import_id, *, rows, images, uploaded_by, now) -> bool` — §9.3's single transaction, from `FOR UPDATE` to `COMMIT`
   - `POST /api/admin/questions/import/{import_id}/confirm` → 200 `ImportSummary`
 
 - [ ] **Step 1: Write the failing tests**
@@ -4315,6 +4568,69 @@ async def test_a_staged_object_that_changed_underneath_is_refused(
     response = await confirm(admin_client, created["import_id"])
     assert response.status_code == 409
     assert "changed" in response.json()["message"]
+
+
+async def test_an_expired_import_cannot_be_confirmed(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """§9.3 gives a staged upload a TTL. Without this check a validated
+    import stays confirmable forever, and the TTL only bites if an
+    operator happens to run `media-gc` first — which is a rule enforced by
+    a cron job that does not exist yet."""
+    created = (await dry_run(admin_client, csv_bytes(NUM), "b.csv")).json()
+    deps.clock.advance(timedelta(hours=deps.settings.import_ttl_hours + 1))
+    response = await confirm(admin_client, created["import_id"])
+    assert response.status_code == 409
+    assert response.json()["code"] == "import_not_confirmable"
+    assert "expired" in response.json()["message"]
+
+
+def test_confirmable_is_false_once_the_upload_expires() -> None:
+    """`_summary` is a pure function and is tested as one — §6.1 defines
+    three import routes and no "read one import", so there is nowhere to
+    observe this through HTTP without inventing a fourth.
+
+    The client renders CONFIRM from this field; if the server computed it
+    from rejections alone, 7B would show a live button on a dead import.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from triviador.api.http.admin.imports import _summary
+    from triviador.services.admin import ImportRecord, ImportStatus
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    record = ImportRecord(
+        import_id="imp-1",
+        uploaded_by="admin",
+        upload_sha256="sha",
+        filename="b.csv",
+        staged_key="imp-1/b.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        status=ImportStatus.VALIDATED,
+        expires_at=now - timedelta(seconds=1),
+    )
+    assert _summary(record, now=now).confirmable is False
+    assert _summary(record, now=now - timedelta(hours=2)).confirmable is True
+
+
+async def test_a_duplicate_prompt_is_a_notice_and_the_upload_stays_confirmable(
+    admin_client: httpx.AsyncClient
+) -> None:
+    """§10.2's rule, in the place it is easiest to get wrong: a repeated
+    prompt inside one file, and a prompt the bank already holds, are both
+    warnings. Rejecting either would make the upload unconfirmable, which
+    is a block by another name."""
+    first = await dry_run(admin_client, csv_bytes(NUM), "b.csv")
+    await confirm(admin_client, first.json()["import_id"])
+
+    again = (await dry_run(admin_client, csv_bytes(NUM, NUM), "b.csv")).json()
+    assert again["rejected_count"] == 0
+    assert again["confirmable"] is True
+    reasons = " ".join(n["reason"] for n in again["notices"])
+    assert "already in the bank" in reasons
+    assert "same prompt as line" in reasons
 
 
 async def test_a_missing_staged_object_is_refused_with_a_reason(
@@ -4374,10 +4690,38 @@ async def test_two_concurrent_confirms_cannot_both_apply(sessions, clean_db) -> 
     assert record.status is ImportStatus.VALIDATED
 
     async def apply() -> bool:
-        return await repository.apply_if_confirmable("imp-1", writer=_noop_writer)
+        return await repository.apply_if_confirmable(
+            "imp-1",
+            rows=(),
+            images={},
+            uploaded_by="admin-1",
+            now=datetime.now(UTC),
+        )
 
     first, second = await asyncio.gather(apply(), apply())
     assert sorted([first, second]) == [False, True]
+
+
+async def test_an_expired_import_cannot_be_applied_even_with_zero_rejections(
+    sessions, clean_db
+) -> None:
+    """The check that belongs under the lock, not only in the route: an
+    import whose TTL passed while the confirm was in flight must lose."""
+    repository = QuestionImportRepository(sessions)
+    await repository.create(
+        import_id="imp-2",
+        uploaded_by="admin-1",
+        upload_sha256="sha",
+        filename="b.csv",
+        staged_key="imp-2/b.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    assert not await repository.apply_if_confirmable(
+        "imp-2", rows=(), images={}, uploaded_by="admin-1", now=datetime.now(UTC)
+    )
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -4387,100 +4731,138 @@ Expected: FAIL — 404 on `/confirm`, and `AttributeError: apply_if_confirmable`
 
 - [ ] **Step 3: Write the transactional half**
 
-Extend `services.admin.ImportPort`:
+Extend `services/admin.py` with the two data shapes and one method:
+
+```python
+@dataclass(frozen=True)
+class ImportedImage:
+    """A blob the confirm has already written, described for the row that
+    will reference it. No bytes: they are in the bucket by the time this
+    exists."""
+
+    asset_id: str
+    mime_type: str
+    width: int
+    height: int
+    byte_size: int
+    storage_key: str
+
+
+@dataclass(frozen=True)
+class ImportedQuestion:
+    """One row of a validated import, in the vocabulary of the bank.
+
+    `category_slug` rather than `category_id`: the category may not exist
+    until the confirming transaction creates it, so resolution has to
+    happen inside that transaction and cannot be done by the caller.
+    """
+
+    category_slug: str
+    kind: str
+    prompt: str
+    difficulty: str
+    media_file: str | None
+    choices: tuple[tuple[str, bool], ...] | None
+    numeric_answer: Decimal | None
+    unit: str | None
+```
 
 ```python
     async def apply_if_confirmable(
         self,
         import_id: str,
         *,
-        writer: "ImportWriter",
+        rows: Sequence[ImportedQuestion],
+        images: Mapping[str, ImportedImage],
+        uploaded_by: str,
+        now: datetime,
     ) -> bool:
         """§9.3's transaction, from `FOR UPDATE` to `COMMIT`.
 
-        The caller passes a `writer` rather than a list of rows because
-        everything the import inserts — categories, questions, choices,
-        numeric answers, media assets — must land in *this* transaction,
-        and a repository that returned the locked row for the caller to
-        write around would have already ended it.
+        Everything the import inserts — categories, questions, choices,
+        numeric answers, media asset rows — happens inside this call,
+        because it all has to be inside the transaction that holds the
+        lock. Passing plain data rather than a callback keeps the
+        SQLAlchemy session on the `db/` side of the port: a Protocol whose
+        parameter is a session either names `AsyncSession` in `services/`
+        (which the layering gate forbids) or widens it to `object`, which
+        no implementation can narrow back without breaking
+        contravariance — `mypy --strict` rejects both.
 
-        `False` means the row was not confirmable: already confirmed,
-        expired, or carrying rejections. The caller turns that into a 409;
-        it is never an exception, because losing this race is an ordinary
-        outcome of two admins clicking at once.
+        `False` means the row was not confirmable under the lock: already
+        confirmed, expired, or carrying rejections. The caller turns that
+        into a 409; it is never an exception, because losing this race is
+        an ordinary outcome of two admins clicking at once.
         """
         ...
-```
-
-...with, above it:
-
-```python
-class ImportWriter(Protocol):
-    """Everything one confirm writes, executed inside the import's own
-    transaction. Implemented in `db/repositories/imports.py` against the
-    session that holds the `FOR UPDATE` lock."""
-
-    async def write(self, session: object) -> None: ...
 ```
 
 In `backend/src/triviador/db/repositories/imports.py`:
 
 ```python
-    async def apply_if_confirmable(self, import_id: str, *, writer: ImportWriter) -> bool:
+    async def apply_if_confirmable(
+        self,
+        import_id: str,
+        *,
+        rows: Sequence[ImportedQuestion],
+        images: Mapping[str, ImportedImage],
+        uploaded_by: str,
+        now: datetime,
+    ) -> bool:
         async with self._sessionmaker() as session, session.begin():
             row = await session.get(QuestionImport, import_id, with_for_update=True)
             if row is None:
                 return False
-            # Re-checked *under the lock*, not before it: the value read
-            # by the route a moment ago is exactly the value a concurrent
-            # confirm is about to change.
-            if row.status != ImportStatus.VALIDATED.value or row.rejected_count != 0:
+            # All three conditions re-checked *under the lock*, not before
+            # it: the values the route read a moment ago are exactly the
+            # ones a concurrent confirm — or the clock — is about to
+            # change. `expires_at` belongs here as much as `status` does;
+            # without it a validated import stays confirmable forever and
+            # §9.3's TTL only takes effect if `media-gc` happens to run.
+            if row.status != ImportStatus.VALIDATED.value:
                 return False
-            await writer.write(session)
+            if row.rejected_count != 0:
+                return False
+            if row.expires_at <= now:
+                return False
+            await self._write_bank(session, rows, images, uploaded_by)
             row.status = ImportStatus.CONFIRMED.value
-            row.confirmed_at = func.now()
+            row.confirmed_at = now
             return True
 ```
 
-...and `BankWriter` in the same module — everything one confirm inserts,
-executed against the session that holds the lock:
+...and the private writer in the same class — everything one confirm inserts,
+against the session that holds the lock:
 
 ```python
-class BankWriter:
-    """Implements `services.admin.ImportWriter`.
-
-    Every insert here uses the session it is handed, never
-    `self._sessionmaker`: opening a second session would put these writes
-    in a second transaction, and §10.3's "no partial writes" would then
-    mean "no partial writes unless the process dies between two of them".
-
-    Categories are created on the fly. The dry-run already reported how
-    many rows carry each slug, so refusing an unknown one here would turn
-    the first import of a new topic into a two-step dance for no safety.
-    """
-
-    def __init__(
+    async def _write_bank(
         self,
-        *,
-        rows: Sequence[ParsedRow],
-        images: Mapping[str, NormalizedImage],
+        session: AsyncSession,
+        rows: Sequence[ImportedQuestion],
+        images: Mapping[str, ImportedImage],
         uploaded_by: str,
     ) -> None:
-        self._rows = rows
-        self._images = images
-        self._uploaded_by = uploaded_by
+        """Every insert uses the session it is handed, never
+        `self._sessionmaker`: opening a second session would put these
+        writes in a second transaction, and §10.3's "no partial writes"
+        would then mean "no partial writes unless the process dies between
+        two of them".
 
-    async def write(self, session: AsyncSession) -> None:
-        categories = await self._ensure_categories(session)
-        await self._ensure_assets(session)
-        for row in self._rows:
+        Categories are created on the fly. The dry-run already reported
+        how many rows carry each slug, so refusing an unknown one here
+        would turn the first import of a new topic into a two-step dance
+        for no safety.
+        """
+        categories = await self._ensure_categories(session, rows)
+        await self._ensure_assets(session, images, uploaded_by)
+        for row in rows:
             write = QuestionWrite(
                 kind=row.kind,
                 prompt=row.prompt,
                 category_id=categories[row.category_slug],
                 difficulty=row.difficulty,
                 media_asset_id=(
-                    self._images[row.media_file].sha256 if row.media_file else None
+                    images[row.media_file].asset_id if row.media_file else None
                 ),
                 choices=row.choices,
                 numeric_answer=row.numeric_answer,
@@ -4507,8 +4889,11 @@ class BankWriter:
             await session.flush()
             QuestionAdminRepository._write_children(session, question_id, write)
 
-    async def _ensure_categories(self, session: AsyncSession) -> dict[str, str]:
-        slugs = {row.category_slug for row in self._rows}
+    @staticmethod
+    async def _ensure_categories(
+        session: AsyncSession, rows: Sequence[ImportedQuestion]
+    ) -> dict[str, str]:
+        slugs = {row.category_slug for row in rows}
         existing = {
             row.slug: row.id
             for row in (
@@ -4522,21 +4907,24 @@ class BankWriter:
         await session.flush()
         return existing
 
-    async def _ensure_assets(self, session: AsyncSession) -> None:
-        for image in self._images.values():
+    @staticmethod
+    async def _ensure_assets(
+        session: AsyncSession, images: Mapping[str, ImportedImage], uploaded_by: str
+    ) -> None:
+        for image in images.values():
             # `ON CONFLICT DO NOTHING`, because the same picture may
             # already be in the bank from an earlier import — content
             # addressing makes that the *same* asset, not a collision.
             await session.execute(
                 insert(MediaAsset)
                 .values(
-                    id=image.sha256,
+                    id=image.asset_id,
                     mime_type=image.mime_type,
                     width=image.width,
                     height=image.height,
                     byte_size=image.byte_size,
                     storage_key=image.storage_key,
-                    created_by=self._uploaded_by,
+                    created_by=uploaded_by,
                 )
                 .on_conflict_do_nothing(index_elements=[MediaAsset.id])
             )
@@ -4544,8 +4932,9 @@ class BankWriter:
 ```
 
 ...with `from triviador.db.repositories.question_admin import QuestionAdminRepository, _validate`
-and `from triviador.imports.digest import prompt_digest` imported here. `AppDependencies.import_writer`
-is `BankWriter` itself, injected as a factory so `api/http/admin/imports.py` never names `db/`.
+and `from triviador.imports.digest import prompt_digest` imported here. Nothing new lands in
+`AppDependencies`: the route already holds `deps.imports`, and the data it passes is the plain
+`ImportedQuestion`/`ImportedImage` it builds itself.
 
 - [ ] **Step 4: Write the route**
 
@@ -4568,6 +4957,7 @@ async def confirm_import(
     blobs twice, which is safe precisely because the blobs are addressed
     by their content; only the transaction is serialised.
     """
+    now = deps.clock.now()
     record = await deps.imports.get(import_id)
     if record is None:
         raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such import")
@@ -4576,6 +4966,16 @@ async def confirm_import(
             ApiErrorCode.IMPORT_NOT_CONFIRMABLE,
             409,
             f"this import is {record.status.value} with {record.rejected_count} rejected rows",
+        )
+    if record.expires_at <= now:
+        # Refused here for the message, and again under the lock for the
+        # rule (`apply_if_confirmable`). §9.3 sets a TTL on the staged
+        # upload; an import that outlived it must not be applicable just
+        # because `media-gc` has not run since.
+        raise ApiError(
+            ApiErrorCode.IMPORT_NOT_CONFIRMABLE,
+            409,
+            "this import expired; upload it again",
         )
     if record.staged_key is None:
         raise ApiError(
@@ -4611,9 +5011,32 @@ async def confirm_import(
 
     applied = await deps.imports.apply_if_confirmable(
         import_id,
-        writer=deps.import_writer(
-            rows=parsed.rows, images=normalized, uploaded_by=str(principal.user_id)
+        rows=tuple(
+            ImportedQuestion(
+                category_slug=row.category_slug,
+                kind=row.kind,
+                prompt=row.prompt,
+                difficulty=row.difficulty,
+                media_file=row.media_file,
+                choices=row.choices,
+                numeric_answer=row.numeric_answer,
+                unit=row.unit,
+            )
+            for row in parsed.rows
         ),
+        images={
+            name: ImportedImage(
+                asset_id=image.sha256,
+                mime_type=image.mime_type,
+                width=image.width,
+                height=image.height,
+                byte_size=image.byte_size,
+                storage_key=image.storage_key,
+            )
+            for name, image in normalized.items()
+        },
+        uploaded_by=str(principal.user_id),
+        now=now,
     )
     if not applied:
         # Lost the `FOR UPDATE` race, or the row changed underneath. The
@@ -4622,12 +5045,21 @@ async def confirm_import(
         raise ApiError(
             ApiErrorCode.IMPORT_NOT_CONFIRMABLE, 409, "this import was already confirmed"
         )
+    # Same repair as the upload route, for the same window: the blobs were
+    # written before the transaction (§9.3's order), so a sweep in between
+    # could have taken one. The bytes are still in memory here.
+    for image in normalized.values():
+        await repair_blob(deps, image)
+
     confirmed = await deps.imports.get(import_id)
     assert confirmed is not None
-    return _summary(confirmed)
+    return _summary(confirmed, now=now)
 ```
 
-...with `from triviador.api.http.admin.media import CACHE_CONTROL, read_capped`, and `import_writer` added to `AppDependencies` as a factory field (`Callable[..., ImportWriter]`) so the route does not import `db/`.
+...with `from triviador.api.http.admin.media import CACHE_CONTROL, read_capped, repair_blob` and
+`from triviador.services.admin import ImportedImage, ImportedQuestion, ImportStatus` at the top
+of the module. The route names no `db/` symbol: `ImportedQuestion` and `ImportedImage` are
+`services/` dataclasses, which is exactly what lets the port carry them.
 
 - [ ] **Step 5: Run everything and commit**
 
@@ -4652,10 +5084,11 @@ git commit -m "feat(admin): import confirm — one transaction, one application,
 
 **Interfaces:**
 - Produces:
-  - `imports.retire.ImportRetirer(imports, staging, clock).run(*, after_restore: bool) -> RetireReport`
-  - `media.gc.MediaCollector(assets, store).run(*, dry_run: bool) -> GcReport`
-  - `services.admin.ImportPort.mark_expired(now, *, all_unconfirmed)`, `.retirable_staged() -> tuple[tuple[str, str], ...]`, `.mark_cleaned(import_id)`
-  - `services.admin.MediaAssetPort.unreferenced() -> tuple[MediaAssetRecord, ...]`, `.all_storage_keys() -> frozenset[str]`, `.delete(asset_id)`
+  - `imports.retire.ImportRetirer(imports, staging, clock).run(*, after_restore: bool, dry_run: bool) -> RetireReport`
+  - `media.gc.MediaCollector(assets, store, grace).run(*, now, dry_run: bool) -> GcReport`
+  - `services.admin.ImportPort.mark_expired(now, *, all_unconfirmed)`, `.count_expirable(now, *, all_unconfirmed)`, `.retirable_staged() -> tuple[tuple[str, str], ...]`, `.mark_cleaned(import_id)`
+  - `services.admin.MediaAssetPort.unreferenced()`, `.claim_unreferenced()`, `.all_storage_keys() -> frozenset[str]`, `.delete(asset_id)`
+  - `Settings.media_gc_grace_minutes`
   - `uv run triviador media-gc [--dry-run] [--after-restore]`
 
 - [ ] **Step 1: Write the failing reference-check test**
@@ -4718,6 +5151,54 @@ async def test_an_asset_nothing_names_is_collectable(sessions, clean_db) -> None
     await _seed_user(sessions, "admin-1")
     await _seed_asset(sessions, "d" * 64)
     assert [r.asset_id for r in await MediaAssetRepository(sessions).unreferenced()] == ["d" * 64]
+
+
+async def test_claiming_deletes_the_rows_and_returns_them(sessions, clean_db) -> None:
+    """Rows first: the caller deletes the objects afterwards, so a crash
+    between the two leaves an orphan object (collectable) rather than a
+    row pointing at a missing blob (not)."""
+    await _seed_user(sessions, "admin-1")
+    await _seed_asset(sessions, "e" * 64)
+    repository = MediaAssetRepository(sessions)
+    claimed = await repository.claim_unreferenced()
+    assert [r.asset_id for r in claimed] == ["e" * 64]
+    assert await repository.get("e" * 64) is None
+    assert await repository.claim_unreferenced() == ()
+
+
+async def test_a_question_attached_during_the_sweep_cannot_lose_its_asset(
+    sessions, clean_db
+) -> None:
+    """The race Decision 9 names, against real PostgreSQL.
+
+    The sweep holds `FOR UPDATE` on the `media_assets` row; inserting a
+    `questions` row that references it takes `FOR KEY SHARE` on the same
+    row, which conflicts. So the attach must *wait*, and once the sweep
+    commits its delete, the attach fails on the foreign key — loudly —
+    instead of succeeding and pointing at a blob that is gone.
+    """
+    import asyncio
+
+    from sqlalchemy.exc import IntegrityError
+
+    await _seed_user(sessions, "admin-1")
+    await _seed_category(sessions)
+    await _seed_asset(sessions, "f" * 64)
+
+    async def attach() -> None:
+        await _seed_mc_question(sessions, "q-late", media_asset_id="f" * 64)
+
+    claimed, attached = await asyncio.gather(
+        MediaAssetRepository(sessions).claim_unreferenced(),
+        attach(),
+        return_exceptions=True,
+    )
+    # Exactly one of the two wins; whichever it is, no question ends up
+    # referencing a deleted asset.
+    if isinstance(attached, IntegrityError):
+        assert [r.asset_id for r in claimed] == ["f" * 64]
+    else:
+        assert claimed == ()
 ```
 
 Add `_seed_asset` and `_seed_event_with_pool` to `backend/tests/db/conftest.py`. The second inserts a `games` row and one `game_events` row whose `payload` is a real `QuestionPoolDrawn` shape — copy the nesting from `tests/codec/golden/expansion_to_battle.json` so the test pins the layout that actually exists rather than one invented here.
@@ -4733,6 +5214,14 @@ Append to `backend/src/triviador/db/repositories/media.py`:
 
 ```python
     async def unreferenced(self) -> tuple[MediaAssetRecord, ...]:
+        """The read-only half: what *would* be collected. `--dry-run` and
+        the tests use this; the sweep proper uses `claim_unreferenced`,
+        which runs the same query with `FOR UPDATE` and deletes."""
+        async with self._sessionmaker() as session:
+            return await self._unreferenced(session, lock=False)
+
+    @staticmethod
+    async def _unreferenced(session: AsyncSession, *, lock: bool) -> tuple[MediaAssetRecord, ...]:
         """§10.4's two-way check, as one statement.
 
         The event half is a jsonpath scan: `$.**.media_asset_id` finds the
@@ -4762,9 +5251,12 @@ Append to `backend/src/triviador/db/repositories/media.py`:
               AND NOT EXISTS (SELECT 1 FROM referenced r WHERE r.id = ma.id)
             ORDER BY ma.id
             """
+            # `FOR UPDATE OF ma` locks only the `media_assets` rows this
+            # returns — not `questions`, not `game_events`, both of which
+            # this statement only reads.
+            + (" FOR UPDATE OF ma" if lock else "")
         )
-        async with self._sessionmaker() as session:
-            rows = (await session.execute(statement)).all()
+        rows = (await session.execute(statement)).all()
         return tuple(
             MediaAssetRecord(
                 asset_id=row[0],
@@ -4776,6 +5268,31 @@ Append to `backend/src/triviador/db/repositories/media.py`:
             )
             for row in rows
         )
+
+    async def claim_unreferenced(self) -> tuple[MediaAssetRecord, ...]:
+        """Delete the rows, in one transaction, and hand them back so the
+        caller can delete the objects.
+
+        **Rows before objects, and the check repeated under the lock.**
+        `SELECT ... FOR UPDATE` on each candidate row is what makes this
+        safe against an admin attaching that asset to a question at the
+        same moment: PostgreSQL takes `FOR KEY SHARE` on a parent row when
+        a child row referencing it is inserted, and that conflicts with
+        `FOR UPDATE`. So a question insert either happens before this
+        transaction (and the recheck sees it, and the asset is spared) or
+        waits until after it (and fails on the foreign key, loudly, rather
+        than silently referencing a deleted blob).
+
+        Deleting the row first also decides what a crash leaves behind: an
+        object with no row, which the orphan pass collects on the next
+        run. The opposite order leaves a row whose object is gone — a
+        question that renders a broken image forever.
+        """
+        async with self._sessionmaker() as session, session.begin():
+            candidates = await self._unreferenced(session, lock=True)
+            for record in candidates:
+                await session.execute(delete(MediaAsset).where(MediaAsset.id == record.asset_id))
+            return candidates
 
     async def all_storage_keys(self) -> frozenset[str]:
         """Every key the database believes in, for the orphan sweep: §10.3
@@ -4873,6 +5390,22 @@ async def test_a_missing_object_still_reaches_cleaned() -> None:
     assert imports.records["imp-1"].status is ImportStatus.CLEANED
 
 
+async def test_a_dry_run_expires_nothing_and_deletes_nothing() -> None:
+    """`media-gc --dry-run` prints "nothing was deleted". Retirement is the
+    destructive half — it removes the only copy of an upload an admin may
+    still want to confirm — so it has to hear about the flag too."""
+    imports, staging = FakeImports(), FakeStagingStore()
+    imports.add("imp-1", status=ImportStatus.VALIDATED, staged_key="k", expires_at=NOW - timedelta(hours=1))
+    staging.objects["k"] = b"raw"
+    report = await ImportRetirer(imports=imports, staging=staging, clock=FakeClock(NOW)).run(
+        dry_run=True
+    )
+    assert report.deleted is False
+    assert report.expired == 1          # what it *would* have expired
+    assert imports.records["imp-1"].status is ImportStatus.VALIDATED
+    assert staging.objects == {"k": b"raw"}
+
+
 async def test_after_a_restore_every_unconfirmed_import_is_expired() -> None:
     """§9.3: staging is deliberately not backed up (§10.9), so a `validated`
     row that survived the restore offers a confirm that cannot work."""
@@ -4912,6 +5445,7 @@ class RetireReport:
     expired: int
     objects_deleted: int
     rows_cleaned: int
+    deleted: bool
 
 
 class ImportRetirer:
@@ -4922,10 +5456,28 @@ class ImportRetirer:
         self._staging = staging
         self._clock = clock
 
-    async def run(self, *, after_restore: bool = False) -> RetireReport:
-        expired = await self._imports.mark_expired(
-            self._clock.now(), all_unconfirmed=after_restore
-        )
+    async def run(self, *, after_restore: bool = False, dry_run: bool = False) -> RetireReport:
+        """`dry_run` reaches here too.
+
+        Not obvious, and worth the parameter: `media-gc --dry-run` prints
+        "nothing was deleted", and a retirement that expired rows and
+        deleted staged uploads anyway would make that line a lie about the
+        most destructive half of the command — the half that removes the
+        only copy of an upload an admin may still want to confirm.
+        """
+        now = self._clock.now()
+        if dry_run:
+            would_expire = await self._imports.count_expirable(
+                now, all_unconfirmed=after_restore
+            )
+            return RetireReport(
+                expired=would_expire,
+                objects_deleted=len(await self._imports.retirable_staged()),
+                rows_cleaned=0,
+                deleted=False,
+            )
+
+        expired = await self._imports.mark_expired(now, all_unconfirmed=after_restore)
         deleted = 0
         cleaned = 0
         # Every row that still owns a staged object, whatever put it in
@@ -4936,12 +5488,24 @@ class ImportRetirer:
             deleted += 1
             await self._imports.mark_cleaned(import_id)
             cleaned += 1
-        return RetireReport(expired=expired, objects_deleted=deleted, rows_cleaned=cleaned)
+        return RetireReport(
+            expired=expired, objects_deleted=deleted, rows_cleaned=cleaned, deleted=True
+        )
 ```
 
 ...and the matching `ImportPort` methods, implemented in `db/repositories/imports.py`:
 
 ```python
+    async def count_expirable(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        """What `mark_expired` would touch. Read-only, for `--dry-run`."""
+        async with self._sessionmaker() as session:
+            statement = select(func.count()).select_from(QuestionImport).where(
+                QuestionImport.status == ImportStatus.VALIDATED.value
+            )
+            if not all_unconfirmed:
+                statement = statement.where(QuestionImport.expires_at < now)
+            return (await session.execute(statement)).scalar_one()
+
     async def mark_expired(self, now: datetime, *, all_unconfirmed: bool) -> int:
         async with self._sessionmaker() as session, session.begin():
             statement = (
@@ -4984,22 +5548,29 @@ class ImportRetirer:
 Create `backend/src/triviador/media/gc.py`:
 
 ```python
-"""§10.4's asset sweep. Two passes, in this order and for this reason.
+"""§10.4's asset sweep. Two passes, and the ordering each one needs.
 
-**Rows first, objects second.** For each asset nothing references, the
-object goes before the row: a crash in between leaves a row whose object
-is missing, which the next run detects as unreferenced again and finishes.
-The reverse leaves an object with no row — invisible to the reference
-check, and collectable only by the orphan pass below, which is a slower
-and blunter instrument.
+**Recorded assets: rows first, objects second.** `claim_unreferenced`
+deletes the rows inside one transaction that holds `FOR UPDATE` on each
+of them and re-checks the references under that lock (see its docstring —
+the lock is what a concurrent question insert collides with). Only then
+are the objects deleted. A crash in between leaves an object with no row,
+which the orphan pass collects next time; the opposite order would leave
+a question rendering a blob that is gone.
 
-**Then the orphans.** §10.3: "A failed transaction leaves an unreferenced
-blob, which `media-gc` removes safely." Those blobs have no row at all, so
-they are found by diffing the bucket listing against the keys the database
-knows.
+**Orphans: old ones only.** §10.3 says "a failed transaction leaves an
+unreferenced blob, which `media-gc` removes safely" — but an object with
+no row is *also* what an upload looks like for the few milliseconds
+between its `put` and its `INSERT`. Age is the only thing that tells the
+two apart, so anything younger than the grace period is left alone. The
+upload path's `repair_blob` covers the residue (Decision 9).
+
+**`--dry-run` mutates nothing at all.** Not the objects, not the rows,
+and — in `cli.py` — not the import retirement either.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from triviador.services.admin import MediaAssetPort
 from triviador.services.storage import MediaStore
@@ -5009,34 +5580,49 @@ from triviador.services.storage import MediaStore
 class GcReport:
     unreferenced: tuple[str, ...]
     orphan_objects: tuple[str, ...]
+    skipped_young: int
     deleted: bool
 
 
 class MediaCollector:
-    def __init__(self, *, assets: MediaAssetPort, store: MediaStore) -> None:
+    def __init__(
+        self, *, assets: MediaAssetPort, store: MediaStore, grace: timedelta
+    ) -> None:
         self._assets = assets
         self._store = store
+        self._grace = grace
 
-    async def run(self, *, dry_run: bool = False) -> GcReport:
-        unreferenced = await self._assets.unreferenced()
+    async def run(self, *, now: datetime, dry_run: bool = False) -> GcReport:
+        # Listed *before* anything is deleted, so an asset collected by
+        # this run is not also reported as an orphan by it.
+        listed = await self._store.list_objects()
         known = await self._assets.all_storage_keys()
-        orphans = tuple(sorted(set(await self._store.list_keys()) - known))
+        cutoff = now - self._grace
+        candidates = [o for o in listed if o.key not in known]
+        orphans = tuple(sorted(o.key for o in candidates if o.last_modified <= cutoff))
+        skipped = len(candidates) - len(orphans)
 
-        if not dry_run:
-            for asset in unreferenced:
-                await self._store.delete(asset.storage_key)
-                await self._assets.delete(asset.asset_id)
-            for key in orphans:
-                await self._store.delete(key)
+        if dry_run:
+            return GcReport(
+                unreferenced=tuple(a.asset_id for a in await self._assets.unreferenced()),
+                orphan_objects=orphans,
+                skipped_young=skipped,
+                deleted=False,
+            )
+
+        claimed = await self._assets.claim_unreferenced()
+        for asset in claimed:
+            await self._store.delete(asset.storage_key)
+        for key in orphans:
+            await self._store.delete(key)
 
         return GcReport(
-            unreferenced=tuple(a.asset_id for a in unreferenced),
+            unreferenced=tuple(a.asset_id for a in claimed),
             orphan_objects=orphans,
-            deleted=not dry_run,
+            skipped_young=skipped,
+            deleted=True,
         )
 ```
-
-**One ordering detail the code above depends on:** `all_storage_keys()` is read *before* anything is deleted, so an asset being collected in this run is not also reported as an orphan. Keep that line where it is.
 
 - [ ] **Step 6: Wire the command**
 
@@ -5067,17 +5653,25 @@ async def _media_gc_command(args: argparse.Namespace) -> int:
         # Imports first: retiring a staged upload can only ever *reduce*
         # what the media sweep has to consider, and running the sweep
         # first would leave every just-expired object for the next run.
+        clock = SystemClock()
         retired = await ImportRetirer(
             imports=QuestionImportRepository(sessionmaker),
             staging=staging,
-            clock=SystemClock(),
-        ).run(after_restore=args.after_restore)
+            clock=clock,
+        ).run(after_restore=args.after_restore, dry_run=args.dry_run)
         collected = await MediaCollector(
-            assets=MediaAssetRepository(sessionmaker), store=media
-        ).run(dry_run=args.dry_run)
+            assets=MediaAssetRepository(sessionmaker),
+            store=media,
+            grace=timedelta(minutes=settings.media_gc_grace_minutes),
+        ).run(now=clock.now(), dry_run=args.dry_run)
 
-    print(f"imports expired {retired.expired}, staged objects deleted {retired.objects_deleted}")
-    print(f"unreferenced assets {len(collected.unreferenced)}, orphan objects {len(collected.orphan_objects)}")
+    verb = "would expire" if args.dry_run else "expired"
+    print(f"imports {verb} {retired.expired}, staged objects {retired.objects_deleted}")
+    print(
+        f"unreferenced assets {len(collected.unreferenced)}, "
+        f"orphan objects {len(collected.orphan_objects)} "
+        f"({collected.skipped_young} too recent to touch)"
+    )
     if args.dry_run:
         print("dry run: nothing was deleted")
     return 0
@@ -5763,6 +6357,36 @@ async def test_making_a_preset_default_demotes_the_previous_one(
     assert defaults == [created["id"]]
 
 
+async def test_the_default_cannot_be_cleared_by_a_patch(admin_client: httpx.AsyncClient) -> None:
+    """The database enforces *at most* one default; "never zero" is ours,
+    and `deactivate` is not the only door into it. Clearing the flag here
+    would leave `POST /api/games` answering `no_default_preset` to every
+    player until someone noticed."""
+    default = next(p for p in (await admin_client.get("/api/admin/presets")).json()
+                   if p["is_default"])
+    response = await admin_client.patch(
+        f"/api/admin/presets/{default['id']}",
+        json={"name": default["name"], "is_default": False, "rules": default["rules"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "default_preset"
+
+
+async def test_a_retired_preset_cannot_be_promoted_to_default(
+    admin_client: httpx.AsyncClient
+) -> None:
+    """`get_default()` filters on `is_active`, so an inactive default is a
+    default nothing can read — the same outage as having none."""
+    created = (await admin_client.post("/api/admin/presets", json=QUICK)).json()
+    await admin_client.delete(f"/api/admin/presets/{created['id']}")
+    response = await admin_client.patch(
+        f"/api/admin/presets/{created['id']}",
+        json={**QUICK, "is_default": True},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "default_preset"
+
+
 async def test_the_default_preset_cannot_be_deleted(admin_client: httpx.AsyncClient) -> None:
     """Spec 1B §6.1: DELETE is a soft deactivation and returns 409 for the
     default — "never zero defaults" is application logic the database
@@ -5879,22 +6503,45 @@ Append to `backend/src/triviador/db/repositories/presets.py` (and change its mod
 
     async def update(
         self, preset_id: str, *, name: str, rules: GameRules, is_default: bool
-    ) -> PresetAdminRecord | None:
+    ) -> tuple[UpdateOutcome, PresetAdminRecord | None]:
         """Editing a preset does not touch a running game: `games.rules`
         holds a frozen copy taken at creation (§6.2), which is why
         `version` is bumped here for the admin screen's benefit and
-        nothing else has to be notified."""
+        nothing else has to be notified.
+
+        **Two default transitions are refused, both inside this
+        transaction.** The database enforces *at most one* default with a
+        partial unique index; "never zero, and never a retired one" is
+        application logic, and `deactivate` is not the only door into it:
+
+            default → is_default=false     leaves the system with no
+                                           default at all, and
+                                           `POST /api/games` with
+                                           `preset_id: null` then 409s with
+                                           `no_default_preset` for everyone
+
+            retired → is_default=true      makes a default `get_default()`
+                                           cannot return, because it filters
+                                           on `is_active` — the same outage,
+                                           reached from the other side
+        """
         async with self._sessionmaker() as session, session.begin():
             row = await session.get(RulePreset, preset_id, with_for_update=True)
             if row is None:
-                return None
+                return UpdateOutcome.NOT_FOUND, None
+            if row.is_default and not is_default:
+                return UpdateOutcome.WOULD_LEAVE_NO_DEFAULT, None
+            if is_default and not row.is_active:
+                return UpdateOutcome.RETIRED_CANNOT_BE_DEFAULT, None
             if is_default and not row.is_default:
                 await self._clear_default(session)
             row.name = name
             row.rules = asdict(rules)
             row.is_default = is_default
             row.version = row.version + 1
-            return PresetAdminRecord(row.id, name, rules, is_default, row.is_active)
+            return UpdateOutcome.OK, PresetAdminRecord(
+                row.id, name, rules, is_default, row.is_active
+            )
 
     async def deactivate(self, preset_id: str) -> DeactivateOutcome:
         async with self._sessionmaker() as session, session.begin():
@@ -5922,7 +6569,17 @@ Append to `backend/src/triviador/db/repositories/presets.py` (and change its mod
         )
 ```
 
-...with `PresetAdminRecord` and `DeactivateOutcome` in `services/admin.py`, and `from dataclasses import asdict, fields`, `from uuid import uuid4`, `from sqlalchemy import select, update` imported.
+...with `PresetAdminRecord`, `DeactivateOutcome` and
+
+```python
+class UpdateOutcome(StrEnum):
+    OK = "ok"
+    NOT_FOUND = "not_found"
+    WOULD_LEAVE_NO_DEFAULT = "would_leave_no_default"
+    RETIRED_CANNOT_BE_DEFAULT = "retired_cannot_be_default"
+```
+
+in `services/admin.py`, and `from dataclasses import asdict, fields`, `from uuid import uuid4`, `from sqlalchemy import select, update` imported.
 
 Coverage needs the bank counts; add to `QuestionAdminPort` and `QuestionAdminRepository`:
 
@@ -5988,6 +6645,8 @@ deliberate addition (Plan 7A, Decision 1): `POST /api/games` takes a
 every game runs whatever "default" currently means. Read-only, active
 presets only, any signed-in user — the same standing `GET /api/maps` has.
 """
+
+from dataclasses import asdict
 
 from fastapi import APIRouter
 
@@ -6108,11 +6767,24 @@ async def get_preset(preset_id: str, deps: Deps, principal: AdminPrincipal) -> P
 async def update_preset(
     preset_id: str, body: PresetWriteRequest, deps: Deps, principal: AdminPrincipal
 ) -> PresetDetail:
-    record = await deps.presets_admin.update(
+    outcome, record = await deps.presets_admin.update(
         preset_id, name=body.name, rules=_rules(body.rules), is_default=body.is_default
     )
-    if record is None:
+    if outcome is UpdateOutcome.NOT_FOUND:
         raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such preset")
+    if outcome is UpdateOutcome.WOULD_LEAVE_NO_DEFAULT:
+        raise ApiError(
+            ApiErrorCode.DEFAULT_PRESET,
+            409,
+            "this is the default preset; make another one default instead of clearing this one",
+        )
+    if outcome is UpdateOutcome.RETIRED_CANNOT_BE_DEFAULT:
+        raise ApiError(
+            ApiErrorCode.DEFAULT_PRESET,
+            409,
+            "a retired preset cannot be the default; reactivate it first",
+        )
+    assert record is not None  # every other outcome carries one
     return _detail(record)
 
 
@@ -6191,8 +6863,8 @@ def test_admin_schema_carries_every_admin_dto() -> None:
 
     exported = {model.__name__ for model in contracts.ADMIN_MODELS}
     assert {"QuestionDetail", "QuestionPageView", "QuestionSaved", "CategoryView",
-            "MediaAssetSummary", "ImportSummary", "InviteView", "IssuedInvite",
-            "UserView", "PresetDetail", "PresetCoverage"} <= exported
+            "MediaAssetSummary", "ImportSummary", "ImportNotice", "InviteView",
+            "IssuedInvite", "UserView", "PresetDetail", "PresetCoverage"} <= exported
 
 
 def test_the_admin_document_resolves_its_refs_locally() -> None:
@@ -6234,6 +6906,7 @@ ADMIN_MODELS = (
     MediaAssetSummary,
     ImportSummary,
     ImportRejection,
+    ImportNotice,
     IssueInvitesRequest,
     IssuedInvite,
     InviteView,
@@ -6263,16 +6936,80 @@ def admin_schema() -> dict[str, Any]:
 
 ...and add `"admin.schema.json": admin_schema(),` to `export_contracts`'s `documents` dict.
 
-- [ ] **Step 4: Regenerate and check the frontend picks it up untouched**
+- [ ] **Step 4: Teach the generator and the verifier about the fifth document**
+
+**Plan 5's prediction was wrong, and this step is where it is corrected.** Its comment claims
+`scripts/codegen.mjs` "generates from what `contracts/` actually contains" and will pick up a new
+document "with no change to the script". It does not: the emission list is two hardcoded lines at
+the bottom of the file, and the module for `rest.schema.json` is called `public.ts` — not
+`rest.ts`. `scripts/verify-generated.mjs` hardcodes the same list a second time.
+
+In `frontend/scripts/codegen.mjs`, replace the two-line tail:
+
+```js
+mkdirSync(out, { recursive: true });
+emitDocument("rest.schema.json", "public.ts");
+emitDocument("ws.schema.json", "ws.ts");
+emitErrors();
+```
+
+...with the document table both scripts read:
+
+```js
+// One entry per exported contract document (§7). A table rather than a
+// directory scan: the module name is part of the frontend's import
+// surface (`@/shared/api/generated/public`), so a new contract file must
+// be given a name deliberately, not have one derived from whatever the
+// backend happened to call it. `verify-generated.mjs` imports this list
+// so the two cannot drift — Plan 7A added `admin.ts` and found that they
+// already had.
+export const DOCUMENTS = [
+  ["rest.schema.json", "public.ts"],
+  ["ws.schema.json", "ws.ts"],
+  ["admin.schema.json", "admin.ts"],
+];
+
+mkdirSync(out, { recursive: true });
+for (const [document, module] of DOCUMENTS) emitDocument(document, module);
+emitErrors();
+```
+
+In `frontend/scripts/verify-generated.mjs`, replace the hardcoded list with the imported one:
+
+```js
+import { DOCUMENTS } from "./codegen.mjs";
+
+const dir = resolve(import.meta.dirname, "../src/shared/api/generated");
+const modules = [...DOCUMENTS.map(([, module]) => module), "errors.ts"];
+```
+
+`codegen.mjs` runs its emission at import time, so importing `DOCUMENTS` from it re-runs
+generation inside the verifier. That is harmless (it writes the same bytes `pnpm codegen` just
+wrote, and `codegen:check` diffs afterwards) but it is surprising, so guard the tail of
+`codegen.mjs`:
+
+```js
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  mkdirSync(out, { recursive: true });
+  for (const [document, module] of DOCUMENTS) emitDocument(document, module);
+  emitErrors();
+}
+```
+
+...with `import { pathToFileURL } from "node:url";` already present at the top of that file.
+
+Then regenerate:
 
 ```bash
 cd backend && uv run triviador export-contracts --out ../contracts
 cd ../frontend && pnpm codegen && pnpm codegen:check && pnpm check
 ```
 
-Expected: `contracts/admin.schema.json` appears; `frontend/src/shared/api/generated/admin.ts` appears with no edit to `scripts/codegen.mjs`; `codegen:check` passes; `steiger` and `tsc` stay green. If `codegen.mjs` needs a change, that is a finding worth recording in the commit message — Plan 5 predicted it would not.
-
-Update the header comment in `frontend/scripts/codegen.mjs` that reads "`admin.ts` is absent because there are no admin DTOs yet — Plan 7 adds `contracts/admin.schema.json` and this script picks it up with no change" to say that it did.
+Expected: `contracts/admin.schema.json` exists, `frontend/src/shared/api/generated/admin.ts` is
+emitted and loads, `codegen:check` passes (it regenerates, diffs, and evaluates all four
+modules), and `steiger`/`tsc` stay green. Update `codegen.mjs`'s header comment — the paragraph
+that says `admin.ts` "is absent because there are no admin DTOs yet" — to describe what the
+table does now.
 
 - [ ] **Step 5: Commit**
 
@@ -6437,6 +7174,12 @@ def test_media_gc_keeps_what_a_question_still_names_and_collects_what_nothing_do
               "unit": None},
     )
 
+    # Dry run first: it must report the same verdict and change nothing.
+    preview = run_media_gc(dry_run=True)
+    assert orphan["id"] in preview.unreferenced
+    assert preview.deleted is False
+    assert media_store.head_sync(f"{orphan['id'][:2]}/{orphan['id']}.webp") is not None
+
     report = run_media_gc()
     assert orphan["id"] in report.unreferenced
     assert attached["id"] not in report.unreferenced
@@ -6554,14 +7297,18 @@ def run_media_gc(
 ) -> Callable[[], GcReport]:
     settings = admin_session[1]
 
-    def run() -> GcReport:
+    def run(*, dry_run: bool = False) -> GcReport:
         async def _go() -> GcReport:
             async with engine_for(settings.database_url) as engine:
                 collector = MediaCollector(
                     assets=MediaAssetRepository(sessionmaker_for(engine)),
                     store=media_store.store,
+                    # Zero grace: the fixture's uploads are seconds old, and
+                    # the production default (60 minutes) would make every
+                    # orphan assertion in this suite vacuously pass.
+                    grace=timedelta(0),
                 )
-                return await collector.run()
+                return await collector.run(now=datetime.now(UTC))
 
         return asyncio.run(_go())
 
@@ -6622,4 +7369,37 @@ git commit -m "test(admin): one whole admin session against real PostgreSQL and 
 
 3. **`prompt_digest` moves to `imports/digest.py`** (Task 7, Step 3). It is a small relocation of a Plan 6 function with two existing callers (`QuestionSeeder`, `cli.parse_seed_csv`), done to keep `imports/` free of `triviador.db`. The alternative is widening the layering gate for one import, which is the kind of exception that stops a gate from meaning anything. The move is mechanical, but it does touch a module this plan otherwise leaves alone.
 
-**One thing this plan changed about itself while being written.** Task 8's confirm originally called the repository with a list of rows to insert. That could not work: §9.3 requires the writes to happen *inside* the transaction that holds `FOR UPDATE` on the import row, and a repository that returned the locked row for the route to write around would have already committed it. It takes an `ImportWriter` instead, executed inside that transaction — which is also why `AppDependencies` carries an `import_writer` factory rather than the route importing `db/`.
+**What a review pass changed after the first draft.** Ten findings, all confirmed against the
+code, all folded in above rather than left as notes:
+
+1. `media-gc --dry-run` retired imports anyway — the flag reached the collector and not
+   `ImportRetirer`, so the command deleted staged uploads while printing "nothing was deleted".
+   `run(dry_run=...)` now reaches both halves, and `count_expirable` gives the preview its number.
+2. The sweep raced the upload path in two directions: an orphan pass that could not tell a
+   just-written blob from garbage, and an unreferenced asset that could gain its first reference
+   between the check and the delete. Fixed by row-first deletion under `FOR UPDATE` with the
+   reference check repeated inside that transaction, a grace period on the orphan pass, and
+   `repair_blob` on both write paths — Decision 9, with a PostgreSQL-level test for the lock.
+3. `PATCH /api/admin/presets/{id}` could clear the last default or promote a retired preset,
+   both of which leave `POST /api/games` answering `no_default_preset`. `update` now returns an
+   outcome and refuses both under the same lock that does the promotion.
+4. Task 13 originally repeated Plan 5's claim that `codegen.mjs` would pick up a new contract
+   document unchanged. It does not: the emission list is two hardcoded lines and the module for
+   `rest.schema.json` is called `public.ts`, while `verify-generated.mjs` hardcodes the list a
+   second time. Task 13 now edits both scripts and introduces the shared `DOCUMENTS` table.
+5. Task 2's new startup assertion would have broken `tests/api/integration/`, whose `client`
+   fixture calls `build_app` with no S3 credentials. That fixture is now updated in the same step.
+6. Import expiry was enforced nowhere at confirm time — neither in `confirmable` nor under the
+   lock — so a validated import stayed applicable forever unless `media-gc` happened to run.
+   Both now check it, and `_summary` takes `now`.
+7. §10.2 puts `is_active` in the editor, but the only activity route was `deactivate`, making
+   retirement permanent in a bank whose rows are never deleted. `activate` is now Decision 8.
+8. The parser rejected duplicate prompts inside one upload, which — because §10.3 gates confirm
+   on `rejected == 0` — turned §10.2's "warning, not a block" into a block, and it never compared
+   the upload against the bank at all. Both are now `Notice`s on the report, carried through the
+   contract as `ImportNotice`.
+9. Task 8's confirm originally passed an `ImportWriter` callback whose `write(session: object)`
+   no implementation can narrow to `AsyncSession` without breaking contravariance — `mypy
+   --strict` would have rejected it. The port now takes plain `ImportedQuestion`/`ImportedImage`
+   data and the session never leaves `db/`.
+10. The public preset route called `asdict` without importing it.
