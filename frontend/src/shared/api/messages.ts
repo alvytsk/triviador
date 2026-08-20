@@ -14,6 +14,7 @@ import {
   baseDamagedEventSchema,
   baseDestroyedEventSchema,
   basesAssignedEventSchema,
+  type choiceAnswerPayloadSchema,
   defenseHeldEventSchema,
   duelResolvedEventSchema,
   errorMessageSchema,
@@ -25,6 +26,7 @@ import {
   lobbyMessageSchema,
   neutralAttackFailedEventSchema,
   neutralCapturedEventSchema,
+  type numericAnswerPayloadSchema,
   pickRegionFrameSchema,
   picksGrantedEventSchema,
   pingFrameSchema,
@@ -112,6 +114,26 @@ export type Turn =
 export function turnOf(state: ClientGameState): Turn | null {
   return state.turn as Turn | null;
 }
+
+/**
+ * The same generator gap as `Turn`, one field over: `submitAnswerFrameSchema`
+ * compiles its `payload` from a JSON-Schema `oneOf` of exactly these two
+ * shapes, which becomes a `z.any().superRefine(...)` — so `z.infer<typeof
+ * submitAnswerFrameSchema>["payload"]` is `any`, not the union. Unlike `Turn`
+ * this is a *write* path: nothing decodes an untrusted `payload` off the
+ * wire, `useSubmitAnswer` builds one. So there is no `turnOf`-style cast
+ * recovering a runtime guarantee — there is just this union, declared once
+ * from the same two generated schemas, so a frame is built against a real
+ * type instead of `any`. `encodeClientFrame` still re-parses the whole frame
+ * through `submitAnswerFrameSchema` before it reaches the socket (`.strict()`,
+ * decision 1), so a value that satisfies `AnswerPayload` but somehow still
+ * failed that parse would throw at the call site — this type is what keeps a
+ * typo (`{ kind: "choise", idx }`) from ever reaching that parse in the
+ * first place.
+ */
+export type AnswerPayload =
+  | z.infer<typeof choiceAnswerPayloadSchema>
+  | z.infer<typeof numericAnswerPayloadSchema>;
 
 const SERVER_SCHEMAS = {
   hello: helloMessageSchema,

@@ -1,6 +1,6 @@
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useGameSubscription } from "@/entities/game";
-import { ApiFetchError, type GameSnapshot } from "@/shared/api";
+import { ApiFetchError, type GameSnapshot, type QuestionResolvedEvent } from "@/shared/api";
 import { useMediaPrefetch } from "@/shared/lib";
 import { Banner } from "@/shared/ui";
 import { BoardView } from "./board-view";
@@ -45,13 +45,22 @@ function GameError({ error }: { error: unknown }) {
  * and hands the live, reactive result down as `game`. Everything else this
  * page needs — the subscription and the prefetch — has no app-only
  * dependency and is called directly.
+ *
+ * `resolvedQuestion` is `question_resolved`'s narration event. It goes
+ * through the same route-level hand-off as `game` — `useNarration` is
+ * `app/socket-provider.tsx`'s, and this page cannot import it either — so
+ * the route subscribes and passes the latest event down. It defaults to
+ * `null` so this page still renders standalone, without a route, the way
+ * this file's own tests already do.
  */
 export function GamePage({
   gameId,
   game,
+  resolvedQuestion = null,
 }: {
   gameId: string;
   game: UseQueryResult<GameSnapshot, Error>;
+  resolvedQuestion?: QuestionResolvedEvent | null;
 }) {
   useGameSubscription(gameId);
   useMediaPrefetch(game.data?.state.media_prefetch ?? NO_MEDIA);
@@ -60,5 +69,9 @@ export function GamePage({
   if (game.isError) return <GameError error={game.error} />;
 
   const state = game.data.state;
-  return state.phase === "lobby" ? <RoomView state={state} /> : <BoardView state={state} />;
+  return state.phase === "lobby" ? (
+    <RoomView state={state} />
+  ) : (
+    <BoardView state={state} resolved={resolvedQuestion} />
+  );
 }

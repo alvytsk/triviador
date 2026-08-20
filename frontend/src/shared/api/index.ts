@@ -17,6 +17,7 @@
 // dropping the name.
 
 export { createClockOffset } from "./clock";
+export { type CommandFailure, useCommand } from "./command";
 export { type ApiFailureKind, ApiFetchError } from "./errors";
 export type { ApiErrorCode, RejectCode } from "./generated/errors";
 export * from "./generated/errors";
@@ -72,6 +73,7 @@ export {
 } from "./generated/public";
 export * from "./generated/ws";
 export {
+  type AnswerPayload,
   type ClientFrame,
   encodeClientFrame,
   MessageParseError,

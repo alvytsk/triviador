@@ -1,7 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
 import { GamePage } from "@/pages/game";
+import type { QuestionResolvedEvent } from "@/shared/api";
 import { gameQueryOptions } from "../game-query";
+import { useNarration } from "../socket-provider";
 
 /**
  * The loader pre-warms `["game", id]` through `gameQueryOptions`'s one merge
@@ -20,6 +23,14 @@ import { gameQueryOptions } from "../game-query";
  * route — the one place both `gameQueryOptions` and `GamePage` may be
  * imported together — runs the query and hands the live result down as a
  * prop.
+ *
+ * The same wall applies to `useNarration` — it lives on `SocketProvider`'s
+ * richer, app-only context (for `bus`), so `<QuestionDock>` cannot call it
+ * itself. This route is the one place that can: it keeps the latest
+ * `question_resolved` event in state, clears it on `question_presented`
+ * (the event the schema itself documents as "the cue" a fresh question
+ * turn has begun — see `questionPresentedEventSchema`), and hands the
+ * result down through `<GamePage>` the same way it hands down `game`.
  */
 export const Route = createFileRoute("/_authed/games/$gameId")({
   loader: ({ context, params }) =>
@@ -28,6 +39,11 @@ export const Route = createFileRoute("/_authed/games/$gameId")({
     const { gameId } = Route.useParams();
     const queryClient = useQueryClient();
     const game = useQuery(gameQueryOptions(gameId, queryClient));
-    return <GamePage gameId={gameId} game={game} />;
+    const [resolvedQuestion, setResolvedQuestion] = useState<QuestionResolvedEvent | null>(null);
+    useNarration(gameId, (event) => {
+      if (event.type === "question_resolved") setResolvedQuestion(event);
+      else if (event.type === "question_presented") setResolvedQuestion(null);
+    });
+    return <GamePage gameId={gameId} game={game} resolvedQuestion={resolvedQuestion} />;
   },
 });
