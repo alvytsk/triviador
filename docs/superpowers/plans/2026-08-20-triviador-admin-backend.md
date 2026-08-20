@@ -90,8 +90,9 @@ backend/src/triviador/
 └── cli.py                               MODIFY  `media-gc`
 
 backend/
-├── docker-compose.test.yml              MODIFY  garage + garage-init services
-├── testing/garage-init.sh               CREATE  layout · buckets · key · website (idempotent)
+├── docker-compose.test.yml              MODIFY  garage-test service (no init service — see T2)
+├── testing/garage.toml                  CREATE  single-node test config
+├── testing/garage-init.sh               CREATE  host-side: layout · buckets · key · website
 ├── .env.example                         MODIFY  the new TRIVIADOR_S3_* keys
 └── tests/
     ├── test_layering.py                 MODIFY  storage/, media/, imports/ gates
@@ -552,26 +553,39 @@ git commit -m "feat(admin): guard the admin router and exempt the upload paths f
   - `Settings.s3_endpoint_url`, `.s3_region`, `.s3_access_key_id`, `.s3_secret_access_key`, `.media_bucket`, `.staging_bucket`, `.media_max_bytes`, `.media_max_pixels`, `.media_target_px`, `.import_max_bytes`, `.import_ttl_hours`
   - test fixtures `media_store`, `staging_store` (session-scoped, real Garage)
 
-- [ ] **Step 1: Verify the Garage CLI against the pinned image, and record what worked**
+- [ ] **Step 1: The Garage CLI, already verified against the pinned image**
 
-Spec 1B §13 open item 4 says this must be verified rather than assumed, and this is the moment. Do it before writing any adapter code:
+Spec 1B §13 open item 4 asks that this be verified rather than assumed. It has been, against
+`dxflrs/garage:v1.1.0`, and the results are below — **this step is a re-confirmation, not a
+discovery exercise**. Run each command and check the output matches; if any of them disagrees,
+stop and report, because the rest of this task is built on them.
 
 ```bash
-cd backend
-docker pull dxflrs/garage:v1.1.0        # if this tag does not exist, take the newest v1.x and use it everywhere below
-docker run --rm dxflrs/garage:v1.1.0 --help
-docker run --rm dxflrs/garage:v1.1.0 layout --help
-docker run --rm dxflrs/garage:v1.1.0 key --help
-docker run --rm dxflrs/garage:v1.1.0 bucket --help
+docker run --rm --entrypoint /garage dxflrs/garage:v1.1.0 --version
+docker run --rm --entrypoint /garage dxflrs/garage:v1.1.0 layout assign --help
+docker run --rm --entrypoint /garage dxflrs/garage:v1.1.0 layout apply --help
+docker run --rm --entrypoint /garage dxflrs/garage:v1.1.0 key import --help
+docker run --rm --entrypoint /garage dxflrs/garage:v1.1.0 bucket allow --help
+docker run --rm --entrypoint /garage dxflrs/garage:v1.1.0 bucket website --help
 ```
 
-Confirm, and write the answers into the header comment of `testing/garage-init.sh` as you go:
-- the exact spelling of `layout assign` (zone/capacity flags) and `layout apply --version N`;
-- whether `key import` takes `<ACCESS_KEY_ID> <SECRET>` positionally and requires `--yes`;
-- whether `bucket allow` wants `--key <name>` or a positional key;
-- whether the config key is `replication_factor` (v1.x) or `replication_mode` (v0.x).
+What they establish, and what each one changes about the naive version of this task:
 
-If any command below differs on the pinned image, **change the script to what the image accepts** and note the difference in that header comment. That comment is the deliverable that retires the spec's open item.
+- **The binary is `/garage`, and it is not the image's entrypoint.** `docker run <image> layout …`
+  fails with "executable file not found"; every invocation needs `--entrypoint /garage` (or
+  `docker exec <container> /garage …`).
+- **The image has no shell at all** — `/bin/sh` does not exist. So the init cannot be a compose
+  service running a script inside the container. See Step 2: the script runs on the *host* and
+  drives the container with `docker compose exec`.
+- `layout assign -z <zone> -c <capacity> <node-id>`, where capacity suffixes are `B, KB, MB, GB,
+  TB, PB` — **`1G` is not a valid suffix; write `1GB`**.
+- `layout apply --version <N>` — fails unless N is exactly one more than the current version.
+- `key import [--yes] [-n <name>] <key-id> <secret-key>` — positional id and secret, `--yes`
+  required for a non-interactive run.
+- `bucket allow [--read] [--write] [--owner] <bucket> --key <key-pattern>` — the bucket is
+  positional, the key is a named option.
+- `bucket website --allow <bucket>`.
+- The config key for a single-node cluster is `replication_factor = 1` (v1.x spelling).
 
 - [ ] **Step 2: Write the Garage service, its config, and its init script**
 
@@ -609,31 +623,55 @@ api_bind_addr = "[::]:3903"
 admin_token = "test-admin-token"
 ```
 
-Create `backend/testing/garage-init.sh` (mode 0755):
+Create `backend/testing/garage-init.sh` (mode 0755). **It runs on the host, not in the
+container**: the Garage image ships no shell, so there is nothing inside it that could execute a
+script. It drives the running container with `docker compose exec` instead — one process per
+command, each one the `/garage` binary directly.
 
 ```sh
-#!/bin/sh
-# Idempotent: every command here is safe to re-run, because the test
-# harness has no way to know whether a previous `docker compose up` already
-# initialised this node. Verified against dxflrs/garage:v1.1.0 — see
-# Task 2 Step 1 of the Plan 7A document; if you changed a command to suit
-# a different image, say which and why right here.
-set -eu
+#!/usr/bin/env bash
+# Initialise the test Garage: layout, buckets, key, website.
+#
+# Runs on the host, because `dxflrs/garage:v1.1.0` contains no shell —
+# `/bin/sh` does not exist in that image, so an init *service* running a
+# script inside it is not possible. Every command here is instead
+# `docker compose exec` of the `/garage` binary, which needs no shell.
+#
+# Idempotent throughout: the harness has no way to know whether a previous
+# `docker compose up` already initialised this node, and re-running must be
+# free. Verified against dxflrs/garage:v1.1.0 (see Task 2 Step 1) — every
+# flag below was checked against that image's `--help`.
+#
+# Usage, after `docker compose -f docker-compose.test.yml up -d`:
+#     ./testing/garage-init.sh
+set -euo pipefail
 
+COMPOSE=(docker compose -f "$(dirname "$0")/../docker-compose.test.yml")
 KEY_ID="${TEST_S3_KEY_ID:-GK11111111111111111111111111}"
 KEY_SECRET="${TEST_S3_KEY_SECRET:-2222222222222222222222222222222222222222222222222222222222222222}"
 
-# One node, one zone, 1 GiB of nominal capacity. `layout apply` is a no-op
-# once the layout is at that version, which is what makes a re-run safe.
-NODE_ID="$(garage node id -q | cut -d@ -f1)"
-garage layout assign -z dc1 -c 1G "$NODE_ID" 2>/dev/null || true
-garage layout apply --version 1 2>/dev/null || true
+garage() { "${COMPOSE[@]}" exec -T garage-test /garage "$@"; }
 
-for bucket in triviador-media triviador-staging; do
-  garage bucket create "$bucket" 2>/dev/null || true
+# Wait for the daemon: `up -d` returns as soon as the container starts, and
+# the first `garage` call can beat the RPC listener by a second or two.
+for _ in $(seq 1 30); do
+  if garage status >/dev/null 2>&1; then break; fi
+  sleep 1
 done
 
-garage key import --yes -n test "$KEY_ID" "$KEY_SECRET" 2>/dev/null || true
+# One node, one zone, 1 GB of nominal capacity ("1G" is not a valid suffix —
+# the accepted set is B, KB, MB, GB, TB, PB). `layout apply` fails once the
+# layout is already at that version, which is what `|| true` absorbs on a
+# re-run.
+NODE_ID="$(garage node id -q | cut -d@ -f1 | tr -d '\r')"
+garage layout assign -z dc1 -c 1GB "$NODE_ID" || true
+garage layout apply --version 1 || true
+
+for bucket in triviador-media triviador-staging; do
+  garage bucket create "$bucket" || true
+done
+
+garage key import --yes -n test "$KEY_ID" "$KEY_SECRET" || true
 
 for bucket in triviador-media triviador-staging; do
   garage bucket allow --read --write --owner "$bucket" --key test
@@ -653,8 +691,8 @@ Append to `backend/docker-compose.test.yml`:
 ```yaml
   # Test-only Garage, §9.1's two buckets. Same reasoning as postgres-test:
   # a fixed loopback port that cannot collide with anything real, and no
-  # persistence. The S3 API is on 3900; `garage-init` runs once against it
-  # and exits.
+  # persistence. The S3 API is on 3900; `testing/garage-init.sh` runs once
+  # against it from the host.
   garage-test:
     image: dxflrs/garage:v1.1.0
     environment:
@@ -673,30 +711,24 @@ Append to `backend/docker-compose.test.yml`:
       timeout: 3s
       retries: 30
 
-  garage-init:
-    image: dxflrs/garage:v1.1.0
-    depends_on:
-      garage-test:
-        condition: service_healthy
-    environment:
-      GARAGE_ALLOW_WORLD_READABLE_SECRETS: "true"
-    entrypoint: ["/bin/sh", "/init/garage-init.sh"]
-    volumes:
-      - ./testing/garage.toml:/etc/garage.toml:ro
-      - ./testing:/init:ro
-    network_mode: "service:garage-test"
-    restart: "no"
 ```
 
-Bring it up and confirm both buckets exist:
+There is deliberately **no `garage-init` service**: the image has no shell to run one with, and a
+service per CLI command would be six services to express one script. Initialisation is the host
+script above, run once after the containers come up — the same shape the Postgres container
+already has, where the developer brings the compose file up before running the suite.
+
+Bring it up and initialise it:
 
 ```bash
 cd backend
 docker compose -f docker-compose.test.yml up -d
-docker compose -f docker-compose.test.yml logs garage-init
+chmod +x testing/garage-init.sh
+./testing/garage-init.sh
 ```
 
-Expected: the two `garage bucket info` blocks at the end of the log, each naming the `test` key with read/write/owner.
+Expected: the two `garage bucket info` blocks at the end of the output, each naming the `test` key
+with read/write/owner, and `triviador-media` showing a website configuration.
 
 - [ ] **Step 3: Write the failing store test**
 
@@ -7331,6 +7363,7 @@ Two details about the existing conftest this depends on:
 ```bash
 cd backend
 docker compose -f docker-compose.test.yml up -d
+./testing/garage-init.sh          # idempotent; safe on an already-initialised node
 uv run pytest -q
 uv run mypy && uv run ruff check .
 cd ../frontend && pnpm check && pnpm codegen:check
