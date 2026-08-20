@@ -6,12 +6,13 @@ import type { EventBus } from "./event-bus";
 /**
  * §9.3's merge rule, and the only one in the application.
  *
- * Both paths into `["game", id]` — this, and the REST `queryFn` that paints
- * first — call it, so there is exactly one place where two versions of a game
- * are compared and exactly one answer to "which is newer". `>=` rather than
- * `>` on purpose: a resync after a reconnect can legitimately carry the seq
- * the cache already holds, and it must still land, because the *state* may
- * have been rebuilt while the seq stood still.
+ * Both paths into `["game", id]` go through it — the dispatcher today, and
+ * Task 12's REST first paint once it exists — so there is exactly one place
+ * where two versions of a game are compared and exactly one answer to
+ * "which is newer". `>=` rather than `>` on purpose: a resync after a
+ * reconnect can legitimately carry the seq the cache already holds, and it
+ * must still land, because the *state* may have been rebuilt while the seq
+ * stood still.
  */
 export function writeGame(queryClient: QueryClient, gameId: string, incoming: GameSnapshot): void {
   queryClient.setQueryData<GameSnapshot>(gameKey(gameId), (previous) =>

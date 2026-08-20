@@ -155,7 +155,12 @@ export function parseServerMessage(raw: string): ServerMessage | null {
     throw new MessageParseError("socket sent a frame with no type");
   }
   const type = (parsed as { type: unknown }).type;
-  if (typeof type !== "string" || !(type in SERVER_SCHEMAS)) return null;
+  // `Object.hasOwn`, not `type in SERVER_SCHEMAS`: `in` walks the prototype
+  // chain, so a `type` of `"toString"` or `"constructor"` would look found,
+  // hand back a function with no `.safeParse`, and throw — directly against
+  // this function's documented contract that an unknown type is dropped,
+  // not thrown, on untrusted input from the socket's `onmessage` handler.
+  if (typeof type !== "string" || !Object.hasOwn(SERVER_SCHEMAS, type)) return null;
   const schema = SERVER_SCHEMAS[type as keyof typeof SERVER_SCHEMAS];
   const result = schema.safeParse(parsed);
   if (!result.success) {
@@ -188,18 +193,26 @@ const EVENT_SCHEMAS = {
   neutral_captured: neutralCapturedEventSchema,
   picks_granted: picksGrantedEventSchema,
   player_answered: playerAnsweredEventSchema,
-  player_gone: playerGoneEventSchema,
+  // `player_gone`, `round`, and `turn_ended` are family names, not wire
+  // values — like `lobbyMessageSchema` above (keyed under both
+  // `lobby.snapshot` and `lobby.update`), each of these three schemas'
+  // `type` field is a multi-value enum, so both actual wire values must be
+  // keyed to the same schema or the events they describe can never parse.
+  player_eliminated: playerGoneEventSchema,
+  player_surrendered: playerGoneEventSchema,
   player_joined: playerJoinedEventSchema,
   player_left: playerLeftEventSchema,
   question_presented: questionPresentedEventSchema,
   question_resolved: questionResolvedEventSchema,
-  round: roundEventSchema,
+  round_started: roundEventSchema,
+  round_completed: roundEventSchema,
   score_changed: scoreChangedEventSchema,
   territory_captured: territoryCapturedEventSchema,
   territory_claimed: territoryClaimedEventSchema,
   territory_neutralized: territoryNeutralizedEventSchema,
   tiebreak_started: tiebreakStartedEventSchema,
-  turn_ended: turnEndedEventSchema,
+  turn_skipped: turnEndedEventSchema,
+  turn_aborted: turnEndedEventSchema,
   turn_started: turnStartedEventSchema,
   warmup_started: warmupStartedEventSchema,
 } as const;
@@ -216,7 +229,9 @@ export type Narration = { [K in keyof EventSchemas]: z.infer<EventSchemas[K]> }[
 export function parseClientEvent(value: unknown): Narration | null {
   if (typeof value !== "object" || value === null || !("type" in value)) return null;
   const type = (value as { type: unknown }).type;
-  if (typeof type !== "string" || !(type in EVENT_SCHEMAS)) return null;
+  // See `parseServerMessage`'s note on `Object.hasOwn` vs. `in`: a narration
+  // event with `type: "toString"` must drop, not throw.
+  if (typeof type !== "string" || !Object.hasOwn(EVENT_SCHEMAS, type)) return null;
   const result = EVENT_SCHEMAS[type as keyof EventSchemas].safeParse(value);
   return result.success ? (result.data as Narration) : null;
 }
