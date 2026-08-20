@@ -155,3 +155,52 @@ async def test_the_default_preset_migration_writes_a_readable_object(engine: Asy
     preset = await PresetRepository(sessionmaker_for(engine)).get_default()
     assert preset is not None
     assert preset.rules.player_count == 3
+
+
+async def test_0003_repairs_a_row_actually_left_in_the_old_broken_shape(
+    engine: AsyncEngine,
+) -> None:
+    """0002 is fixed at the source now, so on its own this suite would never
+    exercise 0003's `upgrade()` at all — every fresh migration run already
+    produces a correct row, and a repair migration that never ran in a test
+    is a migration nobody knows works.
+
+    So this test manufactures the exact situation 0003 exists for: a
+    database that already ran the *old*, broken 0002 before the fix landed.
+    Migrates only as far as 0002, hand-writes the double-encoded string
+    shape that version of 0002 actually produced (`to_jsonb(rules::text)`
+    turns today's correct object back into a JSON string scalar holding its
+    own text — the same shape the bug produced), then runs 0003 alone and
+    asserts both that the column is an object again and that
+    `PresetRepository.get_default()` — the call `POST /api/games` makes —
+    succeeds against it.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await asyncio.to_thread(command.upgrade, alembic_config(DATABASE_URL), "0002_default_preset")
+
+    async with engine.begin() as conn:
+        await conn.execute(text("UPDATE rule_presets SET rules = to_jsonb(rules::text)"))
+        broken = (
+            await conn.execute(
+                text("SELECT jsonb_typeof(rules) FROM rule_presets WHERE id = 'default'")
+            )
+        ).scalar_one()
+    assert broken == "string", "test setup didn't actually reproduce the old broken shape"
+
+    await asyncio.to_thread(
+        command.upgrade, alembic_config(DATABASE_URL), "0003_repair_default_preset_rules"
+    )
+
+    async with engine.connect() as conn:
+        kind = (
+            await conn.execute(
+                text("SELECT jsonb_typeof(rules) FROM rule_presets WHERE id = 'default'")
+            )
+        ).scalar_one()
+    assert kind == "object"
+
+    preset = await PresetRepository(sessionmaker_for(engine)).get_default()
+    assert preset is not None
+    assert preset.rules.player_count == 3
