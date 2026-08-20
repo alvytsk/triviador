@@ -1,6 +1,12 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { question } from "../../../testing/factories";
-import { parseClientEvent, parseServerMessage, type Turn, turnOf } from "./messages";
+import {
+  type AnswerPayload,
+  parseClientEvent,
+  parseServerMessage,
+  type Turn,
+  turnOf,
+} from "./messages";
 
 /**
  * `Turn` exists precisely because `ClientGameState["turn"]` collapses to
@@ -33,6 +39,31 @@ describe("Turn", () => {
       // @ts-expect-error - no member of `Turn` carries a `nonsense` field; this
       // only fails to error if `turn` has regressed to `any`.
       turn.nonsense;
+    }
+  });
+});
+
+/**
+ * The identical code-generation gap as `Turn`, one field over:
+ * `submitAnswerFrameSchema.payload` collapses to `any` because the
+ * generator cannot express its two-shape `oneOf` as a Zod discriminated
+ * union either. `AnswerPayload` is the union declared by hand from the same
+ * two generated schemas (`shared/api/messages.ts`'s own doc comment on it).
+ * A runtime test cannot catch a regression back to `any` here any more than
+ * it could for `Turn` — `tsc --noEmit` passing today proves nothing about
+ * tomorrow's generated output. Only this type-level assertion can.
+ */
+describe("AnswerPayload", () => {
+  it("is a real union, not the `any` the generator collapses `payload` to", () => {
+    expectTypeOf<AnswerPayload>().not.toBeAny();
+  });
+
+  it("narrows by kind so a numeric-only field is a type error on a choice payload", () => {
+    const payload: AnswerPayload = { kind: "choice", idx: 0 };
+    if (payload.kind === "choice") {
+      // @ts-expect-error - `value` belongs to the numeric member; this only
+      // fails to error if `AnswerPayload` has regressed to `any`.
+      payload.value;
     }
   });
 });

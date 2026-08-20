@@ -58,6 +58,40 @@ describe("QuestionDock", () => {
     expect(typeof payload.value).toBe("string");
   });
 
+  it.each(["1e3", "1E-3", "-42", "0.1000000000000000000001"])(
+    "sends %s to the wire byte-identical — the server's grammar, not a stricter client one",
+    async (typed) => {
+      const harness = renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
+      act(() => harness.socket.last().open());
+
+      await userEvent.type(screen.getByLabelText("YOUR ANSWER"), typed);
+      await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+
+      const frames = harness.socket.last().frames();
+      expect(frames).toHaveLength(1);
+      const payload = frames[0]?.payload as Record<string, unknown>;
+      expect(payload.value).toBe(typed);
+    },
+  );
+
+  it.each(["NaN", "Infinity", ""])(
+    "refuses %j with a visible reason and sends nothing",
+    async (typed) => {
+      const harness = renderWithApp(<QuestionDock state={gameState({ turn: NUMERIC_TURN })} />);
+      act(() => harness.socket.last().open());
+
+      if (typed !== "") {
+        await userEvent.type(screen.getByLabelText("YOUR ANSWER"), typed);
+      }
+
+      expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+      expect(screen.getByText(/enter a number the server can read/i)).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "Submit" }));
+      expect(harness.socket.last().frames()).toHaveLength(0);
+    },
+  );
+
   it("disables choices and sends nothing once the local deadline has passed", () => {
     vi.useFakeTimers();
     const harness = renderWithApp(
