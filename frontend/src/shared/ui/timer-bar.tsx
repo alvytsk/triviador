@@ -15,8 +15,9 @@ import { useDeadline } from "../lib/use-deadline";
  * it: `widgets/question-dock`'s dock needs the identical clock (§9.5: "then
  * `<TimerBar>`") and steiger forbids one widget slice importing another's
  * internals (see `shared/lib/use-deadline.ts`'s doc comment for the same
- * move, one layer down). `widgets/turn-dock/ui/timer-bar.tsx` re-exports
- * this unchanged.
+ * move, one layer down). Both `widgets/turn-dock` and `widgets/question-dock`
+ * import this directly from `@/shared/ui`; no re-export shim sits in either
+ * slice.
  */
 export function TimerBar({ deadlineAt }: { deadlineAt: string | null }) {
   const { offsetMs } = useSocket();

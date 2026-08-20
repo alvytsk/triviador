@@ -22,9 +22,11 @@ import { useEffect, useRef, useState } from "react";
  * \"turn-dock\"."). It has no widget-only dependency — only
  * `deadlineAt`/`offsetMs`, both plain values — so it moves down to `shared`,
  * the same "zero app-only dependency" move Task 12 made for
- * `useMediaPrefetch`. `widgets/turn-dock/model/use-deadline.ts` re-exports it
- * unchanged, so `@/widgets/turn-dock`'s public API and its existing test
- * keep working.
+ * `useMediaPrefetch`. `widgets/turn-dock` no longer holds a copy of this
+ * file or its test — a re-export whose only importer was its own test would
+ * exist purely to avoid moving that test two directories, and this plan
+ * deletes dead code on sight. `use-deadline.test.ts` lives beside this
+ * module now, unchanged apart from the move.
  */
 export function useDeadline(
   deadlineAt: string | null,

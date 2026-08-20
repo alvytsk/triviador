@@ -1,9 +1,9 @@
 import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { gameState, snapshot } from "../../testing/factories";
-import { renderWithApp } from "../../testing/render";
-import { useCommand } from "./use-command";
+import { gameState, snapshot } from "../../../testing/factories";
+import { renderWithApp } from "../../../testing/render";
+import { useCommand } from "./command";
 
 /**
  * Exercises `useCommand` the way every real caller does: through a component

@@ -1,6 +1,6 @@
 import { deadlineOf, turnKindOf } from "@/entities/game";
 import type { ClientGameState } from "@/shared/api";
-import { TimerBar } from "./timer-bar";
+import { TimerBar } from "@/shared/ui";
 
 // The two turn kinds that ask for a click on the map rather than an answer.
 // The command itself is sent from `<GameStage>` (§9.5's map, not this dock)

@@ -28,22 +28,26 @@ const newCommandId = () => `c${++counter}-${Math.random().toString(36).slice(2, 
  * server's decision, i.e. exactly what this design refuses to do.
  *
  * Lives in `shared/api`, not `app/`, though Task 13's design first reached
- * for `app/use-command.ts` (that file still exists and re-exports this one,
- * verbatim, for anything at the app layer that wants the conventional import
- * path). The only things this hook touches — `send` and `client.onMessage`
- * — are already on the public `SocketHandle` this module exports; there is
- * no cache, no dispatcher, no event bus in here, which is exactly the "zero
- * app-only dependency" test Task 12 used to move `useMediaPrefetch` out of
- * `app/` into `shared/lib`. Task 13 needed the same move for a second,
- * sharper reason: `usePickRegion`, `useSelectTarget` and `useSubmitAnswer`
- * live in `features/*`, and steiger's `fsd/forbidden-imports` unconditionally
- * refuses a `features` module importing from `app` (proved directly, the
- * same way `shared/api/socket-context.ts` proved it for `useSocket`: a probe
- * import of `@/app/socket-provider` from `src/features/**` trips "Forbidden
- * import from higher layer \"app\"."). Since every command feature needs
- * this hook and none of them may reach `app/`, the hook has to live
- * somewhere all three — and the widgets and pages above them — can import
- * legally, which is here.
+ * for `app/use-command.ts`. The only things this hook touches — `send` and
+ * `client.onMessage` — are already on the public `SocketHandle` this module
+ * exports; there is no cache, no dispatcher, no event bus in here, which is
+ * exactly the "zero app-only dependency" test Task 12 used to move
+ * `useMediaPrefetch` out of `app/` into `shared/lib`. Task 13 needed the same
+ * move for a second, sharper reason: `usePickRegion`, `useSelectTarget` and
+ * `useSubmitAnswer` live in `features/*`, and steiger's
+ * `fsd/forbidden-imports` unconditionally refuses a `features` module
+ * importing from `app` (proved directly, the same way
+ * `shared/api/socket-context.ts` proved it for `useSocket`: a probe import
+ * of `@/app/socket-provider` from `src/features/**` trips "Forbidden import
+ * from higher layer \"app\"."). Since every command feature needs this hook
+ * and none of them may reach `app/`, the hook has to live somewhere all
+ * three — and the widgets and pages above them — can import legally, which
+ * is here. There is no `app/use-command.ts` shim re-exporting it: nothing
+ * at the app layer calls this hook directly (the route composes
+ * `useNarration` and `gameQueryOptions`, not commands), so a re-export
+ * whose only importer was its own test would have existed purely to avoid
+ * moving that test file — the test lives beside this module instead
+ * (`command.test.tsx`).
  */
 export function useCommand() {
   const { send: rawSend, client } = useSocket();
