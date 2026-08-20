@@ -1,6 +1,35 @@
-Topology (map.json) is hand-authored from public administrative boundaries and
-is released under CC0.
+map.json
+--------
+Topology (region ids, display names, adjacency) is hand-authored from public
+administrative boundaries and is released under CC0 1.0.
 
-map.svg is NOT yet present. Before Plan 4, source an SVG of the Czech regions
-whose path ids match the region ids above, record its licence here, and verify
-the terms permit redistribution.
+map.svg
+-------
+Source:    https://simplemaps.com/static/svg/country/cz/admin1/cz.svg
+           (download link on https://simplemaps.com/svg/country/cz)
+Author:    Pareto Software, LLC DBA Simplemaps.com, as named in the file's
+           own header comment.
+Licence:   Simplemaps free SVG map licence (a custom licence; no SPDX
+           identifier — Simplemaps does not use a catalogued licence).
+Statement: The downloaded file's own header comment reads: "Free for
+           Commercial Use, full terms at
+           https://simplemaps.com/resources/svg-license. Attribution is
+           appreciated!" That terms page states: "You are free to use our
+           SVG maps, without any restrictions in web sites, web templates
+           and software programs of any kind that you intend to sell or
+           distribute. Backlinks are not required, but are highly
+           appreciated." and "You are free to use our SVG maps for personal
+           or commercial use."
+Attribution: Appreciated but explicitly not required ("Backlinks are not
+           required, but are highly appreciated"), so no footer credit was
+           added to the game screen for this file.
+Retrieved: 2026-08-20
+Changes:   Dropped the source's "points" and "label_points" groups (city
+           marker dots and label-placement circles — not part of the region
+           topology) and the non-standard "name" attribute the source put on
+           each region <path>. Normalized the remaining 14-path document
+           with svgo (see frontend/svgo.config.mjs) — group transforms
+           flattened into path data, metadata and styling stripped. Renamed
+           path ids from the source's ISO 3166-2:CZ numeric codes without a
+           dash (CZ10, CZ20, CZ31, ...) to this directory's map.json region
+           ids (praha, stredocesky, jihocesky, ...).
