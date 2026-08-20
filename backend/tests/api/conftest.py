@@ -21,6 +21,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from dataclasses import replace as _replace
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import NamedTuple
 
@@ -40,6 +41,7 @@ from tests.api.fakes import (
     FakeMediaAssets,
     FakeMediaStore,
     FakePresets,
+    FakeQuestionAdmin,
     FakeSessions,
     FakeUsers,
 )
@@ -64,6 +66,7 @@ from triviador.runtime.errors import PermanentReplayFailure
 from triviador.runtime.manager import Live
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.runtime import GameRuntime
+from triviador.services.admin import QuestionDetailRecord
 from triviador.services.identity import UserRole
 from triviador.services.ports import GameSummary
 
@@ -310,6 +313,24 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         presets=FakePresets(),
         media_store=FakeMediaStore(clock),
         media_assets=FakeMediaAssets(),
+        questions_admin=FakeQuestionAdmin(
+            {
+                "q1": QuestionDetailRecord(
+                    question_id="q1",
+                    kind="numeric",
+                    prompt="How many players does a default game seat?",
+                    category_id="cat-1",
+                    category_slug="general",
+                    difficulty="easy",
+                    is_active=True,
+                    version=1,
+                    media_asset_id=None,
+                    choices=None,
+                    numeric_answer=Decimal("3"),
+                    unit=None,
+                )
+            }
+        ),
         normalizer=ImageNormalizer(
             max_bytes=settings.media_max_bytes,
             max_pixels=settings.media_max_pixels,

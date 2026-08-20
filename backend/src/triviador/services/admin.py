@@ -11,6 +11,8 @@ the plan.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
 from typing import Protocol
 
 
@@ -46,3 +48,69 @@ class MediaAssetPort(Protocol):
         ...
 
     async def get(self, asset_id: str) -> MediaAssetRecord | None: ...
+
+
+@dataclass(frozen=True)
+class QuestionFilters:
+    """§10.2's filter set. Every field is `None` for "do not filter",
+    which is why `is_active` is `bool | None` and not `bool`: the admin
+    list defaults to *everything*, and a `False` default would hide the
+    active bank behind a filter nobody set."""
+
+    kind: str | None = None
+    category_id: str | None = None
+    difficulty: str | None = None
+    is_active: bool | None = None
+    has_media: bool | None = None
+    search: str | None = None
+
+
+@dataclass(frozen=True)
+class ChoiceRecord:
+    idx: int
+    text: str
+    is_correct: bool
+    media_asset_id: str | None
+
+
+@dataclass(frozen=True)
+class QuestionSummaryRecord:
+    question_id: str
+    kind: str
+    prompt: str
+    category_id: str
+    category_slug: str
+    difficulty: str
+    is_active: bool
+    has_media: bool
+    version: int
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class QuestionDetailRecord:
+    question_id: str
+    kind: str
+    prompt: str
+    category_id: str
+    category_slug: str
+    difficulty: str
+    is_active: bool
+    version: int
+    media_asset_id: str | None
+    choices: tuple[ChoiceRecord, ...] | None
+    numeric_answer: Decimal | None
+    unit: str | None
+
+
+@dataclass(frozen=True)
+class QuestionPage:
+    items: tuple[QuestionSummaryRecord, ...]
+    total: int
+
+
+class QuestionAdminPort(Protocol):
+    async def list(
+        self, filters: QuestionFilters, *, limit: int, offset: int
+    ) -> QuestionPage: ...
+    async def get(self, question_id: str) -> QuestionDetailRecord | None: ...

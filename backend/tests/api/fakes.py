@@ -13,7 +13,13 @@ from datetime import UTC, datetime, timedelta
 
 from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
-from triviador.services.admin import MediaAssetRecord
+from triviador.services.admin import (
+    MediaAssetRecord,
+    QuestionDetailRecord,
+    QuestionFilters,
+    QuestionPage,
+    QuestionSummaryRecord,
+)
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     RedeemOutcome,
@@ -299,3 +305,41 @@ class FakeMediaAssets:
 
     async def get(self, asset_id: str) -> MediaAssetRecord | None:
         return self.records.get(asset_id)
+
+
+def _to_summary(record: QuestionDetailRecord, *, updated_at: datetime) -> QuestionSummaryRecord:
+    """`QuestionSummaryRecord` and `QuestionDetailRecord` share every field
+    except `has_media`/`updated_at` (summary only) and
+    `choices`/`numeric_answer`/`unit`/`media_asset_id` (detail only) — the
+    fake keeps one dict of the wider shape and derives the narrower one for
+    `.list`, rather than keeping two dicts that could drift apart."""
+    return QuestionSummaryRecord(
+        question_id=record.question_id,
+        kind=record.kind,
+        prompt=record.prompt,
+        category_id=record.category_id,
+        category_slug=record.category_slug,
+        difficulty=record.difficulty,
+        is_active=record.is_active,
+        has_media=record.media_asset_id is not None,
+        version=record.version,
+        updated_at=updated_at,
+    )
+
+
+@dataclass
+class FakeQuestionAdmin:
+    """In-memory `QuestionAdminPort`. `last_filters` records whatever the
+    route last called `.list` with, so a test can assert the query string
+    actually reached the repository call rather than just the status code."""
+
+    records: dict[str, QuestionDetailRecord] = field(default_factory=dict)
+    last_filters: QuestionFilters | None = None
+
+    async def list(self, filters: QuestionFilters, *, limit: int, offset: int) -> QuestionPage:
+        self.last_filters = filters
+        items = tuple(_to_summary(r, updated_at=T0) for r in self.records.values())
+        return QuestionPage(items=items[offset : offset + limit], total=len(items))
+
+    async def get(self, question_id: str) -> QuestionDetailRecord | None:
+        return self.records.get(question_id)

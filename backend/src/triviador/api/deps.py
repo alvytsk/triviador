@@ -21,7 +21,7 @@ from triviador.api.errors import ApiError, ApiErrorCode
 from triviador.api.schemas.ws import LobbyGame, LobbyMessage
 from triviador.config import Settings
 from triviador.db.security import token_digest
-from triviador.services.admin import MediaAssetPort
+from triviador.services.admin import MediaAssetPort, QuestionAdminPort
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     InviteStore,
@@ -99,6 +99,7 @@ class AppDependencies:
     presets: PresetPort
     media_store: MediaStore
     media_assets: MediaAssetPort
+    questions_admin: QuestionAdminPort
     normalizer: "ImageNormalizer"
 
     async def lobby_message(
@@ -172,6 +173,7 @@ class AppDependencies:
             presets=unusable,
             media_store=unusable,
             media_assets=unusable,
+            questions_admin=unusable,
             normalizer=ImageNormalizer(max_bytes=1, max_pixels=1, target_px=1),
         )
 

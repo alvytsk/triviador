@@ -10,6 +10,42 @@
         "title": "AcquisitionKind",
         "type": "string"
       },
+      "ChoiceView": {
+        "additionalProperties": false,
+        "properties": {
+          "idx": {
+            "title": "Idx",
+            "type": "integer"
+          },
+          "is_correct": {
+            "title": "Is Correct",
+            "type": "boolean"
+          },
+          "media_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Asset Id"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idx",
+          "text",
+          "is_correct",
+          "media_asset_id"
+        ],
+        "title": "ChoiceView",
+        "type": "object"
+      },
       "ClientChoice": {
         "additionalProperties": false,
         "description": "No `is_correct`. \u00a712.3 rejects byte-scanning as the test for this,\nbecause the correct answer's *text* is legitimate content \u2014 so the\nguarantee has to be that the flag has nowhere to live.",
@@ -1014,6 +1050,105 @@
         "title": "PickingTurn",
         "type": "object"
       },
+      "QuestionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "category_id": {
+            "title": "Category Id",
+            "type": "string"
+          },
+          "category_slug": {
+            "title": "Category Slug",
+            "type": "string"
+          },
+          "choices": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ChoiceView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choices"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/QuestionKind"
+          },
+          "media_asset_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Asset Id"
+          },
+          "numeric_answer": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Numeric Answer"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "prompt",
+          "category_id",
+          "category_slug",
+          "difficulty",
+          "is_active",
+          "version",
+          "media_asset_id",
+          "choices",
+          "numeric_answer",
+          "unit"
+        ],
+        "title": "QuestionDetail",
+        "type": "object"
+      },
       "QuestionKind": {
         "enum": [
           "multiple_choice",
@@ -1021,6 +1156,97 @@
         ],
         "title": "QuestionKind",
         "type": "string"
+      },
+      "QuestionPageView": {
+        "additionalProperties": false,
+        "description": "`total` is the unpaged count, so the client can render \"page 3 of\n17\" without a second request \u2014 the one thing offset pagination is\nactually good at.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/QuestionSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "QuestionPageView",
+        "type": "object"
+      },
+      "QuestionSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "category_id": {
+            "title": "Category Id",
+            "type": "string"
+          },
+          "category_slug": {
+            "title": "Category Slug",
+            "type": "string"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/Difficulty"
+          },
+          "has_media": {
+            "title": "Has Media",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/QuestionKind"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "prompt",
+          "category_id",
+          "category_slug",
+          "difficulty",
+          "is_active",
+          "has_media",
+          "version",
+          "updated_at"
+        ],
+        "title": "QuestionSummary",
+        "type": "object"
       },
       "QuestionTurn": {
         "additionalProperties": false,
@@ -1365,6 +1591,203 @@
           }
         },
         "summary": "Upload Media",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/questions": {
+      "get": {
+        "operationId": "list_questions_api_admin_questions_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/QuestionKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "category_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Category Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "difficulty",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/Difficulty"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Difficulty"
+            }
+          },
+          {
+            "in": "query",
+            "name": "is_active",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Active"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has_media",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Has Media"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionPageView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Questions",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/questions/{question_id}": {
+      "get": {
+        "operationId": "get_question_api_admin_questions__question_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "question_id",
+            "required": true,
+            "schema": {
+              "title": "Question Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Question",
         "tags": [
           "admin",
           "admin"

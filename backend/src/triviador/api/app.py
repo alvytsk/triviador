@@ -35,6 +35,7 @@ from triviador.db.repositories.auth import InviteRepository, SessionRepository, 
 from triviador.db.repositories.games import GameRepository
 from triviador.db.repositories.media import MediaAssetRepository
 from triviador.db.repositories.presets import PresetRepository
+from triviador.db.repositories.question_admin import QuestionAdminRepository
 from triviador.db.security import Argon2Hasher
 from triviador.db.unit_of_work import UnitOfWork
 from triviador.maps.registry import MapRegistry
@@ -157,6 +158,7 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         presets=PresetRepository(sessions),
         media_store=media_store,
         media_assets=MediaAssetRepository(sessions),
+        questions_admin=QuestionAdminRepository(sessions),
         normalizer=ImageNormalizer(
             max_bytes=settings.media_max_bytes,
             max_pixels=settings.media_max_pixels,
