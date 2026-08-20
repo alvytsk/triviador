@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { deadlineIdOf, gameKey } from "@/entities/game";
 import { GamePage } from "@/pages/game";
-import type { GameAbortedEvent, QuestionResolvedEvent } from "@/shared/api";
+import type { GameAbortedEvent, GameSnapshot, QuestionResolvedEvent } from "@/shared/api";
 import { gameQueryOptions } from "../game-query";
 import { useNarration } from "../socket-provider";
 import { usePresence } from "../use-presence";
@@ -28,11 +29,23 @@ import { usePresence } from "../use-presence";
  * The same wall applies to `useNarration` — it lives on `SocketProvider`'s
  * richer, app-only context (for `bus`), so `<QuestionDock>` cannot call it
  * itself. This route is the one place that can: it keeps the latest
- * `question_resolved` event in state, clears it on `question_presented`
- * (the event the schema itself documents as "the cue" a fresh question
- * turn has begun — see `questionPresentedEventSchema`), and hands the
- * result down through `<GamePage>` the same way it hands down `game`. Task
- * 14 adds `game_aborted` to the same subscription, for `<Results>`.
+ * `question_resolved` event in state and hands it down through
+ * `<GamePage>` the same way it hands down `game`. Task 14 adds
+ * `game_aborted` to the same subscription, for `<Results>`.
+ *
+ * `QuestionResolvedEvent` carries no `question_id` or `deadline_id` of its
+ * own (see `questionResolvedEventSchema`), and clearing it only on the
+ * `question_presented` *event* is not enough: §8.2 suppresses narration
+ * events on a gap, but a gapped `game.update` still carries full state and
+ * still opens a new question. Left as "clear on the event", a gapped
+ * update that opens question B would keep rendering question A's
+ * `correct_choice_index` against B's choices — a false reveal on a live,
+ * unanswered question. So the stored event is bound to the `deadline_id`
+ * that was current (per the query cache, not this render's possibly-stale
+ * `game.data`) when it arrived, and `resolvedQuestion` below is derived
+ * fresh every render by comparing that bound id against
+ * `deadlineIdOf(game.data.state)` — dropping the stale reveal the instant
+ * the turn moves on, gap or no gap, event or no event.
  *
  * `usePresence` (`app/use-presence.ts`) is behind the identical wall, for
  * the identical reason — `<PlayerStrip>` cannot call it either — so this
@@ -46,13 +59,24 @@ export const Route = createFileRoute("/_authed/games/$gameId")({
     const { gameId } = Route.useParams();
     const queryClient = useQueryClient();
     const game = useQuery(gameQueryOptions(gameId, queryClient));
-    const [resolvedQuestion, setResolvedQuestion] = useState<QuestionResolvedEvent | null>(null);
+    const [resolved, setResolved] = useState<{
+      event: QuestionResolvedEvent;
+      deadlineId: number | null;
+    } | null>(null);
     const [aborted, setAborted] = useState<GameAbortedEvent | null>(null);
     useNarration(gameId, (event) => {
-      if (event.type === "question_resolved") setResolvedQuestion(event);
-      else if (event.type === "question_presented") setResolvedQuestion(null);
-      else if (event.type === "game_aborted") setAborted(event);
+      if (event.type === "question_resolved") {
+        const snapshot = queryClient.getQueryData<GameSnapshot>(gameKey(gameId));
+        setResolved({ event, deadlineId: snapshot ? deadlineIdOf(snapshot.state) : null });
+      } else if (event.type === "question_presented") {
+        setResolved(null);
+      } else if (event.type === "game_aborted") {
+        setAborted(event);
+      }
     });
+    const currentDeadlineId = game.data ? deadlineIdOf(game.data.state) : null;
+    const resolvedQuestion =
+      resolved !== null && resolved.deadlineId === currentDeadlineId ? resolved.event : null;
     const connectedPlayerIds = usePresence(gameId);
     return (
       <GamePage

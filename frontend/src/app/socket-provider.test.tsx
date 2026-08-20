@@ -48,4 +48,70 @@ describe("SocketProvider", () => {
     expect(banner).toHaveTextContent("Not connected");
     expect(banner.className).toContain("border-ink-dim"); // the "quiet" tone
   });
+
+  it("surfaces an unattributed error (command_id: null) even while the socket is open", () => {
+    // The backend emits exactly this shape for validation_failed on a
+    // malformed frame, and for not_found on a refused subscribe or resync.
+    // Nothing else in the client surfaces it — dispatcher.ts drops every
+    // `error`, and useCommand only accepts one whose command_id it holds —
+    // so this banner is the one place it can become visible at all.
+    const harness = renderWithApp(<SocketStatusBanner />);
+    act(() => harness.socket.last().open());
+    expect(harness.queryByRole("status")).toBeNull();
+
+    act(() =>
+      harness.socket.last().deliver({
+        type: "error",
+        command_id: null,
+        code: "not_found",
+        message: "That subscription does not exist.",
+      }),
+    );
+
+    const banner = harness.getByRole("status");
+    expect(banner).toHaveTextContent("not_found");
+    expect(banner).toHaveTextContent("That subscription does not exist.");
+    expect(banner.className).toContain("border-bad"); // the "bad" tone
+  });
+
+  it("does not surface an error that carries a command_id — that is a command rejection, not a connection one", () => {
+    const harness = renderWithApp(<SocketStatusBanner />);
+    act(() => harness.socket.last().open());
+
+    act(() =>
+      harness.socket.last().deliver({
+        type: "error",
+        command_id: "c1-abc",
+        code: "not_your_turn",
+        message: "It is not your turn to answer.",
+      }),
+    );
+
+    expect(harness.queryByRole("status")).toBeNull();
+  });
+
+  it("clears the connection-error banner once a fresh snapshot lands", () => {
+    const harness = renderWithApp(<SocketStatusBanner />);
+    act(() => harness.socket.last().open());
+    act(() =>
+      harness.socket.last().deliver({
+        type: "error",
+        command_id: null,
+        code: "not_found",
+        message: "That subscription does not exist.",
+      }),
+    );
+    expect(harness.getByRole("status")).toHaveTextContent("not_found");
+
+    act(() =>
+      harness.socket.last().deliver({
+        type: "game.snapshot",
+        game_id: "g1",
+        seq: 1,
+        state: snapshot(1).state,
+      }),
+    );
+
+    expect(harness.queryByRole("status")).toBeNull();
+  });
 });

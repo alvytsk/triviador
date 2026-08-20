@@ -22,12 +22,29 @@ import { createDispatcher } from "./dispatcher";
 import { createEventBus, type EventBus } from "./event-bus";
 import { createPresenceStore, PresenceProvider } from "./use-presence";
 
+export interface ConnectionError {
+  code: string;
+  message: string;
+}
+
 interface SocketContextValue {
   send(frame: ClientFrame): void;
   status: SocketStatus;
   offsetMs(): number;
   bus: EventBus;
   client: SocketClient | null;
+  /** §11.7: an `error` frame whose `command_id` is `null` is not a command
+   *  rejection — nothing sent it — it is a connection-level refusal: the
+   *  backend emits exactly this shape for `validation_failed` on a
+   *  malformed frame, and for `not_found` on a refused `subscribe` or
+   *  `resync`. Neither `app/dispatcher.ts` (which drops all `error`
+   *  messages, by design, since a command's own rejection is correlated at
+   *  the call site) nor `useCommand` (which only accepts an error whose
+   *  `command_id` it holds) ever surfaces one of these, so without this the
+   *  board paints from REST once and then silently never updates again —
+   *  the "quietly stops updating" failure `messages.ts` refuses to allow
+   *  for a malformed known-type payload, happening anyway for this one. */
+  connectionError: ConnectionError | null;
 }
 
 const SocketContext = createContext<SocketContextValue | null>(null);
@@ -69,6 +86,7 @@ export function SocketProvider({
   );
   const [client, setClient] = useState<SocketClient | null>(injected ?? null);
   const [status, setStatus] = useState<SocketStatus>(injected?.status() ?? "closed");
+  const [connectionError, setConnectionError] = useState<ConnectionError | null>(null);
 
   useEffect(() => {
     if (injected !== undefined || !enabled) return;
@@ -84,7 +102,34 @@ export function SocketProvider({
   useEffect(() => {
     if (client === null) return;
     setStatus(client.status());
-    const offMessage = client.onMessage((message) => dispatcher.handle(message));
+    // A descendant that subscribes on its own mount (`useGameSubscription`)
+    // can call `send` before this effect has ever run: React fires a mount
+    // effect on a *child* before this component's own, so on the very first
+    // commit where both this provider's client-creation effect and a
+    // subscribing descendant's mount effect are new, the descendant's runs
+    // first — and, unlike `renderWithApp`'s test harness (which always
+    // injects an already-built `client`), the real app builds this one
+    // asynchronously. `preClientQueue` is exactly `SocketClient`'s own
+    // "not open yet, queue it" pattern (`shared/api/ws.ts`'s `pending`),
+    // one layer up, for "not even created yet" — flushed the instant a
+    // client exists, in the order it was sent.
+    if (preClientQueue.current.length > 0) {
+      const queued = preClientQueue.current;
+      preClientQueue.current = [];
+      for (const frame of queued) client.send(frame);
+    }
+    const offMessage = client.onMessage((message) => {
+      dispatcher.handle(message);
+      if (message.type === "error" && message.command_id === null) {
+        setConnectionError({ code: message.code, message: message.message });
+      } else if (message.type === "game.snapshot" || message.type === "lobby.snapshot") {
+        // A fresh snapshot landing is the direct evidence that whatever
+        // this connection was refusing has been resolved — §11.7's
+        // recovery ("take a fresh snapshot") succeeded, so the banner that
+        // told the player to try it clears itself.
+        setConnectionError(null);
+      }
+    });
     const offStatus = client.onStatus((next, closed) => {
       setStatus(next);
       if (closed?.code === 4401) queryClient.setQueryData(meKey(), null);
@@ -104,14 +149,18 @@ export function SocketProvider({
   // with the topics actually changing.
   const clientRef = useRef<SocketClient | null>(client);
   clientRef.current = client;
+  // Frames sent before `clientRef.current` exists at all — see the
+  // client-ready effect below, which flushes this the moment it does.
+  const preClientQueue = useRef<ClientFrame[]>([]);
   const send = useCallback((frame: ClientFrame) => {
-    clientRef.current?.send(frame);
+    if (clientRef.current !== null) clientRef.current.send(frame);
+    else preClientQueue.current.push(frame);
   }, []);
   const offsetMs = useCallback(() => clientRef.current?.offsetMs() ?? 0, []);
 
   const value = useMemo<SocketContextValue>(
-    () => ({ send, status, offsetMs, bus, client }),
-    [send, status, offsetMs, bus, client],
+    () => ({ send, status, offsetMs, bus, client, connectionError }),
+    [send, status, offsetMs, bus, client, connectionError],
   );
 
   return (
