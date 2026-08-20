@@ -785,6 +785,134 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "ImportNotice": {
+        "additionalProperties": false,
+        "description": "\u00a710.2's warning channel: duplicate prompts, inside this upload or\nalready in the bank. Distinct from `ImportRejection` in the contract\nas well as in the code, so 7B cannot render one as the other.",
+        "properties": {
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line",
+          "reason"
+        ],
+        "title": "ImportNotice",
+        "type": "object"
+      },
+      "ImportRejection": {
+        "additionalProperties": false,
+        "properties": {
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "line",
+          "reason"
+        ],
+        "title": "ImportRejection",
+        "type": "object"
+      },
+      "ImportStatus": {
+        "description": "\u00a79.3's four states, closed here because this plan implements the\nmachine that walks them. Plan 3 left the column unconstrained on\npurpose \u2014 the spec named these in prose only \u2014 and `imports/retire.py`\nis now the single writer.",
+        "enum": [
+          "validated",
+          "confirmed",
+          "expired",
+          "cleaned"
+        ],
+        "title": "ImportStatus",
+        "type": "string"
+      },
+      "ImportSummary": {
+        "additionalProperties": false,
+        "description": "`confirmable` is computed by the server, not inferred by the client\nfrom `rejected_count == 0`. The rule is \u00a710.3's, it also depends on\nstatus and expiry, and a client that re-derives it will eventually\nderive it differently.",
+        "properties": {
+          "confirmable": {
+            "title": "Confirmable",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "import_id": {
+            "title": "Import Id",
+            "type": "string"
+          },
+          "notices": {
+            "items": {
+              "$ref": "#/components/schemas/ImportNotice"
+            },
+            "title": "Notices",
+            "type": "array"
+          },
+          "rejected_count": {
+            "title": "Rejected Count",
+            "type": "integer"
+          },
+          "rejections": {
+            "items": {
+              "$ref": "#/components/schemas/ImportRejection"
+            },
+            "title": "Rejections",
+            "type": "array"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "staged_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staged Key"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ImportStatus"
+          },
+          "upload_sha256": {
+            "title": "Upload Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "import_id",
+          "upload_sha256",
+          "filename",
+          "staged_key",
+          "row_count",
+          "rejected_count",
+          "rejections",
+          "notices",
+          "status",
+          "confirmable",
+          "expires_at"
+        ],
+        "title": "ImportSummary",
+        "type": "object"
+      },
       "LobbyGameSummary": {
         "additionalProperties": false,
         "properties": {
@@ -2094,6 +2222,94 @@
           }
         },
         "summary": "Create Question",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/questions/import/dry-run": {
+      "post": {
+        "operationId": "dry_run_api_admin_questions_import_dry_run_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-filename",
+            "required": false,
+            "schema": {
+              "default": "upload.csv",
+              "title": "X-Filename",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dry Run",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/questions/import/{import_id}/rejected.csv": {
+      "get": {
+        "description": "The original rows plus a `reason` column \u2014 \u00a710.3's fix-and-repeat\nloop. Built from the stored report, not from the staged object: the\nobject may already have been retired, and the report is what the\nverdict was actually computed from.",
+        "operationId": "rejected_csv_api_admin_questions_import__import_id__rejected_csv_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rejected Csv",
         "tags": [
           "admin",
           "admin"

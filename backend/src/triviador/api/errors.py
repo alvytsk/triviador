@@ -56,6 +56,7 @@ class ApiErrorCode(StrEnum):
     PRESET_UNKNOWN = "preset_unknown"
     MEDIA_REJECTED = "media_rejected"
     SLUG_TAKEN = "slug_taken"
+    IMPORT_NOT_CONFIRMABLE = "import_not_confirmable"
     NO_DEFAULT_PRESET = "no_default_preset"
     SERVER_BUSY = "server_busy"
     SERVER_RESTARTING = "server_restarting"

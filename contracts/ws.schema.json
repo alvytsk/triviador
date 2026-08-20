@@ -25,6 +25,7 @@
         "preset_unknown",
         "media_rejected",
         "slug_taken",
+        "import_not_confirmable",
         "no_default_preset",
         "server_busy",
         "server_restarting",

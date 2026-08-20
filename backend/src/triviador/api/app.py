@@ -34,6 +34,7 @@ from triviador.db.engine import EnginePing, create_engine, sessionmaker_for
 from triviador.db.repositories.auth import InviteRepository, SessionRepository, UserRepository
 from triviador.db.repositories.categories import CategoryRepository
 from triviador.db.repositories.games import GameRepository
+from triviador.db.repositories.imports import QuestionImportRepository
 from triviador.db.repositories.media import MediaAssetRepository
 from triviador.db.repositories.presets import PresetRepository
 from triviador.db.repositories.question_admin import QuestionAdminRepository
@@ -47,7 +48,7 @@ from triviador.runtime.manager import GameManager
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.reaper import Reaper
 from triviador.runtime.watchdog import Watchdog
-from triviador.storage.s3 import S3MediaStore
+from triviador.storage.s3 import S3ImportStagingStore, S3MediaStore
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,13 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         secret_access_key=settings.s3_secret_access_key.get_secret_value(),
         bucket=settings.media_bucket,
     )
+    staging_store = S3ImportStagingStore(
+        endpoint_url=settings.s3_endpoint_url,
+        region=settings.s3_region,
+        access_key_id=settings.s3_access_key_id,
+        secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        bucket=settings.staging_bucket,
+    )
 
     manager = GameManager(
         loader=GameLoader(uow=uow, maps=maps_registry),
@@ -166,6 +174,8 @@ def build_dependencies(settings: Settings) -> BuiltApp:
             max_pixels=settings.media_max_pixels,
             target_px=settings.media_target_px,
         ),
+        imports=QuestionImportRepository(sessions),
+        staging_store=staging_store,
     )
     return BuiltApp(
         deps=deps,

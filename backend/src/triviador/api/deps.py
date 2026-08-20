@@ -21,7 +21,7 @@ from triviador.api.errors import ApiError, ApiErrorCode
 from triviador.api.schemas.ws import LobbyGame, LobbyMessage
 from triviador.config import Settings
 from triviador.db.security import token_digest
-from triviador.services.admin import CategoryPort, MediaAssetPort, QuestionAdminPort
+from triviador.services.admin import CategoryPort, ImportPort, MediaAssetPort, QuestionAdminPort
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     InviteStore,
@@ -31,7 +31,7 @@ from triviador.services.identity import (
     UserStore,
 )
 from triviador.services.ports import Clock, DatabaseProbe, GameCatalogPort, MapProvider, PresetPort
-from triviador.services.storage import MediaStore
+from triviador.services.storage import ImportStagingStore, MediaStore
 
 if TYPE_CHECKING:
     from triviador.api.ws.broadcaster import WsBroadcaster
@@ -102,6 +102,8 @@ class AppDependencies:
     questions_admin: QuestionAdminPort
     categories: CategoryPort
     normalizer: "ImageNormalizer"
+    imports: ImportPort
+    staging_store: ImportStagingStore
 
     async def lobby_message(
         self, kind: Literal["lobby.snapshot", "lobby.update"]
@@ -177,6 +179,8 @@ class AppDependencies:
             questions_admin=unusable,
             categories=unusable,
             normalizer=ImageNormalizer(max_bytes=1, max_pixels=1, target_px=1),
+            imports=unusable,
+            staging_store=unusable,
         )
 
 

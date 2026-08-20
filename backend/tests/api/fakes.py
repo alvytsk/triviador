@@ -10,6 +10,7 @@ being run on every change.
 import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 from triviador.db.repositories.questions import prompt_digest
@@ -18,6 +19,8 @@ from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.services.admin import (
     CategoryRecord,
     ChoiceRecord,
+    ImportRecord,
+    ImportStatus,
     MediaAssetRecord,
     QuestionDetailRecord,
     QuestionFilters,
@@ -451,3 +454,63 @@ class FakeCategories:
         updated = replace(existing, name=name)
         self.records[category_id] = updated
         return updated
+
+
+@dataclass
+class FakeImports:
+    """In-memory `ImportPort`. Every import created here starts
+    `ImportStatus.VALIDATED` — the only status this task's route ever
+    writes; Task 8 and Task 9 are what teach a fake to move it further."""
+
+    records: dict[str, ImportRecord] = field(default_factory=dict)
+
+    async def create(
+        self,
+        *,
+        import_id: str,
+        uploaded_by: str,
+        upload_sha256: str,
+        filename: str,
+        staged_key: str,
+        row_count: int,
+        rejected_count: int,
+        report: dict[str, Any],
+        expires_at: datetime,
+    ) -> ImportRecord:
+        record = ImportRecord(
+            import_id=import_id,
+            uploaded_by=uploaded_by,
+            upload_sha256=upload_sha256,
+            filename=filename,
+            staged_key=staged_key,
+            row_count=row_count,
+            rejected_count=rejected_count,
+            report=report,
+            status=ImportStatus.VALIDATED,
+            expires_at=expires_at,
+        )
+        self.records[import_id] = record
+        return record
+
+    async def get(self, import_id: str) -> ImportRecord | None:
+        return self.records.get(import_id)
+
+
+class FakeStagingStore:
+    """In-memory `ImportStagingStore`. `objects` is asserted directly by
+    the dry-run route tests, the same way `FakeMediaStore.objects` is."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.metadata: dict[str, str] = {}
+
+    async def put(self, key: str, data: bytes, *, content_type: str) -> None:
+        self.objects[key] = data
+        self.metadata[key] = content_type
+
+    async def open(self, key: str) -> bytes | None:
+        return self.objects.get(key)
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+        self.metadata.pop(key, None)

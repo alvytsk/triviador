@@ -102,4 +102,4 @@ def test_every_exempt_upload_path_is_a_real_route(deps: AppDependencies) -> None
     from triviador.api.http.admin import UPLOAD_PATHS
 
     paths = {mounted.path for mounted in api_routes(create_app(deps))}
-    assert set(UPLOAD_PATHS) - paths == {"/api/admin/questions/import/dry-run"}
+    assert set(UPLOAD_PATHS) - paths == set()

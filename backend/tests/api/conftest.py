@@ -38,12 +38,14 @@ from tests.api.fakes import (
     FakeDatabase,
     FakeGameCatalog,
     FakeHasher,
+    FakeImports,
     FakeInvites,
     FakeMediaAssets,
     FakeMediaStore,
     FakePresets,
     FakeQuestionAdmin,
     FakeSessions,
+    FakeStagingStore,
     FakeUsers,
 )
 from tests.conftest import lobby_state
@@ -338,6 +340,8 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
             max_pixels=settings.media_max_pixels,
             target_px=settings.media_target_px,
         ),
+        imports=FakeImports(),
+        staging_store=FakeStagingStore(),
     )
 
 

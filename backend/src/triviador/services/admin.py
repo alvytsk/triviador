@@ -13,7 +13,8 @@ the plan.
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from enum import StrEnum
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -184,3 +185,46 @@ class CategoryPort(Protocol):
     async def list(self) -> tuple[CategoryRecord, ...]: ...
     async def create(self, *, slug: str, name: str) -> CategoryRecord: ...
     async def rename(self, category_id: str, *, name: str) -> CategoryRecord | None: ...
+
+
+class ImportStatus(StrEnum):
+    """§9.3's four states, closed here because this plan implements the
+    machine that walks them. Plan 3 left the column unconstrained on
+    purpose — the spec named these in prose only — and `imports/retire.py`
+    is now the single writer."""
+
+    VALIDATED = "validated"
+    CONFIRMED = "confirmed"
+    EXPIRED = "expired"
+    CLEANED = "cleaned"
+
+
+@dataclass(frozen=True)
+class ImportRecord:
+    import_id: str
+    uploaded_by: str
+    upload_sha256: str
+    filename: str
+    staged_key: str | None
+    row_count: int
+    rejected_count: int
+    report: dict[str, Any]
+    status: ImportStatus
+    expires_at: datetime
+
+
+class ImportPort(Protocol):
+    async def create(
+        self,
+        *,
+        import_id: str,
+        uploaded_by: str,
+        upload_sha256: str,
+        filename: str,
+        staged_key: str,
+        row_count: int,
+        rejected_count: int,
+        report: dict[str, Any],
+        expires_at: datetime,
+    ) -> ImportRecord: ...
+    async def get(self, import_id: str) -> ImportRecord | None: ...

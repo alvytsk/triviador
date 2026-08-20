@@ -5,6 +5,7 @@
     "forbidden",
     "game_recovering",
     "game_unrecoverable",
+    "import_not_confirmable",
     "internal_error",
     "invite_invalid",
     "map_unknown",

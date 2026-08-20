@@ -46,7 +46,6 @@ the same failure on every recovery replay. `_materialize` raises
 its transaction and the game is still in `LOBBY`.
 """
 
-import hashlib
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -68,6 +67,7 @@ from triviador.domain.questions.types import (
     QuestionPool,
     QuestionSnapshot,
 )
+from triviador.imports.digest import prompt_digest
 
 __all__ = [
     "InsufficientQuestions",
@@ -209,16 +209,6 @@ class QuestionBank:
 # govern, and it must stay that way: an `UPDATE` added here is Plan 7's admin
 # path written in the wrong module and outside the rule that keeps the lock
 # meaningful.
-
-
-def prompt_digest(prompt: str) -> str:
-    """Whitespace- and case-insensitive.
-
-    Re-running the seed after reflowing a line in the CSV must not insert a
-    second copy of a question the bank already has, and `questions.prompt_hash`
-    is the only column that could tell the two apart.
-    """
-    return hashlib.sha256(" ".join(prompt.split()).casefold().encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
