@@ -38,4 +38,15 @@ export default defineConfig([
       "fsd/insignificant-slice": "off",
     },
   },
+  {
+    files: ["./src/widgets/**"],
+    rules: {
+      // `game-stage` (Task 11 of Plan 6) draws the board; the game screen
+      // that mounts it is Task 12. Between the two tasks this slice has
+      // *zero* references rather than one, which is the same "not built yet,
+      // not a merge candidate" situation entities/ and features/ are already
+      // exempted for above — just caught one task earlier in the sequence.
+      "fsd/insignificant-slice": "off",
+    },
+  },
 ]);
