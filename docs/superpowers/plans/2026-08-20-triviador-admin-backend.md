@@ -6641,7 +6641,8 @@ git commit -m "feat(admin): user list, deactivation that closes sockets, transac
 **Interfaces:**
 - Produces:
   - `services.admin.PresetAdminRecord(preset_id, name, rules, is_default, is_active)` and `DeactivateOutcome{OK, NOT_FOUND, IS_DEFAULT}`
-  - `services.admin.PresetAdminPort.list_all()`, `.get(preset_id)`, `.create(name, rules, is_default)`, `.update(preset_id, name, rules, is_default)`, `.deactivate(preset_id)`
+  - `services.admin.PresetAdminPort.list_all()`, `.get_including_retired(preset_id)`, `.create(name, rules, is_default)`, `.update(preset_id, name, rules, is_default)`, `.deactivate(preset_id)`
+  - **The admin single-item read must not filter on `is_active`.** `PresetPort.get` does — a player must never start a game on a retired preset — but one `PresetRepository` instance satisfies both ports, so the admin lookup needs its own name. Without it, `GET /api/admin/presets/{id}` 404s for exactly the retired presets `list_all` shows, and the `is_active` field on the admin record has no reachable detail view to be rendered in.
   - `services.admin.QuestionAdminPort.active_counts() -> dict[str, int]`
   - `services.ports.PresetPort.list_active() -> tuple[PresetRecord, ...]` (the public read)
   - `GET /api/presets` → `list[PresetSummary]` (any signed-in user)
