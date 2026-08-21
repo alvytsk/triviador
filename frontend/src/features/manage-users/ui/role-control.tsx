@@ -28,23 +28,26 @@ export function RoleControl({ user }: { user: UserView }) {
     },
   });
   const error = mutation.error instanceof ApiFetchError ? mutation.error : null;
-  // `mutation.data` — the backend's own updated `UserView`, once this
-  // resolves — over the `user` prop: `UserTable`'s caller (`UsersPage`)
-  // re-renders it with fresh props once the invalidated query above
-  // refetches, but that round trip is not this component's to wait on.
-  // Falling back to the response the server already sent is what makes
-  // "shows the new role after a successful change" true immediately,
-  // not just eventually.
-  const displayedRole = mutation.data?.role ?? user.role;
+  // `user.role` — the prop, always. `mutation.data` is *not* cleared by
+  // `invalidateQueries` or by a list refetch; it only ever changes on a
+  // fresh `mutate()` from this same instance or an explicit `reset()`. A
+  // fallback to it would keep echoing this row's own last mutation result
+  // forever, even after the query above refetches and hands every row
+  // (including this one) genuinely fresh server truth — including a role
+  // some *other* admin changed back in the meantime. `UsersPage` owns the
+  // query and invalidates on success, so the fresh value arrives on its
+  // own; this control just shows a pending state for the round trip.
+  const displayedRole = user.role;
 
   return (
     <div className="flex flex-col items-start gap-2">
       <Select
         value={displayedRole}
+        disabled={mutation.isPending}
         onValueChange={(value) => mutation.mutate(value as UserView["role"])}
       >
         <SelectTrigger aria-label={`Role for ${user.username}`} className="w-32">
-          <SelectValue>{ROLE_LABEL[displayedRole]}</SelectValue>
+          <SelectValue>{mutation.isPending ? "Saving…" : ROLE_LABEL[displayedRole]}</SelectValue>
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="player">Player</SelectItem>
