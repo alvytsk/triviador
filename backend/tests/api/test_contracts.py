@@ -1,4 +1,4 @@
-"""§7's export. Four documents, each with a job.
+"""§7's export. Five documents, each with a job.
 
 `rest.schema.json` is separate from `openapi.json` because
 `json-schema-to-zod` cannot consume an OpenAPI document's
@@ -25,8 +25,14 @@ def contracts(tmp_path: Path) -> dict[str, JsonDocument]:
     return {p.name: json.loads(p.read_text()) for p in tmp_path.glob("*.json")}
 
 
-def test_all_four_documents_are_written(contracts: dict[str, JsonDocument]) -> None:
-    assert set(contracts) == {"openapi.json", "rest.schema.json", "ws.schema.json", "errors.json"}
+def test_all_five_documents_are_written(contracts: dict[str, JsonDocument]) -> None:
+    assert set(contracts) == {
+        "openapi.json",
+        "rest.schema.json",
+        "ws.schema.json",
+        "admin.schema.json",
+        "errors.json",
+    }
 
 
 def test_the_rest_schema_resolves_its_refs_locally(contracts: dict[str, JsonDocument]) -> None:
@@ -106,3 +112,33 @@ def _refs(node: object) -> list[str]:
     if isinstance(node, list):
         return [r for v in node for r in _refs(v)]
     return []
+
+
+def test_admin_schema_carries_every_admin_dto() -> None:
+    """A DTO absent from `ADMIN_MODELS` is a DTO the frontend types by
+    hand, which is the drift §7 exists to prevent. The check is by name
+    against the module's own exports, so adding a model to
+    `schemas/admin/` and forgetting the list fails here."""
+    from triviador.api import contracts
+
+    exported = {model.__name__ for model in contracts.ADMIN_MODELS}
+    assert {"QuestionDetail", "QuestionPageView", "QuestionSaved", "CategoryView",
+            "MediaAssetSummary", "ImportSummary", "ImportNotice", "InviteView",
+            "IssuedInvite", "UserView", "PresetDetail", "PresetCoverage"} <= exported
+
+
+def test_the_admin_document_resolves_its_refs_locally() -> None:
+    from triviador.api.contracts import admin_schema
+
+    document = json.dumps(admin_schema())
+    assert "#/components/schemas/" not in document
+    assert '"$ref": "#/$defs/' in document
+
+
+def test_every_new_error_code_is_exported() -> None:
+    from triviador.api.contracts import errors_schema
+
+    assert {
+        "media_rejected", "import_not_confirmable", "slug_taken",
+        "default_preset", "last_admin", "self_target",
+    } <= set(errors_schema()["api_error_code"])

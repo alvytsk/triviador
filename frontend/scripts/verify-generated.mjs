@@ -20,9 +20,10 @@
 
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { DOCUMENTS } from "./codegen.mjs";
 
 const dir = resolve(import.meta.dirname, "../src/shared/api/generated");
-const modules = ["public.ts", "ws.ts", "errors.ts"];
+const modules = [...DOCUMENTS.map(([, module]) => module), "errors.ts"];
 
 for (const name of modules) {
   const url = pathToFileURL(resolve(dir, name)).href;

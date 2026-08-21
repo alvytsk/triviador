@@ -1,11 +1,12 @@
 // Generates one Zod schema per definition in the exported contracts.
 //
-// Split into three modules on purpose (§7). A single `rest.ts` would pull
-// every top-level Zod construction into the player bundle regardless of
-// tree-shaking, because schema construction is a side-effecting top-level
-// expression. `admin.ts` is absent because there are no admin DTOs yet —
-// Plan 7 adds `contracts/admin.schema.json` and this script picks it up
-// with no change.
+// Split into per-document modules on purpose (§7), driven by the
+// `DOCUMENTS` table below. A single `rest.ts` would pull every top-level
+// Zod construction into the player bundle regardless of tree-shaking,
+// because schema construction is a side-effecting top-level expression —
+// so `admin.ts` (Plan 7A's `contracts/admin.schema.json`) is its own
+// module rather than merged into `public.ts`, and a player who never
+// opens `/admin` never constructs its schemas.
 //
 // R-22: `json-schema-to-zod` never resolves `$ref` on its own (verified
 // against 2.6.0 through 2.8.1 — there is no `$ref` branch in its parser
@@ -23,7 +24,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseSchema } from "json-schema-to-zod";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -182,7 +183,21 @@ export type ErrorCode = z.infer<typeof errorCodeSchema>;
   console.log(`errors.ts: ${api_error_code.length + reject_code.length} codes`);
 }
 
-mkdirSync(out, { recursive: true });
-emitDocument("rest.schema.json", "public.ts");
-emitDocument("ws.schema.json", "ws.ts");
-emitErrors();
+// One entry per exported contract document (§7). A table rather than a
+// directory scan: the module name is part of the frontend's import
+// surface (`@/shared/api/generated/public`), so a new contract file must
+// be given a name deliberately, not have one derived from whatever the
+// backend happened to call it. `verify-generated.mjs` imports this list
+// so the two cannot drift — Plan 7A added `admin.ts` and found that they
+// already had.
+export const DOCUMENTS = [
+  ["rest.schema.json", "public.ts"],
+  ["ws.schema.json", "ws.ts"],
+  ["admin.schema.json", "admin.ts"],
+];
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+  mkdirSync(out, { recursive: true });
+  for (const [document, module] of DOCUMENTS) emitDocument(document, module);
+  emitErrors();
+}
