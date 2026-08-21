@@ -20,7 +20,7 @@ from typing import Any
 
 import aioboto3
 from botocore.config import Config as BotoConfig
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from triviador.services.storage import ObjectHead, StoredObject
 
@@ -152,17 +152,35 @@ class S3GarageProbe:
     treated the same — an unreachable Garage is exactly as not-ready as a
     missing bucket).
 
+    "Unreachable" is not itself a `ClientError`, though — that class covers
+    Garage *answering* with an S3 error response. A Garage that never
+    accepted the connection (not started yet, network blip, wrong port)
+    raises a `botocore.exceptions.BotoCoreError` instead — sibling to, not
+    a subclass of, `ClientError` — so `ready()` catches both, around the
+    whole `head_bucket`/`get_bucket_website` sequence. Every `BotoCoreError`
+    reachable from here is transport/config level (connection refused, DNS
+    or endpoint resolution failure, TLS handshake failure, a timeout) —
+    this class never builds a call whose *parameters* botocore could reject
+    on their own merits (`ParamValidationError` and its relatives): the
+    bucket names and credentials are opaque strings handed in once, from
+    `Settings`, and never inspected or reshaped here. So there is no
+    `BotoCoreError` subclass this method can raise that indicates a bug in
+    this class's own logic rather than an environment problem, and none is
+    special-cased out of the catch. A defect in a *caller* (e.g. a Python
+    `TypeError` from a genuine bug elsewhere) is not a `BotoCoreError` and
+    still propagates — this stays narrower than `except Exception`.
+
     The website check does **not** work the way it would against real
     AWS S3, where `get_bucket_website` raises `NoSuchWebsiteConfiguration`
     for an unconfigured bucket. Verified empirically against a running
-    `dxflrs/garage:v1.1.0` (see task report): Garage's `get_bucket_website`
-    returns success — HTTP 204, an *empty* body — for a bucket with no
-    website configuration, and only populates `IndexDocument` (or the
-    other website fields) once one is actually set. Treating "it didn't
-    raise" as "it's the good state" the way the AWS-shaped API suggests
-    would make this guard report ready unconditionally, on every Garage
-    version this runs against — so the signal used here is the response's
-    *content*, not whether the call raised.
+    `dxflrs/garage:v1.1.0`: Garage's `get_bucket_website` returns success —
+    HTTP 204, an *empty* body — for a bucket with no website configuration,
+    and only populates `IndexDocument` (or the other website fields) once
+    one is actually set. Treating "it didn't raise" as "it's the good
+    state" the way the AWS-shaped API suggests would make this guard
+    report ready unconditionally, on every Garage version this runs
+    against — so the signal used here is the response's *content*, not
+    whether the call raised.
     """
 
     def __init__(
@@ -196,19 +214,27 @@ class S3GarageProbe:
             yield client
 
     async def ready(self) -> bool:
-        async with self._client() as client:
-            for bucket in (self._media_bucket, self._staging_bucket):
+        try:
+            async with self._client() as client:
+                for bucket in (self._media_bucket, self._staging_bucket):
+                    try:
+                        await client.head_bucket(Bucket=bucket)
+                    except ClientError:
+                        return False
                 try:
-                    await client.head_bucket(Bucket=bucket)
+                    website = await client.get_bucket_website(Bucket=self._staging_bucket)
                 except ClientError:
-                    return False
-            try:
-                website = await client.get_bucket_website(Bucket=self._staging_bucket)
-            except ClientError:
-                # Real S3's "not configured" answer. Never observed against
-                # Garage v1.1.0 (see class docstring), kept for the API
-                # contract `get_bucket_website` documents.
-                return True
-            # Garage's "not configured" answer: success, with nothing in
-            # the body beyond `ResponseMetadata`.
-            return not any(key != "ResponseMetadata" for key in website)
+                    # Real S3's "not configured" answer. Never observed against
+                    # Garage v1.1.0 (see class docstring), kept for the API
+                    # contract `get_bucket_website` documents.
+                    return True
+                # Garage's "not configured" answer: success, with nothing in
+                # the body beyond `ResponseMetadata`.
+                return not any(key != "ResponseMetadata" for key in website)
+        except BotoCoreError:
+            # Garage never answered at all — connection refused, not yet
+            # started, a network blip, a timeout. Not a `ClientError`
+            # (see class docstring), so it needs its own handler; wrapped
+            # around the whole sequence, not one call, because any of the
+            # three requests above can be the one that fails to connect.
+            return False

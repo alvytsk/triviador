@@ -36,6 +36,33 @@ async def test_the_seeded_state_is_ready(garage_probe: S3GarageProbe) -> None:
     assert await garage_probe.ready() is True
 
 
+async def test_an_unreachable_garage_is_not_ready() -> None:
+    """The Critical finding this test pins: `ready()` must return `False`
+    for an unreachable Garage — connection refused, not started yet, a
+    network blip — not raise. `EndpointConnectionError` (what botocore
+    raises when nothing answers at `endpoint_url`) is a `BotoCoreError`,
+    not a `ClientError`: Garage never gets the chance to answer with an
+    S3 error response, so a probe that only caught `ClientError` let this
+    propagate straight through `_lifespan` and crashed the process at
+    startup instead of setting `readiness.garage_ready = False` — exactly
+    the crash-loop `app.py`'s own comment says this check exists to avoid.
+
+    No live Garage needed either way: `garage-test` being up or down does
+    not matter here, because port 1 on loopback refuses the connection
+    deterministically regardless. Carries the module's `integration` mark
+    only because `tests/storage/conftest.py` requires it of every test in
+    this directory, not because this test depends on the container."""
+    probe = S3GarageProbe(
+        endpoint_url="http://127.0.0.1:1",
+        region="garage",
+        access_key_id=KEY_ID,
+        secret_access_key=KEY_SECRET,
+        media_bucket="triviador-media",
+        staging_bucket="triviador-staging",
+    )
+    assert await probe.ready() is False
+
+
 async def test_a_missing_bucket_is_not_ready() -> None:
     probe = S3GarageProbe(
         endpoint_url=ENDPOINT,
