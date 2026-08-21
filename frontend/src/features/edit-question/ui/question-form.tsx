@@ -338,19 +338,39 @@ export function QuestionForm(props: QuestionFormProps) {
           kind === "multiple_choice" ? (
             <form.Field name="choices">
               {(field) => (
-                <ChoiceEditor
-                  choices={field.state.value ?? blankChoices()}
-                  onTextChange={(index, text) =>
-                    field.handleChange(
-                      (field.state.value ?? blankChoices()).map((choice, i) =>
-                        i === index ? { ...choice, text } : choice,
-                      ),
-                    )
-                  }
-                  onMarkCorrect={(index) =>
-                    field.handleChange(markCorrect(field.state.value ?? blankChoices(), index))
-                  }
-                />
+                // `state.fieldMeta`, not this field's own `field.state.meta`:
+                // `questionWriteRequestSchema`'s `onSubmit` validator reports
+                // an over-long choice against the PER-ITEM path
+                // `choices[<i>].text` (see `standardSchemaValidator.js`'s
+                // `prefixSchemaToErrors`), not against `choices` itself — so
+                // reading only this field's own meta would never see it.
+                // Subscribing to the whole map is what makes those per-item
+                // errors visible without giving each choice input its own
+                // `form.Field` (which would also work, but re-plumbing
+                // `ChoiceEditor`'s onChange/onMarkCorrect callbacks through
+                // four extra `form.Field`s is a bigger change than fixing
+                // one restated bound calls for).
+                <form.Subscribe selector={(state) => state.fieldMeta}>
+                  {(fieldMeta) => (
+                    <ChoiceEditor
+                      choices={field.state.value ?? blankChoices()}
+                      errors={(field.state.value ?? blankChoices()).map((_, index) => {
+                        const meta = fieldMeta[`choices[${index}].text`];
+                        return meta?.errors[0]?.message ?? null;
+                      })}
+                      onTextChange={(index, text) =>
+                        field.handleChange(
+                          (field.state.value ?? blankChoices()).map((choice, i) =>
+                            i === index ? { ...choice, text } : choice,
+                          ),
+                        )
+                      }
+                      onMarkCorrect={(index) =>
+                        field.handleChange(markCorrect(field.state.value ?? blankChoices(), index))
+                      }
+                    />
+                  )}
+                </form.Subscribe>
               )}
             </form.Field>
           ) : (

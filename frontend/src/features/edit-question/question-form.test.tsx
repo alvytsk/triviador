@@ -122,6 +122,39 @@ describe("QuestionForm", () => {
     expect(screen.getByLabelText("Prompt")).toHaveValue("half typed prompt survives");
   });
 
+  it("shows a visible error on an over-long choice instead of capping input silently", async () => {
+    // Regression test for the `maxLength={200}` removed from
+    // `choice-editor.tsx` — that attribute used to physically stop typing
+    // past 200 characters, restating `choiceWriteSchema.text`'s
+    // `z.string().min(1).max(200)` a second time in HTML. Removing it
+    // means the bound is enforced only by `questionWriteRequestSchema`'s
+    // `onSubmit` validator, same as every other bounded field on this
+    // form — so this proves that validator's error is actually visible,
+    // not merely computed and discarded (the branch fix's own concern:
+    // per-item array errors report against `choices[<i>].text`, a path
+    // no `form.Field` mounts, so nothing renders them unless something
+    // explicitly reads the form's whole `fieldMeta` map — see
+    // `question-form.tsx`'s `form.Subscribe` around the `ChoiceEditor`).
+    renderWithApp(<QuestionForm mode="create" categories={CATEGORIES} onSaved={vi.fn()} />);
+
+    const tooLong = "x".repeat(201);
+    await userEvent.type(screen.getByLabelText("Prompt"), "A prompt with a too-long choice");
+    // No `maxLength` blocks this — the input now genuinely accepts more
+    // than 200 characters, which is the whole point of the regression.
+    fireEvent.change(screen.getByLabelText("Choice 1"), { target: { value: tooLong } });
+    await userEvent.type(screen.getByLabelText("Choice 2"), "Fine");
+    await userEvent.type(screen.getByLabelText("Choice 3"), "Fine");
+    await userEvent.type(screen.getByLabelText("Choice 4"), "Fine");
+    expect(screen.getByLabelText("Choice 1")).toHaveValue(tooLong);
+
+    await userEvent.click(screen.getByRole("button", { name: /create question/i }));
+
+    expect(await screen.findByText(/at most 200 character/i)).toBeInTheDocument();
+    // Refused client-side, not silently dropped: no POST happened, the
+    // form is still on the create screen with what was typed intact.
+    expect(screen.getByLabelText("Choice 1")).toHaveValue(tooLong);
+  });
+
   it("flips active state without navigating away", async () => {
     server.use(
       http.post("/api/admin/questions/q1/deactivate", () =>
