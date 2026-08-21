@@ -13,7 +13,6 @@ import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -30,6 +29,7 @@ from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, Origin
 from triviador.api.ws import endpoint
 from triviador.api.ws.broadcaster import WsBroadcaster
 from triviador.api.ws.hub import Hub
+from triviador.cli import _alembic_ini
 from triviador.config import Settings, startup_problems
 from triviador.db.engine import EnginePing, create_engine, sessionmaker_for
 from triviador.db.repositories.auth import (
@@ -288,7 +288,19 @@ def _lifespan(built: BuiltApp) -> Callable[[FastAPI], AbstractAsyncContextManage
 def _head_revision() -> str | None:
     """Alembic's own idea of "head", read from its script directory rather
     than hardcoded — the migration files are the one place this can go
-    stale without anyone editing this function."""
-    backend_root = Path(__file__).resolve().parents[3]
-    config = Config(str(backend_root / "alembic.ini"))
+    stale without anyone editing this function.
+
+    Locating `alembic.ini` via `Path(__file__)` breaks the moment the
+    package is installed non-editable — exactly what
+    `infra/backend.Dockerfile`'s `uv sync --no-editable` does, at which
+    point `__file__` resolves under `site-packages`, nowhere near
+    `alembic.ini`, and this raised at every container startup. Reuse
+    `triviador.cli`'s `_alembic_ini()`, which resolves against
+    `Path.cwd()` instead (both the container's `WORKDIR /app` and every
+    documented `cd backend && …` invocation run with the backend project
+    root as the working directory) — the same fix `migrate_head` needed
+    for the identical bug, kept in one place so the two don't drift back
+    to different strategies for the same file.
+    """
+    config = Config(str(_alembic_ini()))
     return ScriptDirectory.from_config(config).get_current_head()
