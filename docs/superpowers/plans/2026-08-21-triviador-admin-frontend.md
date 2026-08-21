@@ -258,12 +258,93 @@ MSW-backed, asserting the request shape as well as the parse: the media call mus
 
 ## Task 3: The question list
 
-**Files:** `frontend/src/pages/admin/questions/**`, `frontend/src/app/routes/_authed.admin.questions.{tsx,lazy.tsx}`, shadcn `table`/`select`/`input` primitives into `shared/ui/`
-**Spec:** §10.2 — server-side pagination and filters on `kind`, category, difficulty, `is_active`, `has_media`, plus prompt search.
+**Files:**
+- Create: `frontend/src/app/routes/_authed.admin.questions.tsx` (route + `validateSearch`), `_authed.admin.questions.lazy.tsx` (component)
+- Create: `frontend/src/pages/admin/questions/ui/questions-page.tsx`, `.../ui/question-filter-bar.tsx`, `.../index.ts`
+- Create: shadcn primitives in `frontend/src/shared/ui/`: `table.tsx`, `select.tsx`, `input.tsx` (vendored — see Decision 1)
+- Test: `frontend/src/pages/admin/questions/questions-page.test.tsx`
+- Modify: `frontend/package.json` (Radix + `class-variance-authority`), `frontend/src/shared/ui/index.ts`
 
-- [ ] **Step 1: Failing test** — renders rows from a contract-shaped page; typing in search updates the URL and issues a new request with `q=`; changing a filter resets to offset 0; paging forward keeps the filter.
-- [ ] **Step 2..n:** typed search params on the route (`validateSearch` with a Zod schema), a filter bar, and a table. The empty state distinguishes "no questions match this filter" from "the bank is empty" — the second is what a fresh deployment sees, and it should point at the import screen.
-- [ ] **Gate and commit.**
+**Interfaces:**
+- Consumes: `adminQuestionsQueryOptions(search)` and `adminKeys` (Task 2); `AdminShell`'s `<Outlet/>` (Task 1).
+- Produces: the `/admin/questions` route with typed search params; `QuestionsPage`; the first shadcn primitives, styled to Plan 6's dark broadcast look.
+
+**Spec:** §10.2 — server-side pagination, filters on `kind`, category, difficulty, `is_active`, `has_media`, and prompt search.
+
+- [ ] **Step 1: Write the failing test**
+
+`questions-page.test.tsx`, MSW-backed, rendering through the real router so the search params are exercised rather than simulated. The assertions that carry weight:
+
+```tsx
+it("renders a page of questions", async () => { /* rows from a contract-shaped QuestionPageView */ });
+
+it("puts the search in the URL, and sends it as q=", async () => {
+  // type "velvet" → the request carries q=velvet AND router.state.location.search reflects it,
+  // so the filtered view is linkable and survives a refresh.
+});
+
+it("resets to the first page when a filter changes", async () => {
+  // page forward, then change `kind` → the request carries offset=0.
+  // Without this, changing a filter on page 3 shows an empty table and looks like no matches.
+});
+
+it("keeps the filter when paging", async () => { /* the inverse of the above */ });
+
+it("tells an empty bank apart from an empty filter", async () => {
+  // total=0 with no filters → points at the import screen.
+  // total=0 with filters → says no questions match, and offers to clear them.
+});
+```
+
+That last one matters more than it looks: a fresh deployment's question bank is empty, and "no questions match your filters" when no filters are set is the first thing a new operator would see.
+
+- [ ] **Step 2: Run it, watch it fail** — no `/admin/questions` route exists.
+
+- [ ] **Step 3: Vendor the shadcn primitives**
+
+`pnpm add @radix-ui/react-select class-variance-authority` (clsx and tailwind-merge are already present from Plan 6, added there precisely so these drop in). Copy `table`, `select` and `input` into `shared/ui/`, restyle to the existing dark palette, and export them from `shared/ui/index.ts` alongside `button`/`field`/`banner`/`chip`. They are our files now — match the surrounding code's conventions rather than leaving upstream formatting.
+
+- [ ] **Step 4: Typed search params**
+
+```ts
+const questionSearchSchema = z.object({
+  q: z.string().optional(),
+  kind: questionKindSchema.optional(),
+  category_id: z.string().optional(),
+  difficulty: difficultySchema.optional(),
+  is_active: z.boolean().optional(),
+  has_media: z.boolean().optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+  offset: z.number().int().min(0).default(0),
+});
+
+export const Route = createFileRoute("/_authed/admin/questions")({
+  validateSearch: questionSearchSchema,
+  loaderDeps: ({ search }) => search,
+  loader: ({ context, deps }) =>
+    context.queryClient.ensureQueryData(adminQuestionsQueryOptions(deps)),
+});
+```
+
+Search params rather than component state: §10.2's list is something an admin filters, sends to someone, and comes back to. `kind` and `difficulty` reuse the generated enum schemas rather than re-declaring their values.
+
+- [ ] **Step 5: The page and the filter bar**
+
+The filter bar writes through `navigate({ search })`, which is what makes "changing a filter resets offset" a routing rule rather than a `useEffect`. The table renders prompt, kind, category, difficulty, active state and a media indicator, with each row linking to `/admin/questions/$id` (Task 4 creates that route — until then the link target simply does not resolve, which is expected).
+
+- [ ] **Step 6: Confirm the bundle marker went live** — a hard requirement carried from Task 2
+
+Task 2 strengthened `scripts/assert-admin-split.mjs` with an admin-schema marker, but **that marker was inert**: nothing imported `entities/admin` yet, so `pnpm check:bundle` passed on Task 1's nav-href markers alone. This task is the first to import the entity layer, so the marker becomes live here.
+
+Run `pnpm check:bundle` and confirm from its output that the **schema** marker is now found in a lazy chunk and absent from every player-reachable chunk. If it is not found, the marker is wrong and must be replaced with a string that genuinely appears in admin schema content — a marker that never appears makes "absent from the player bundle" vacuously true, which is the failure this whole assertion exists to prevent. Put the output in your report either way.
+
+- [ ] **Step 7: Gate and commit**
+
+`pnpm check && pnpm test && pnpm check:bundle && pnpm codegen:check`.
+
+```bash
+git commit -m "feat(admin-ui): the question list, filtered and paged through the URL"
+```
 
 ---
 
