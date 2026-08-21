@@ -21,7 +21,8 @@ depends on client readiness), so the preset sets it to the 1 s floor. Spec
 import asyncio
 import os
 import warnings
-from collections.abc import Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -146,6 +147,8 @@ def seeded(migrated: None, tmp_path: Path) -> Path:
                     "invite_codes",
                     "question_choices",
                     "question_numeric",
+                    "question_imports",
+                    "media_assets",
                     "questions",
                     "categories",
                     "users",
@@ -221,3 +224,146 @@ def client(seeded: Path) -> Iterator[TestClient]:
     with TestClient(build_app(settings), base_url="http://testserver") as client:
         client.headers["Origin"] = "http://testserver"
         yield client
+
+
+from triviador.api.app import build_dependencies, create_app  # noqa: E402
+from triviador.cli import admin_create  # noqa: E402
+from triviador.db.engine import engine_for, sessionmaker_for  # noqa: E402
+from triviador.db.repositories.auth import UserRepository  # noqa: E402
+from triviador.db.repositories.media import MediaAssetRepository  # noqa: E402
+from triviador.db.security import Argon2Hasher  # noqa: E402
+from triviador.media.gc import GcReport, MediaCollector  # noqa: E402
+from triviador.services.storage import ObjectHead  # noqa: E402
+from triviador.storage.s3 import S3MediaStore  # noqa: E402
+
+
+def admin_settings(maps_root: Path) -> Settings:
+    """The real `Settings`, pointed at both test containers.
+
+    Buckets are shared with `tests/storage/` on purpose: every key in
+    them is either a content hash or a per-import uuid prefix, so two
+    suites cannot collide, and a second pair of buckets would be a second
+    thing `garage-init.sh` has to keep in step.
+
+    The brief's literal version hardcoded `maps_root=HERE / "maps"` — a
+    fixed directory *inside the test source tree*, rather than the
+    `client` fixture's own `maps_root=seeded` (a pytest `tmp_path`).
+    That writes real `write_grid_map` output next to this file on every
+    run, and `git add backend/tests` (Step 4) would pick the files up as
+    untracked. Taking `maps_root` as a parameter and passing `seeded`
+    keeps this fixture on the same, already-proven pattern.
+    """
+    return Settings(
+        database_url=DATABASE_URL,
+        allowed_origins=("http://testserver",),
+        allowed_hosts=("testserver",),
+        maps_root=maps_root,
+        s3_endpoint_url=ENDPOINT,
+        s3_region="garage",
+        s3_access_key_id=KEY_ID,
+        s3_secret_access_key=SecretStr(KEY_SECRET),
+    )
+
+
+@pytest.fixture
+def admin_session(seeded: Path) -> Iterator[tuple[TestClient, Settings]]:
+    """A migrated database, one bootstrapped admin, and a signed-in client.
+
+    `admin_create` is called as a function rather than through a
+    subprocess: it is the same code path `uv run triviador admin-create`
+    takes, and a subprocess here would need its own environment and its
+    own database URL to get wrong.
+    """
+    # `seeded` already wrote the grid map into `tmp_path / "grid"` before
+    # returning it — a second `write_grid_map` call here would be redundant
+    # (and, worse, land in the source tree; see `admin_settings`'s docstring).
+    settings = admin_settings(seeded)
+
+    async def _bootstrap() -> None:
+        async with engine_for(settings.database_url) as engine:
+            sessions = sessionmaker_for(engine)
+            await admin_create(
+                users=UserRepository(sessions),
+                hasher=Argon2Hasher(),
+                username="root",
+                password="correct horse battery",
+                display_name="Root",
+                force=False,
+            )
+
+    run(_bootstrap())
+    built = build_dependencies(settings)
+    with TestClient(create_app(built.deps)) as client:
+        response = client.post(
+            "/api/auth/login",
+            json={"username": "root", "password": "correct horse battery"},
+            headers={"Origin": "http://testserver"},
+        )
+        assert response.status_code == 200
+        client.headers["Origin"] = "http://testserver"
+        yield client, settings
+    run(built.engine.dispose())
+
+
+class _SyncMediaStore:
+    """`S3MediaStore` with a blocking face.
+
+    This directory's tests are synchronous (see the module docstring), so
+    every call owns its own loop through `asyncio.run` — the same
+    convention the database helpers here already use.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._store = S3MediaStore(
+            endpoint_url=settings.s3_endpoint_url,
+            region=settings.s3_region,
+            access_key_id=settings.s3_access_key_id,
+            secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+            bucket=settings.media_bucket,
+        )
+
+    def head_sync(self, key: str) -> ObjectHead | None:
+        # The brief types this `object | None`, which is `S3MediaStore.head`'s
+        # actual return type erased — every caller in `test_admin_session.py`
+        # then reads `.content_type`/`.cache_control` off it, which `mypy
+        # --strict` rejects on a bare `object`. `ObjectHead` is what `head`
+        # really returns; naming it here is what makes those reads type-check.
+        return asyncio.run(self._store.head(key))
+
+    @property
+    def store(self) -> S3MediaStore:
+        return self._store
+
+
+@pytest.fixture
+def media_store(admin_session: tuple[TestClient, Settings]) -> _SyncMediaStore:
+    return _SyncMediaStore(admin_session[1])
+
+
+@pytest.fixture
+def run_media_gc(
+    admin_session: tuple[TestClient, Settings], media_store: _SyncMediaStore
+) -> Callable[..., GcReport]:
+    settings = admin_session[1]
+
+    def run(*, dry_run: bool = False) -> GcReport:
+        async def _go() -> GcReport:
+            async with engine_for(settings.database_url) as engine:
+                collector = MediaCollector(
+                    assets=MediaAssetRepository(sessionmaker_for(engine)),
+                    store=media_store.store,
+                    # Zero grace: the fixture's uploads are seconds old, and
+                    # the production default (60 minutes) would make every
+                    # orphan assertion in this suite vacuously pass.
+                    grace=timedelta(0),
+                )
+                # The brief's literal fixture dropped `dry_run` here,
+                # forwarding only `now` to `collector.run(...)`. That
+                # makes `run_media_gc(dry_run=True)` silently perform the
+                # real, destructive sweep — caught by the dry-run
+                # assertion below failing with `deleted=True`.
+                return await collector.run(now=datetime.now(UTC), dry_run=dry_run)
+
+        return asyncio.run(_go())
+
+    return run
