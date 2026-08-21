@@ -77,6 +77,88 @@ async def test_two_concurrent_confirms_cannot_both_apply(
     assert sorted([first, second]) == [False, True]
 
 
+async def test_two_confirms_introducing_the_same_new_category_do_not_race(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """Important #2 (M4): `_ensure_categories` used to be
+    `SELECT`-then-`INSERT`, with no conflict handling — unlike its
+    neighbour `_ensure_assets`, which upserts. Two *different* imports
+    (different `question_imports` rows, so `apply_if_confirmable`'s `FOR
+    UPDATE` does not serialise them against each other) both introducing
+    "sports" for the first time used to race a plain `INSERT` into a
+    `UniqueViolation` on `categories.slug` — the same spurious 503
+    Important #1 fixes for `questions`' foreign keys. Asserted against
+    real PostgreSQL, because the property is the constraint's, not the
+    code's: before the fix, this test fails with an unhandled
+    `IntegrityError` on whichever side loses the race, not with the clean
+    `[True, True]` it asserts below.
+    """
+    import asyncio
+
+    await _seed_user(sessions, "admin-1")
+    repository = QuestionImportRepository(sessions)
+    for import_id in ("imp-a", "imp-b"):
+        await repository.create(
+            import_id=import_id,
+            uploaded_by="admin-1",
+            upload_sha256=f"sha-{import_id}",
+            filename="b.csv",
+            staged_key=f"{import_id}/b.csv",
+            row_count=1,
+            rejected_count=0,
+            report={"rejections": [], "notices": []},
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    def row(prompt: str) -> ImportedQuestion:
+        return ImportedQuestion(
+            category_slug="sports",
+            kind="numeric",
+            prompt=prompt,
+            difficulty="easy",
+            media_file=None,
+            choices=None,
+            numeric_answer=Decimal("1"),
+            unit=None,
+        )
+
+    async def apply(import_id: str, prompt: str) -> bool:
+        return await repository.apply_if_confirmable(
+            import_id,
+            rows=(row(prompt),),
+            images={},
+            uploaded_by="admin-1",
+            now=datetime.now(UTC),
+        )
+
+    first, second = await asyncio.gather(
+        apply("imp-a", "How many players does a game seat?"),
+        apply("imp-b", "How many rounds does expansion run?"),
+    )
+    assert (first, second) == (True, True)
+
+    async with sessions() as session:
+        categories = (
+            await session.execute(sql("SELECT id FROM categories WHERE slug = 'sports'"))
+        ).scalars().all()
+        category_ids = (
+            await session.execute(
+                sql(
+                    "SELECT DISTINCT category_id FROM questions "
+                    "WHERE prompt IN (:p1, :p2)"
+                ),
+                {
+                    "p1": "How many players does a game seat?",
+                    "p2": "How many rounds does expansion run?",
+                },
+            )
+        ).scalars().all()
+    # Exactly one "sports" row was ever created, and both questions —
+    # written from two different transactions — ended up pointing at it.
+    assert len(categories) == 1
+    assert category_ids == [categories[0]]
+
+
 async def test_confirm_writes_every_kind_of_row_in_one_transaction(
     sessions: async_sessionmaker[AsyncSession], clean_db: None
 ) -> None:

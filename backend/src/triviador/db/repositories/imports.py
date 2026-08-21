@@ -176,10 +176,16 @@ class QuestionImportRepository:
         would then mean "no partial writes unless the process dies between
         two of them".
 
-        Categories are created on the fly. The dry-run already reported
-        how many rows carry each slug, so refusing an unknown one here
-        would turn the first import of a new topic into a two-step dance
-        for no safety.
+        Categories are created on the fly. `imports/parse.py::_parse_row`
+        already rejects a slug that does not match `CATEGORY_SLUG_PATTERN`
+        before a row ever reaches here (Important #2 of the Plan 7A
+        review — the comment this one replaces claimed the dry-run
+        reported per-category information it never did), so every slug
+        this creates is already the shape `CreateCategoryRequest` would
+        accept from the interactive route. Refusing an unknown *category*
+        a second time here would still turn the first import of a new
+        topic into a two-step dance, for no safety a shape check upstream
+        does not already give.
         """
         categories = await self._ensure_categories(session, rows)
         await self._ensure_assets(session, images, uploaded_by)
@@ -221,19 +227,34 @@ class QuestionImportRepository:
     async def _ensure_categories(
         session: AsyncSession, rows: Sequence[ImportedQuestion]
     ) -> dict[str, str]:
+        """Every slug this import needs, created if new — `ON CONFLICT
+        (slug) DO NOTHING`, matching `_ensure_assets` below.
+
+        Was `SELECT`-then-`INSERT`: two concurrent confirms that both
+        introduce the same new slug for the first time would both see it
+        missing, both try to create it, and the loser would hit a raw
+        `UniqueViolation` — the same spurious 503 Important #1 fixes for
+        `questions`' foreign keys, on `categories.slug`'s UNIQUE
+        constraint instead. The upsert removes the race outright rather
+        than narrowing the window; the final `SELECT` is what makes the
+        *winner's* id (not necessarily the id generated in this call) the
+        one every row below actually gets, since the loser's locally
+        generated `Category` never becomes a row.
+        """
         slugs = {row.category_slug for row in rows}
-        existing = {
-            row.slug: row.id
-            for row in (
-                await session.execute(select(Category).where(Category.slug.in_(slugs)))
-            ).scalars()
-        }
-        for slug in sorted(slugs - set(existing)):
-            category = Category(id=str(uuid4()), slug=slug, name=slug.replace("-", " ").title())
-            session.add(category)
-            existing[slug] = category.id
+        if not slugs:
+            return {}
+        for slug in slugs:
+            await session.execute(
+                insert(Category)
+                .values(id=str(uuid4()), slug=slug, name=slug.replace("-", " ").title())
+                .on_conflict_do_nothing(index_elements=[Category.slug])
+            )
         await session.flush()
-        return existing
+        rows_by_slug = (
+            await session.execute(select(Category).where(Category.slug.in_(slugs)))
+        ).scalars()
+        return {row.slug: row.id for row in rows_by_slug}
 
     @staticmethod
     async def _ensure_assets(

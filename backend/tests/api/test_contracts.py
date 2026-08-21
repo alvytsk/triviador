@@ -116,15 +116,48 @@ def _refs(node: object) -> list[str]:
 
 def test_admin_schema_carries_every_admin_dto() -> None:
     """A DTO absent from `ADMIN_MODELS` is a DTO the frontend types by
-    hand, which is the drift §7 exists to prevent. The check is by name
-    against the module's own exports, so adding a model to
-    `schemas/admin/` and forgetting the list fails here."""
+    hand, which is the drift §7 exists to prevent.
+
+    The expected set is derived by walking every module under
+    `schemas/admin/` for `BaseModel` subclasses *defined* there (not
+    merely imported into it — `presets.py` imports `RulesView` from the
+    public `schemas/presets.py`, which must not count), so adding a model
+    under `schemas/admin/` and forgetting `ADMIN_MODELS` fails here. The
+    previous version of this test asserted a hardcoded 12-name subset `<=`
+    `ADMIN_MODELS` — a check that could never fail no matter what
+    `ADMIN_MODELS` dropped, and in fact left 8 of the module's 20 real
+    models unguarded.
+    """
+    import importlib
+    import pkgutil
+
+    from pydantic import BaseModel
+
     from triviador.api import contracts
+    from triviador.api.schemas import admin as admin_schemas
+
+    defined: set[str] = set()
+    prefix = f"{admin_schemas.__name__}."
+    for module_info in pkgutil.iter_modules(admin_schemas.__path__, prefix):
+        module = importlib.import_module(module_info.name)
+        for attr_name, obj in vars(module).items():
+            if (
+                isinstance(obj, type)
+                and issubclass(obj, BaseModel)
+                and obj.__module__ == module.__name__
+            ):
+                defined.add(attr_name)
+
+    # Reached only nested inside another admin DTO — `ChoiceView` inside
+    # `QuestionDetail.choices`, `ChoiceWrite` inside
+    # `QuestionWriteRequest.choices` — never exported as a top-level admin
+    # request/response in their own right. `ADMIN_MODELS` deliberately
+    # omits both; naming that here keeps the exclusion explicit rather
+    # than falling back to the subset check this test replaces.
+    nested_only = {"ChoiceView", "ChoiceWrite"}
 
     exported = {model.__name__ for model in contracts.ADMIN_MODELS}
-    assert {"QuestionDetail", "QuestionPageView", "QuestionSaved", "CategoryView",
-            "MediaAssetSummary", "ImportSummary", "ImportNotice", "InviteView",
-            "IssuedInvite", "UserView", "PresetDetail", "PresetCoverage"} <= exported
+    assert defined - nested_only == exported
 
 
 def test_the_admin_document_resolves_its_refs_locally() -> None:

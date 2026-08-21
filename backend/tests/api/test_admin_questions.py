@@ -126,3 +126,53 @@ async def test_deactivate_and_activate_flip_the_flag_without_bumping_version(
     assert (off.json()["is_active"], off.json()["version"]) == (False, created["version"])
     on = await admin_client.post(f"/api/admin/questions/{created['id']}/activate")
     assert (on.json()["is_active"], on.json()["version"]) == (True, created["version"])
+
+
+async def test_creating_with_a_stale_category_id_is_404_not_503(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """Important #1: a foreign-key violation on `questions.category_id`
+    must read as "that category is gone", not as "the database is
+    down"."""
+    assert isinstance(deps.questions_admin, FakeQuestionAdmin)
+    deps.questions_admin.missing_category_ids = frozenset({MC_BODY["category_id"]})
+    response = await admin_client.post("/api/admin/questions", json=MC_BODY)
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
+async def test_creating_with_a_stale_media_asset_id_is_404_not_503(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """The other half of Important #1: `media-gc` deletes a
+    `media_assets` row an editor tab still has open, and posting that
+    stale id must not read as a database outage either."""
+    assert isinstance(deps.questions_admin, FakeQuestionAdmin)
+    deps.questions_admin.missing_media_asset_ids = frozenset({"stale-asset"})
+    body = {**MC_BODY, "media_asset_id": "stale-asset"}
+    response = await admin_client.post("/api/admin/questions", json=body)
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+
+
+async def test_patching_with_a_stale_category_or_media_asset_id_is_404_not_503(
+    admin_client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    assert isinstance(deps.questions_admin, FakeQuestionAdmin)
+    created = (await admin_client.post("/api/admin/questions", json=MC_BODY)).json()["question"]
+
+    deps.questions_admin.missing_category_ids = frozenset({MC_BODY["category_id"]})
+    by_category = await admin_client.patch(
+        f"/api/admin/questions/{created['id']}", json=MC_BODY
+    )
+    assert by_category.status_code == 404
+    assert by_category.json()["code"] == "not_found"
+
+    deps.questions_admin.missing_category_ids = frozenset()
+    deps.questions_admin.missing_media_asset_ids = frozenset({"stale-asset"})
+    by_asset = await admin_client.patch(
+        f"/api/admin/questions/{created['id']}",
+        json={**MC_BODY, "media_asset_id": "stale-asset"},
+    )
+    assert by_asset.status_code == 404
+    assert by_asset.json()["code"] == "not_found"

@@ -1,11 +1,23 @@
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from tests.db.conftest import _seed_category, _seed_mc_question, _seed_numeric_question
+from tests.db.conftest import (
+    _seed_asset,
+    _seed_category,
+    _seed_mc_question,
+    _seed_numeric_question,
+    _seed_user,
+)
 from triviador.db.repositories.question_admin import QuestionAdminRepository
-from triviador.services.admin import QuestionFilters, QuestionWrite
+from triviador.services.admin import (
+    CategoryNotFound,
+    MediaAssetNotFound,
+    QuestionFilters,
+    QuestionWrite,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -230,3 +242,80 @@ async def test_active_counts_groups_by_kind_and_ignores_retired_questions(
     await _seed_mc_question(sessions, "q-mc-2", prompt="A second active multiple-choice question")
     counts = await QuestionAdminRepository(sessions).active_counts()
     assert counts == {"multiple_choice": 2, "numeric": 1}
+
+
+def _numeric_write(*, category_id: str, media_asset_id: str | None) -> QuestionWrite:
+    return QuestionWrite(
+        kind="numeric",
+        prompt="How many, exactly?",
+        category_id=category_id,
+        difficulty="easy",
+        media_asset_id=media_asset_id,
+        choices=None,
+        numeric_answer=Decimal("1"),
+        unit=None,
+    )
+
+
+async def test_create_raises_category_not_found_for_a_nonexistent_category(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """Important #1: `questions.category_id`'s foreign key, caught rather
+    than left to surface as a raw `IntegrityError` (503)."""
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    with pytest.raises(CategoryNotFound):
+        await repository.create(_numeric_write(category_id="no-such-category", media_asset_id=None))
+
+
+async def test_create_raises_media_asset_not_found_for_a_nonexistent_asset(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    with pytest.raises(MediaAssetNotFound):
+        await repository.create(_numeric_write(category_id="cat-1", media_asset_id="no-such-asset"))
+
+
+async def test_update_raises_category_not_found_for_a_nonexistent_category(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    with pytest.raises(CategoryNotFound):
+        await repository.update(
+            "q-mc", _numeric_write(category_id="no-such-category", media_asset_id=None)
+        )
+
+
+async def test_update_raises_media_asset_not_found_for_a_nonexistent_asset(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    await _bank(sessions)
+    repository = QuestionAdminRepository(sessions)
+    with pytest.raises(MediaAssetNotFound):
+        await repository.update(
+            "q-mc", _numeric_write(category_id="cat-1", media_asset_id="no-such-asset")
+        )
+
+
+async def test_a_tab_left_open_across_a_media_gc_sweep_gets_404_not_a_crash(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """The concrete scenario Important #1 names: an asset is uploaded and
+    referenced by nothing yet, `media-gc` sweeps it away because it is
+    genuinely unreferenced, and only then does the editor tab that had it
+    open all along try to attach it to a save."""
+    await _bank(sessions)
+    await _seed_user(sessions, "admin-1")
+    await _seed_asset(sessions, "asset-1")
+    repository = QuestionAdminRepository(sessions)
+    created = await repository.create(_numeric_write(category_id="cat-1", media_asset_id=None))
+
+    async with sessions() as db, db.begin():
+        await db.execute(text("DELETE FROM media_assets WHERE id = :id"), {"id": "asset-1"})
+
+    with pytest.raises(MediaAssetNotFound):
+        await repository.update(
+            created.question_id, _numeric_write(category_id="cat-1", media_asset_id="asset-1")
+        )

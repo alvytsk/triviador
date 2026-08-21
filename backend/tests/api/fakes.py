@@ -21,6 +21,7 @@ from triviador.domain.game.rules import DEFAULT_RULES, GameRules
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.domain.questions.types import QuestionKind
 from triviador.services.admin import (
+    CategoryNotFound,
     CategoryRecord,
     ChoiceRecord,
     DeactivateOutcome,
@@ -30,6 +31,7 @@ from triviador.services.admin import (
     ImportStatus,
     InviteRecord,
     InviteStatus,
+    MediaAssetNotFound,
     MediaAssetRecord,
     PresetAdminRecord,
     QuestionDetailRecord,
@@ -567,6 +569,14 @@ class FakeQuestionAdmin:
 
     records: dict[str, QuestionDetailRecord] = field(default_factory=dict)
     last_filters: QuestionFilters | None = None
+    # Empty by default, so every existing test's `write.category_id`/
+    # `write.media_asset_id` keeps sailing through unchecked. A test that
+    # wants to see the route's 404 translation (Important #1) populates
+    # one of these with the id its request body carries — this fake has
+    # no foreign key of its own to violate, so this is what stands in for
+    # "that id no longer names a row".
+    missing_category_ids: frozenset[str] = frozenset()
+    missing_media_asset_ids: frozenset[str] = frozenset()
 
     async def list(self, filters: QuestionFilters, *, limit: int, offset: int) -> QuestionPage:
         self.last_filters = filters
@@ -576,7 +586,15 @@ class FakeQuestionAdmin:
     async def get(self, question_id: str) -> QuestionDetailRecord | None:
         return self.records.get(question_id)
 
+    def _check_fks(self, write: QuestionWrite) -> None:
+        if write.category_id in self.missing_category_ids:
+            raise CategoryNotFound(write.category_id)
+        asset_id = write.media_asset_id
+        if asset_id is not None and asset_id in self.missing_media_asset_ids:
+            raise MediaAssetNotFound(asset_id)
+
     async def create(self, write: QuestionWrite) -> QuestionDetailRecord:
+        self._check_fks(write)
         record = QuestionDetailRecord(
             question_id=str(uuid4()),
             kind=write.kind,
@@ -595,6 +613,7 @@ class FakeQuestionAdmin:
         return record
 
     async def update(self, question_id: str, write: QuestionWrite) -> QuestionDetailRecord | None:
+        self._check_fks(write)
         existing = self.records.get(question_id)
         if existing is None:
             return None

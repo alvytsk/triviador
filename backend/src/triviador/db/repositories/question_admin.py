@@ -6,23 +6,60 @@ transaction — and its docstring is an argument about locking that an
 admin CRUD surface would bury. The two share only the tables.
 """
 
-from typing import Any
+from typing import Any, NoReturn
 from uuid import uuid4
 
 from sqlalchemy import Select, delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from triviador.db.models.content import Category, Question, QuestionChoice, QuestionNumeric
 from triviador.db.repositories.questions import prompt_digest
 from triviador.domain.questions.types import QuestionKind
 from triviador.services.admin import (
+    CategoryNotFound,
     ChoiceRecord,
+    MediaAssetNotFound,
     QuestionDetailRecord,
     QuestionFilters,
     QuestionPage,
     QuestionSummaryRecord,
     QuestionWrite,
 )
+
+# The two `questions` foreign keys, by the constraint name PostgreSQL
+# reports on a violation (migration 0001) — the only way `create`/`update`
+# can tell "the category is gone" from "the media asset is gone" apart,
+# since both surface as the same `IntegrityError` otherwise.
+_FK_CATEGORY = "fk_questions_category_id_categories"
+_FK_MEDIA_ASSET = "fk_questions_media_asset_id_media_assets"
+
+
+def _raise_for_fk_violation(exc: IntegrityError, write: QuestionWrite) -> NoReturn:
+    """Translate a `questions` foreign-key violation into the domain
+    exception `api/http/admin/questions.py` knows how to answer 404 for.
+
+    Not a check-then-insert: `media-gc` is a concurrent writer that can
+    delete the row between a `SELECT` and this `INSERT`/`UPDATE`, so the
+    only race-free place to catch this is the constraint violation itself.
+    A constraint this function does not recognise is re-raised unchanged,
+    so it still reaches the generic `IntegrityError` handler (503) rather
+    than being swallowed as one of these two.
+
+    `exc.orig` is SQLAlchemy's own `AsyncAdapt_asyncpg_dbapi.IntegrityError`
+    — a wrapper it constructs itself (asyncpg.py's `_handle_exception`) —
+    not the driver's `ForeignKeyViolationError`, so `constraint_name` is
+    not an attribute of `exc.orig` itself. That wrapper is raised `from`
+    the original asyncpg exception, though, which is what carries the
+    name, so it is read off `exc.orig.__cause__` instead — confirmed
+    against real PostgreSQL, not assumed from the library's docs.
+    """
+    constraint = getattr(getattr(exc.orig, "__cause__", None), "constraint_name", None)
+    if constraint == _FK_CATEGORY:
+        raise CategoryNotFound(write.category_id) from exc
+    if constraint == _FK_MEDIA_ASSET:
+        raise MediaAssetNotFound(write.media_asset_id) from exc
+    raise exc
 
 
 def _apply(statement: Select[Any], filters: QuestionFilters) -> Select[Any]:
@@ -168,22 +205,25 @@ class QuestionAdminRepository:
     async def create(self, write: QuestionWrite) -> QuestionDetailRecord:
         _validate(write)
         question_id = str(uuid4())
-        async with self._sessionmaker() as session, session.begin():
-            session.add(
-                Question(
-                    id=question_id,
-                    version=1,
-                    kind=write.kind,
-                    prompt=write.prompt,
-                    category_id=write.category_id,
-                    difficulty=write.difficulty,
-                    media_asset_id=write.media_asset_id,
-                    is_active=True,
-                    prompt_hash=prompt_digest(write.prompt),
+        try:
+            async with self._sessionmaker() as session, session.begin():
+                session.add(
+                    Question(
+                        id=question_id,
+                        version=1,
+                        kind=write.kind,
+                        prompt=write.prompt,
+                        category_id=write.category_id,
+                        difficulty=write.difficulty,
+                        media_asset_id=write.media_asset_id,
+                        is_active=True,
+                        prompt_hash=prompt_digest(write.prompt),
+                    )
                 )
-            )
-            await session.flush()
-            self._write_children(session, question_id, write)
+                await session.flush()
+                self._write_children(session, question_id, write)
+        except IntegrityError as exc:
+            _raise_for_fk_violation(exc, write)
         record = await self.get(question_id)
         assert record is not None  # inserted and committed above
         return record
@@ -199,25 +239,28 @@ class QuestionAdminRepository:
         `repositories/questions.py`.
         """
         _validate(write)
-        async with self._sessionmaker() as session, session.begin():
-            row = await session.get(Question, question_id, with_for_update=True)
-            if row is None:
-                return None
-            row.kind = write.kind
-            row.prompt = write.prompt
-            row.prompt_hash = prompt_digest(write.prompt)
-            row.category_id = write.category_id
-            row.difficulty = write.difficulty
-            row.media_asset_id = write.media_asset_id
-            row.version = row.version + 1
-            await session.execute(
-                delete(QuestionChoice).where(QuestionChoice.question_id == question_id)
-            )
-            await session.execute(
-                delete(QuestionNumeric).where(QuestionNumeric.question_id == question_id)
-            )
-            await session.flush()
-            self._write_children(session, question_id, write)
+        try:
+            async with self._sessionmaker() as session, session.begin():
+                row = await session.get(Question, question_id, with_for_update=True)
+                if row is None:
+                    return None
+                row.kind = write.kind
+                row.prompt = write.prompt
+                row.prompt_hash = prompt_digest(write.prompt)
+                row.category_id = write.category_id
+                row.difficulty = write.difficulty
+                row.media_asset_id = write.media_asset_id
+                row.version = row.version + 1
+                await session.execute(
+                    delete(QuestionChoice).where(QuestionChoice.question_id == question_id)
+                )
+                await session.execute(
+                    delete(QuestionNumeric).where(QuestionNumeric.question_id == question_id)
+                )
+                await session.flush()
+                self._write_children(session, question_id, write)
+        except IntegrityError as exc:
+            _raise_for_fk_violation(exc, write)
         return await self.get(question_id)
 
     async def set_active(

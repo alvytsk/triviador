@@ -16,8 +16,13 @@
 set -euo pipefail
 
 COMPOSE=(docker compose -f "$(dirname "$0")/../docker-compose.test.yml")
-KEY_ID="${TEST_S3_KEY_ID:-GK111111111111111111111111}"
-KEY_SECRET="${TEST_S3_KEY_SECRET:-2222222222222222222222222222222222222222222222222222222222222222}"
+# `TRIVIADOR_TEST_S3_*`, matching `tests/storage/conftest.py`'s spelling —
+# the two used to disagree (`TEST_S3_*` here, `TRIVIADOR_TEST_S3_*` there)
+# with identical defaults, which made the mismatch invisible until someone
+# overrode one and got a Garage auth error in the file they were not
+# editing.
+KEY_ID="${TRIVIADOR_TEST_S3_KEY_ID:-GK111111111111111111111111}"
+KEY_SECRET="${TRIVIADOR_TEST_S3_KEY_SECRET:-2222222222222222222222222222222222222222222222222222222222222222}"
 
 garage() { "${COMPOSE[@]}" exec -T garage-test /garage "$@"; }
 

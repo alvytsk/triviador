@@ -65,6 +65,13 @@ def test_a_bad_row_is_rejected_by_line_number_and_the_rest_survive() -> None:
         ("picture,Unknown kind,history,easy,,,,,,1,,", "kind"),
         ("numeric,Unknown difficulty,history,trivial,,,,,,1,,", "difficulty"),
         ("numeric,,history,easy,,,,,,1,,", "prompt"),
+        # Important #2 of the Plan 7A review: `CreateCategoryRequest.slug`
+        # enforces `^[a-z0-9]+(-[a-z0-9]+)*$` on the interactive route: an
+        # importer that accepted anything non-empty here was the one path
+        # that could still create "Pop Music" and "pop-music" as two
+        # categories nobody could tell apart on screen.
+        ("numeric,Capitalised category,Pop Music,easy,,,,,,1,,", "slug"),
+        ("numeric,Underscore is not a dash,pop_music,easy,,,,,,1,,", "slug"),
     ],
 )
 def test_each_row_level_rule(row: str, reason: str) -> None:

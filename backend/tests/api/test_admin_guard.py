@@ -3,8 +3,12 @@
 A per-route `Depends(current_admin)` is one `git` conflict away from being
 dropped from a single handler, and the failure is silent — the route keeps
 working, for everybody. `test_every_admin_route_is_guarded` walks the real
-app instead of trusting the source: it is vacuous while `http/admin/` holds
-no routes, and it covers Task 4's first one automatically.
+app instead of trusting the source, over every route the whole admin
+surface (`http/admin/`) mounts today — categories, questions, media,
+imports, invites, users, presets — not a vacuous check with nothing yet
+to find: `test_the_walk_sees_a_route_mounted_the_way_every_admin_route_will_be`
+and the two "caught" tests below prove the walk actually fails when a
+route or a router loses its guard.
 """
 
 import httpx
@@ -187,11 +191,23 @@ def test_a_sub_router_mounted_without_the_guard_is_caught(deps: AppDependencies)
 
 
 def _dependency_calls(route: APIRoute) -> set[object]:
-    """Every callable in the route's dependency tree, router-level included.
+    """Every callable in the route's *own* dependency tree — a handler's
+    parameter-level `Depends()`, walked recursively since
+    `current_principal` sits one level below `current_admin`.
 
-    FastAPI merges a router's `dependencies=` into each route's
-    `Dependant`, so a structural check can see them — but only by walking,
-    since `current_principal` sits one level below `current_admin`.
+    Router-level included, despite the name suggesting otherwise: it is
+    not. In FastAPI 0.141, a router's `dependencies=` lives on
+    `_IncludedRouter.include_context.dependencies`, a place this walk
+    never reaches, and is never merged into the route's own `Dependant` —
+    confirmed against this project's own app, not assumed from the
+    library's docs. That is exactly why `unguarded_admin_routes` unions
+    this function's result with `mounted.guards` rather than trusting
+    either alone: this walk is what catches `probe`'s guard (carried on
+    its own handler parameter), and `mounted.guards` is what catches
+    `bare`'s (inherited only from `build_admin_router`'s `dependencies=`).
+    Relying on this function by itself would report every router-guarded
+    admin route as unguarded — the exact failure that hid the real gap
+    this module now catches.
     """
     calls: set[object] = set()
     stack = [route.dependant]

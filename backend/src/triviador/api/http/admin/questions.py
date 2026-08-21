@@ -16,6 +16,8 @@ from triviador.api.schemas.admin.questions import (
 )
 from triviador.domain.questions.types import Difficulty, QuestionKind
 from triviador.services.admin import (
+    CategoryNotFound,
+    MediaAssetNotFound,
     QuestionDetailRecord,
     QuestionFilters,
     QuestionSummaryRecord,
@@ -129,11 +131,25 @@ def _write(body: QuestionWriteRequest) -> QuestionWrite:
     )
 
 
+def _not_found(exc: CategoryNotFound | MediaAssetNotFound) -> ApiError:
+    """Both `create` and `update` reach the same two foreign keys, so both
+    reach the same translation: a stale `category_id` or `media_asset_id`
+    is a 404 the admin can act on, never the 503 a bare `IntegrityError`
+    would answer with (Important #1 — `media-gc` deletes `media_assets`
+    rows out from under an editor tab left open across a sweep)."""
+    if isinstance(exc, CategoryNotFound):
+        return ApiError(ApiErrorCode.NOT_FOUND, 404, f"no such category: {exc.args[0]!r}")
+    return ApiError(ApiErrorCode.NOT_FOUND, 404, f"no such media asset: {exc.args[0]!r}")
+
+
 @router.post("", status_code=201)
 async def create_question(
     body: QuestionWriteRequest, deps: Deps, principal: AdminPrincipal
 ) -> QuestionSaved:
-    record = await deps.questions_admin.create(_write(body))
+    try:
+        record = await deps.questions_admin.create(_write(body))
+    except (CategoryNotFound, MediaAssetNotFound) as exc:
+        raise _not_found(exc) from exc
     duplicates = await deps.questions_admin.duplicates_of(
         body.prompt, excluding=record.question_id
     )
@@ -144,7 +160,10 @@ async def create_question(
 async def update_question(
     question_id: str, body: QuestionWriteRequest, deps: Deps, principal: AdminPrincipal
 ) -> QuestionSaved:
-    record = await deps.questions_admin.update(question_id, _write(body))
+    try:
+        record = await deps.questions_admin.update(question_id, _write(body))
+    except (CategoryNotFound, MediaAssetNotFound) as exc:
+        raise _not_found(exc) from exc
     if record is None:
         raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such question")
     duplicates = await deps.questions_admin.duplicates_of(body.prompt, excluding=question_id)

@@ -172,6 +172,22 @@ class QuestionWrite:
     unit: str | None
 
 
+class CategoryNotFound(Exception):
+    """`create`/`update` named a `category_id` no `categories` row backs.
+
+    Same shape as `SlugTaken` below: the repository raises this instead of
+    letting the foreign-key violation surface as a raw `IntegrityError`,
+    which the global handler maps to 503 `database_unavailable` — telling
+    an admin the database is down when they simply posted a stale id."""
+
+
+class MediaAssetNotFound(Exception):
+    """`create`/`update` named a `media_asset_id` no `media_assets` row
+    backs. The concrete case this exists for: `media-gc` deletes
+    unreferenced `media_assets` rows on a sweep, and an editor tab left
+    open across that sweep can still post the id it had on screen."""
+
+
 class QuestionAdminPort(Protocol):
     async def list(
         self, filters: QuestionFilters, *, limit: int, offset: int
@@ -214,6 +230,18 @@ class QuestionAdminPort(Protocol):
         `seed-questions` prints, computed the same way: one query,
         grouped."""
         ...
+
+
+# The one shape a category slug is allowed to have — lowercase, dashed,
+# never empty. Shared between `CreateCategoryRequest` (the interactive
+# route, enforced by Pydantic's `pattern=`) and `imports/parse.py` (the
+# bulk route, enforced by `re.fullmatch`), so there is exactly one rule
+# rather than two that can drift: see Important #2 of the Plan 7A review,
+# which found the importer bypassing this rule entirely. Lives here, not
+# in `domain/`: a slug's spelling is an input-validation rule the two
+# adapter-side callers share, not a game rule, and this plan leaves
+# `domain/` untouched.
+CATEGORY_SLUG_PATTERN = r"^[a-z0-9]+(-[a-z0-9]+)*$"
 
 
 @dataclass(frozen=True)

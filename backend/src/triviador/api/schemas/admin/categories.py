@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from triviador.services.admin import CATEGORY_SLUG_PATTERN
+
 
 class CategoryView(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -16,7 +18,7 @@ class CreateCategoryRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    slug: str = Field(min_length=1, max_length=48, pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
+    slug: str = Field(min_length=1, max_length=48, pattern=CATEGORY_SLUG_PATTERN)
     name: str = Field(min_length=1, max_length=64)
 
 

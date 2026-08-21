@@ -16,6 +16,7 @@ this system does.
 
 import csv
 import io
+import re
 import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from decimal import Decimal, InvalidOperation
 
 from triviador.domain.questions.types import Difficulty, QuestionKind
 from triviador.imports.digest import prompt_digest
+from triviador.services.admin import CATEGORY_SLUG_PATTERN
 
 COLUMNS = (
     "kind",
@@ -177,6 +179,13 @@ def _parse_row(
     category = cell("category")
     if not category:
         raise ValueError("empty category")
+    if not re.fullmatch(CATEGORY_SLUG_PATTERN, category):
+        # The same shape `CreateCategoryRequest.slug` enforces on the
+        # interactive route (Important #2 of the Plan 7A review): a row
+        # naming "Pop Music" or "sports " must land in `rejected.csv`
+        # where the fix-and-repeat loop can see it, not silently create a
+        # category the editor could never have created by hand.
+        raise ValueError(f"category {category!r} is not a lowercase-and-dashed slug")
 
     media_file = cell("media_file") or None
     if media_file is not None:

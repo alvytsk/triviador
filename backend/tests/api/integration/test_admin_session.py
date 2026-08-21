@@ -12,11 +12,13 @@ from collections.abc import Callable
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
-from tests.api.integration.conftest import _SyncMediaStore
+from tests.api.integration.conftest import _SyncMediaStore, run
 from tests.imports.test_parse import HEADER
 from tests.media.test_pipeline import png
 from triviador.config import Settings
+from triviador.db.engine import engine_for, sessionmaker_for
 from triviador.media.gc import GcReport
 
 pytestmark = pytest.mark.integration
@@ -162,6 +164,70 @@ def test_an_admin_can_furnish_a_server_from_nothing(
     assert client.post(
         f"/api/admin/users/{me['user_id']}/role", json={"role": "player"}
     ).status_code == 409
+
+
+def test_a_stale_media_asset_id_is_404_not_a_database_outage(
+    admin_session: tuple[TestClient, Settings],
+) -> None:
+    """Important #1's actual scenario, against real PostgreSQL: an admin
+    uploads an image, never attaches it to anything, `media-gc` sweeps the
+    now-unreferenced row away, and only then does the editor tab that had
+    the id in its form state `PATCH` a question with it. Before the fix,
+    `questions.media_asset_id`'s foreign key violation surfaced as a raw
+    `IntegrityError`, which the global handler answers with 503
+    `database_unavailable` — as if the database itself, not the id, were
+    the problem.
+    """
+    client, settings = admin_session
+
+    misc = client.post(
+        "/api/admin/categories", json={"slug": "misc", "name": "Misc"}
+    ).json()
+    asset = client.post(
+        "/api/admin/media", content=png(40, 40), headers={"Content-Type": "image/png"}
+    ).json()
+    created = client.post(
+        "/api/admin/questions",
+        json={
+            "kind": "numeric",
+            "prompt": "How many bridges cross the river?",
+            "category_id": misc["id"],
+            "difficulty": "easy",
+            "media_asset_id": None,
+            "choices": None,
+            "numeric_answer": "1",
+            "unit": None,
+        },
+    ).json()["question"]
+
+    # Nothing in the database names `asset["id"]` yet, so deleting the row
+    # directly is exactly what `media-gc`'s sweep would do to it — no FK
+    # stands in the way, the same way none stands in `media-gc`'s way.
+    async def delete_asset() -> None:
+        async with engine_for(settings.database_url) as engine:
+            sessions = sessionmaker_for(engine)
+            async with sessions() as db, db.begin():
+                await db.execute(
+                    text("DELETE FROM media_assets WHERE id = :id"), {"id": asset["id"]}
+                )
+
+    run(delete_asset())
+
+    patched = client.patch(
+        f"/api/admin/questions/{created['id']}",
+        json={
+            "kind": "numeric",
+            "prompt": created["prompt"],
+            "category_id": misc["id"],
+            "difficulty": "easy",
+            "media_asset_id": asset["id"],
+            "choices": None,
+            "numeric_answer": "1",
+            "unit": None,
+        },
+    )
+    assert patched.status_code == 404
+    assert patched.json()["code"] == "not_found"
 
 
 def test_media_gc_keeps_what_a_question_still_names_and_collects_what_nothing_does(
