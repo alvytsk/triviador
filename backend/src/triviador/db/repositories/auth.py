@@ -264,7 +264,6 @@ class InviteRepository:
             InviteRecord(
                 invite_id=row.id,
                 status=_invite_status(row, now=now),
-                created_at=row.created_at,
                 expires_at=row.expires_at,
                 used_by=row.used_by,
             )

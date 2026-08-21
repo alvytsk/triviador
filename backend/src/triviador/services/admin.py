@@ -300,7 +300,6 @@ class InviteRecord:
     invite_id: str
     status: InviteStatus
     expires_at: datetime
-    created_at: datetime
     used_by: str | None
 
 

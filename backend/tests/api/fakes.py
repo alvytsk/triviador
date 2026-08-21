@@ -178,7 +178,6 @@ class _InviteEntry:
     invite_id: str
     code_hash: str
     expires_at: datetime
-    created_at: datetime
     used_by: str | None = None
     revoked_at: datetime | None = None
 
@@ -236,7 +235,6 @@ class FakeInvites:
                 invite_id=invite_id,
                 code_hash=code_hash,
                 expires_at=expires_at,
-                created_at=datetime.now(UTC),
             )
             issued.append((invite_id, code))
         return tuple(issued)
@@ -247,7 +245,6 @@ class FakeInvites:
                 invite_id=entry.invite_id,
                 status=_fake_invite_status(entry, now=now),
                 expires_at=entry.expires_at,
-                created_at=entry.created_at,
                 used_by=entry.used_by,
             )
             for entry in self.entries.values()

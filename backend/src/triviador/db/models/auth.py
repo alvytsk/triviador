@@ -58,7 +58,6 @@ class InviteCode(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=lambda: str(uuid4()))
     code_hash: Mapped[str] = mapped_column(Text, unique=True)
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     used_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
