@@ -50,8 +50,51 @@ function serveMaps(): Plugin {
   };
 }
 
+/**
+ * `scripts/assert-admin-split.mjs`'s two checks (a source-text grep for a
+ * couple of admin-only schema string literals) proved, on the whole-branch
+ * review, to have a real blind spot: they prove no eager chunk *constructs
+ * an admin schema*, which is not the same claim as "no eager chunk ships
+ * admin code". Reviewer proof: importing `AdminShell` (which imports only
+ * `@tanstack/react-router` and `@/shared/lib` — no `entities/admin`, no
+ * `generated/admin`) into the eager `_authed.admin.tsx` landed its own
+ * `"Back to lobby"` literal in the entry chunk, and `pnpm check:bundle`
+ * still reported OK, because neither marker string is anywhere in
+ * `AdminShell`.
+ *
+ * `dist/.vite/manifest.json` (the file `assert-admin-split.mjs` already
+ * reads) records only each chunk's `file`/`imports`/`dynamicImports` — not
+ * which *source modules* were bundled into it, so it cannot answer the
+ * question this plugin exists to answer. Rollup's own bundle object (the
+ * argument to `generateBundle`) can: every `OutputChunk` carries a
+ * `moduleIds` array, the actual list of every source module Rollup folded
+ * into that chunk. This plugin writes that list out, one JSON file mapping
+ * each emitted chunk's `fileName` to its `moduleIds`, so
+ * `assert-admin-split.mjs` can test the claim Spec 1B §9 actually makes —
+ * no chunk in the entry graph contains a module under `src/pages/admin/**`
+ * or an admin feature slice — instead of a proxy for it.
+ */
+function emitModuleIds(): Plugin {
+  return {
+    name: "triviador-emit-module-ids",
+    generateBundle(_options, bundle) {
+      const moduleIdsByFile: Record<string, string[]> = {};
+      for (const output of Object.values(bundle)) {
+        if (output.type !== "chunk") continue;
+        moduleIdsByFile[output.fileName] = Object.keys(output.modules);
+      }
+      this.emitFile({
+        type: "asset",
+        fileName: ".vite/module-ids.json",
+        source: JSON.stringify(moduleIdsByFile),
+      });
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
+    emitModuleIds(),
     tanstackRouter({
       target: "react",
       autoCodeSplitting: true,

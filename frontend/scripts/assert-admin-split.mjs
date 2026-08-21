@@ -112,6 +112,31 @@
 // route (see this task's report for the `pnpm check:bundle` output).
 const ADMIN_ONLY_MARKERS = ["duplicate_of", "used_by"];
 
+// Whole-branch review finding: the two marker-based checks above prove no
+// eager chunk *constructs an admin schema* — a proxy for Spec 1B §9's
+// actual claim ("players never download it"), not the claim itself. Proof
+// of the gap: importing `AdminShell` (which pulls in only
+// `@tanstack/react-router` and `@/shared/lib` — no `entities/admin`, no
+// `generated/admin`, so it trips neither marker) into the eager
+// `_authed.admin.tsx` landed its own `"Back to lobby"` literal in the
+// entry chunk while both marker checks kept reporting OK. This list is the
+// direct fix: every source directory that is admin-only *code*, regardless
+// of whether it happens to construct a generated schema. `src/pages/admin`
+// covers the shell and all five admin screens; the five feature slices
+// cover the admin-only mutations/forms those screens use that a future
+// screen elsewhere in `pages/` could in principle also import by mistake.
+// Matched against `emitModuleIds()`'s (`vite.config.ts`) absolute module
+// ids, so a path fragment is enough — no need to reconstruct the project
+// root here.
+const ADMIN_ONLY_SOURCE_DIRS = [
+  "/src/pages/admin/",
+  "/src/features/manage-invites/",
+  "/src/features/manage-presets/",
+  "/src/features/manage-users/",
+  "/src/features/edit-question/",
+  "/src/features/import-questions/",
+];
+
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -119,6 +144,7 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const distDir = resolve(here, "../dist");
 const manifestPath = resolve(distDir, ".vite/manifest.json");
+const moduleIdsPath = resolve(distDir, ".vite/module-ids.json");
 
 let manifestRaw;
 try {
@@ -131,6 +157,21 @@ try {
   throw error;
 }
 const manifest = JSON.parse(manifestRaw);
+
+let moduleIdsRaw;
+try {
+  moduleIdsRaw = readFileSync(moduleIdsPath, "utf-8");
+} catch (error) {
+  console.error(
+    `assert-admin-split: no module-id map at ${moduleIdsPath}. This is written by ` +
+      "`emitModuleIds()` in `vite.config.ts` — if that plugin was removed, check 3 " +
+      "below (the module-content check) has no data to run against.",
+  );
+  throw error;
+}
+/** Keyed by output `fileName` (matches `manifest[key].file`), each value
+ *  the full list of source module ids Rollup folded into that chunk. */
+const moduleIdsByFile = JSON.parse(moduleIdsRaw);
 
 /** BFS over `imports` only — `dynamicImports` edges are exactly the
  *  boundary a player's initial page load never crosses. */
@@ -195,9 +236,65 @@ if (found.length === 0) {
   process.exit(1);
 }
 
+// 3. No chunk a player's first load executes may contain a MODULE from an
+//    admin-only source directory — the check that closes the blind spot
+//    checks 1 and 2 have: content that is admin-only CODE but constructs no
+//    admin SCHEMA (the `AdminShell` mutation above) trips neither marker,
+//    but it does still show up as a module id here, because Rollup's own
+//    bundle metadata (not a source-text grep) is what `moduleIdsByFile`
+//    comes from.
+const codeLeaks = [];
+for (const key of eagerKeys) {
+  if (!allChunkKeys.includes(key)) continue;
+  const file = manifest[key].file;
+  const moduleIds = moduleIdsByFile[file] ?? [];
+  for (const moduleId of moduleIds) {
+    const dir = ADMIN_ONLY_SOURCE_DIRS.find((prefix) => moduleId.includes(prefix));
+    if (dir !== undefined) codeLeaks.push({ key, file, moduleId, dir });
+  }
+}
+if (codeLeaks.length > 0) {
+  console.error(
+    "assert-admin-split: FAILED — an admin-only source module is part of the entry graph:",
+  );
+  for (const leak of codeLeaks) {
+    console.error(
+      `  ${leak.moduleId} (matches ${leak.dir}) is bundled into ${leak.file} (${leak.key})`,
+    );
+  }
+  process.exit(1);
+}
+
+// Same non-vacuity requirement as check 2, applied to check 3's own
+// evidence: some lazy chunk must actually contain a module from one of
+// these directories, or this check would pass just as happily if the
+// admin tree were never built at all.
+const codeFound = [];
+for (const key of lazyOnlyKeys) {
+  const file = manifest[key].file;
+  const moduleIds = moduleIdsByFile[file] ?? [];
+  for (const moduleId of moduleIds) {
+    const dir = ADMIN_ONLY_SOURCE_DIRS.find((prefix) => moduleId.includes(prefix));
+    if (dir !== undefined) codeFound.push({ key, file, dir });
+  }
+}
+if (codeFound.length === 0) {
+  console.error(
+    "assert-admin-split: FAILED — no lazily-loaded chunk contains a module from any admin-only " +
+      "source directory. Either the split regressed or none of pages/admin/** or the admin " +
+      "feature slices were built at all.",
+  );
+  process.exit(1);
+}
+
 console.log("assert-admin-split: OK");
 console.log(`  entry chunks: ${entryKeys.length}, eager chunks: ${eagerKeys.size}`);
 console.log(`  lazy-only chunks: ${lazyOnlyKeys.length}`);
 for (const hit of found) {
   console.log(`  ${hit.marker} found only in ${hit.file} (${hit.key})`);
+}
+const codeFoundDirs = [...new Set(codeFound.map((hit) => hit.dir))];
+for (const dir of codeFoundDirs) {
+  const count = codeFound.filter((hit) => hit.dir === dir).length;
+  console.log(`  ${count} module(s) under ${dir} found, all confined to lazy chunks`);
 }
