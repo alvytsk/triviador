@@ -61,23 +61,42 @@ export function QuestionsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between gap-4">
         <h1 className="font-display text-3xl tracking-wider text-gold">Questions</h1>
-        {/* "Import", not "Import questions" — `admin-guard.test.tsx`
-         *  (Task 1) locates `AdminShell`'s own nav link by `/questions/i`;
-         *  a second link whose name also matches that regex would make
-         *  that assertion ambiguous the moment this page renders for real.
-         *
-         *  A real `<Link to>`, not `AdminShell`'s own forward-referencing
-         *  `<a href>` (Task 1's comment on why those stay plain `<a>`s):
-         *  `/admin/questions/import` is in the route tree as of this task,
-         *  so a typo here now fails `tsc --noEmit` instead of 404ing, and
-         *  a click actually navigates client-side instead of asking jsdom
-         *  (or a real browser) for a full document load. */}
-        <Link
-          to="/admin/questions/import"
-          className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-dim hover:text-ink"
-        >
-          Import
-        </Link>
+        <div className="flex items-center gap-4">
+          {/* "New question", singular — never "New questions": plural
+           *  would collide with `admin-guard.test.tsx`'s own
+           *  `/questions/i` lookup for `AdminShell`'s nav link, the exact
+           *  risk this page's own comment on "Import" already names.
+           *  This is §10.2's entry point to `/admin/questions/new`
+           *  (Task 4's editor route): the route always existed and
+           *  worked, but nothing in the rendered app ever linked to it —
+           *  it fell through the seam between the task that owned this
+           *  list and the task that owned the editor (Task 10's Finding
+           *  3). */}
+          <Link
+            to="/admin/questions/$questionId"
+            params={{ questionId: "new" }}
+            className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-dim hover:text-ink"
+          >
+            New question
+          </Link>
+          {/* "Import", not "Import questions" — `admin-guard.test.tsx`
+           *  (Task 1) locates `AdminShell`'s own nav link by `/questions/i`;
+           *  a second link whose name also matches that regex would make
+           *  that assertion ambiguous the moment this page renders for real.
+           *
+           *  A real `<Link to>`, not `AdminShell`'s own forward-referencing
+           *  `<a href>` (Task 1's comment on why those stay plain `<a>`s):
+           *  `/admin/questions/import` is in the route tree as of this task,
+           *  so a typo here now fails `tsc --noEmit` instead of 404ing, and
+           *  a click actually navigates client-side instead of asking jsdom
+           *  (or a real browser) for a full document load. */}
+          <Link
+            to="/admin/questions/import"
+            className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-dim hover:text-ink"
+          >
+            Import
+          </Link>
+        </div>
       </div>
 
       <QuestionFilterBar
@@ -130,16 +149,20 @@ export function QuestionsPage() {
               {(page?.items ?? []).map((question) => (
                 <TableRow key={question.id}>
                   <TableCell>
-                    {/* `<a href>`, not a typed `<Link to>` — `/admin/questions/$id`
-                     *  is not in the generated route tree yet (Task 4 adds it),
-                     *  and a `to` outside that tree fails `tsc --noEmit` outright.
-                     *  Same call `admin-shell.tsx` made for its forward references. */}
-                    <a
-                      href={`/admin/questions/${question.id}`}
+                    {/* A typed `<Link>`, not a plain `<a href>` — that was
+                     *  only correct until Task 4 registered
+                     *  `/admin/questions/$questionId`; a plain `<a>` here
+                     *  triggers a full document reload instead of a
+                     *  client-side transition (the same defect
+                     *  `admin-shell.tsx` had, independently discovered by
+                     *  Task 10's `admin-session.test.tsx`). */}
+                    <Link
+                      to="/admin/questions/$questionId"
+                      params={{ questionId: question.id }}
                       className="font-medium text-ink hover:text-gold"
                     >
                       {question.prompt}
-                    </a>
+                    </Link>
                   </TableCell>
                   <TableCell>{KIND_LABEL[question.kind] ?? question.kind}</TableCell>
                   <TableCell>{question.category_slug}</TableCell>

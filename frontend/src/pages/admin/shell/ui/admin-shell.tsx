@@ -8,19 +8,32 @@ import { cn } from "@/shared/lib";
  * separate lazy tree (this file), so leaving it needs its own link rather
  * than relying on browser back.
  *
- * Five of the six point at routes that do not exist yet in this task
- * (`_authed.admin.questions.tsx` and its siblings land in Tasks 3–8), so
- * they are plain `<a>` elements rather than typed `<Link>`s — a `to` that
- * is not in the generated route tree fails `tsc --noEmit` outright, and a
- * cast would only hide that these are forward references. `/` already
- * exists, so "Back to lobby" is a real `<Link>`.
+ * All five are typed `<Link>`s. They started as plain `<a href>` elements
+ * in Task 1, when none of these five routes existed yet and a `to` outside
+ * the generated route tree would have failed `tsc --noEmit` outright — but
+ * Tasks 3–8 registered all five long ago, and the plain `<a>`s were never
+ * upgraded. A real `<a>` is a full document reload, not a client-side
+ * transition, which discards every bit of SPA state on every admin nav
+ * click; Task 10's `admin-session.test.tsx` demonstrated this directly
+ * (clicking "Invites" from the Questions screen moved nothing under
+ * jsdom, which does not implement navigation) and had to fall back to
+ * remounting a fresh route for every screen as a result. `/` was already a
+ * real `<Link>` from the start.
  */
-const SECTIONS: ReadonlyArray<{ href: string; label: string }> = [
-  { href: "/admin/questions", label: "Questions" },
-  { href: "/admin/questions/import", label: "Import" },
-  { href: "/admin/invites", label: "Invites" },
-  { href: "/admin/users", label: "Users" },
-  { href: "/admin/presets", label: "Presets" },
+const SECTIONS: ReadonlyArray<{
+  to:
+    | "/admin/questions"
+    | "/admin/questions/import"
+    | "/admin/invites"
+    | "/admin/users"
+    | "/admin/presets";
+  label: string;
+}> = [
+  { to: "/admin/questions", label: "Questions" },
+  { to: "/admin/questions/import", label: "Import" },
+  { to: "/admin/invites", label: "Invites" },
+  { to: "/admin/users", label: "Users" },
+  { to: "/admin/presets", label: "Presets" },
 ];
 
 const NAV_LINK_CLASS =
@@ -33,9 +46,9 @@ export function AdminShell() {
         <span className="font-display text-xl tracking-wider text-gold">Admin</span>
         <nav aria-label="Admin" className="flex flex-1 items-center gap-6">
           {SECTIONS.map((section) => (
-            <a key={section.href} href={section.href} className={NAV_LINK_CLASS}>
+            <Link key={section.to} to={section.to} className={NAV_LINK_CLASS}>
               {section.label}
-            </a>
+            </Link>
           ))}
         </nav>
         <Link to="/" className={cn(NAV_LINK_CLASS, "text-gold")}>

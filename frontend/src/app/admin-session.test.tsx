@@ -18,83 +18,64 @@ import { renderRoute } from "../../testing/render";
  * The counterpart to `pages/game/ui/full-game.test.tsx` (Plan 6) and
  * `backend/tests/api/integration/test_admin_session.py` (Plan 7A): one
  * admin story, walked through the rendered app against MSW, in the order
- * an operator actually uses it — sign in, create a category, add a
- * question, run an import, issue an invite, retire a preset — asserting
- * that screens agree with each other rather than that each works alone
- * (the per-feature tests already cover that).
+ * an operator actually uses it — sign in, add a question, run an import,
+ * issue an invite, retire a preset — asserting that screens agree with
+ * each other rather than that each works alone (the per-feature tests
+ * already cover that).
  *
- * This file adds no product code. Where the story could not be walked by
- * clicking, that is recorded in a comment at the exact point it happened,
- * not patched around — see Task 10's brief and the three findings below,
- * which are the actual point of this file existing.
+ * This file adds no product code. Where the story still cannot be walked
+ * by clicking, that is recorded in a comment at the exact point it
+ * happened, not patched around.
  *
  * ---
  *
- * FINDING 1 — AdminShell's own nav is unclickable in this environment.
- * `pages/admin/shell/ui/admin-shell.tsx` still renders its five section
- * links as plain `<a href>` elements (a forward-reference workaround from
- * Task 1, never upgraded once Tasks 3–8 registered the real routes — its
- * own comment is now stale, still saying "point at routes that do not
- * exist yet"). A plain `<a>` is real browser navigation; jsdom does not
- * implement navigation and a click on one is a silent no-op here — proven
- * below by clicking "Invites" from the Questions screen and observing the
- * router never moves. In a real browser the click *would* eventually land
- * on the target screen, but only via a full document reload (losing every
- * bit of SPA state) rather than a client-side transition — the exact
- * defect Task 5's and Task 8's reports already flagged as deferred, now
- * demonstrated rather than asserted. The very next step below clicks a
- * genuine `<Link>` (`QuestionsPage`'s own "Import" entry point, Task 5) in
- * the same environment and it works immediately, which is the contrast
- * that proves this is AdminShell's defect, not a jsdom limitation this
- * whole file is subject to.
+ * UPDATE (gap-closing commit `fix(admin-ui): navigation and entry
+ * points`) — Task 10's three navigation findings are now fixed, and this
+ * file was rewritten to click through them instead of working around
+ * them:
  *
- * Because of Finding 1, this test cannot walk from one admin screen to
- * the next by clicking through AdminShell — there is no other way to
- * reach Invites, Users or Presets at all (nothing else in the rendered
- * app links to them either — see Finding 2). Per the brief, the fix is
- * not to call the router directly to fake the click succeeding. Instead,
- * each such screen below is entered by mounting a fresh `renderRoute` at
- * its URL — the same thing a real operator would be forced to do today
- * (bookmark or retype the address, because the in-app link only manages a
- * full reload) and the identical pattern every other admin page test in
- * this codebase already uses to reach its screen. State created on one
- * screen is proven to reach another through this file's own stateful MSW
- * backend below (shared, mutable, closed over by every handler), not
- * through anything a single React Query cache could be quietly carrying
- * for free — a fresh `renderRoute` gets a fresh `QueryClient` every time.
+ *   - FINDING 1 (AdminShell's own nav was unclickable): `admin-shell.tsx`'s
+ *     five section links are now typed `<Link>`s. Proven below by an
+ *     explicit round trip — click "Invites" from Questions, confirm the
+ *     router actually moved and the Invites screen rendered, click
+ *     "Questions" to come back — rather than by the old no-op assertion,
+ *     which would now be asserting a lie. From here on, every screen this
+ *     story visits for the *first* time (Invites, Presets, Users) is
+ *     reached by a real click through this nav, not a fresh `renderRoute`.
+ *   - FINDING 3 (the question list's row link had the same defect,
+ *     independently): also now a typed `<Link>`. Proven below by clicking
+ *     an imported question's row and landing on its real edit screen.
+ *   - FINDING 2, "New question" half (`QuestionsPage` had no entry point
+ *     to `/admin/questions/new`): fixed — a "New question" link now sits
+ *     next to "Import" in the page header. The hand-typed question below
+ *     is now reached by clicking it instead of mounting `renderRoute`
+ *     there directly.
  *
- * FINDING 2 — two of the story's own entry points do not exist yet.
- *   - There is no control anywhere in the rendered app that creates a
- *     category. `createCategory` exists in `entities/admin/api/
- *     categories.ts`, generated, tested at that layer, and exported from
- *     `entities/admin` — but no task ever wired it to a screen (checked:
- *     no button, link, dialog or route in `pages/` or `features/`
- *     mentions creating one; the question editor's Category `<Select>`
- *     only ever lists what `GET /api/admin/categories` already returns).
- *     A brand-new install has no click path to its first category, and
- *     therefore none to its first question either, which contradicts the
- *     backend's own "furnish a server from nothing" scenario
- *     (`test_admin_session.py`'s first two steps) — the backend can do
- *     it, the frontend cannot. This is a plan-level gap: no task's scope
- *     ever included a category screen. This file's "create a category"
- *     step below documents the gap in place and continues the rest of
- *     the story against an MSW-seeded category, exactly the way every
- *     other admin test in this codebase already has to.
- *   - `QuestionsPage` (Task 3) has no "New question" control at all — its
- *     only outbound link is "Import" (and, empty-state only, "Get
- *     started", which also points at Import). `/admin/questions/new`
- *     genuinely exists and works (Task 4), but nothing in the rendered
- *     app ever names it — confirmed by grep and by Task 4's own tests,
- *     which (like this one) can only reach it by mounting `renderRoute`
- *     there directly. Asserted below as an absence, at the exact screen
- *     where the control is missing.
+ * Two `renderRoute` mounts remain deliberate, NOT replaced by clicks, for
+ * a reason independent of any of the above: `createQueryClient` sets
+ * `staleTime: Infinity` (§9.3), so revisiting `/admin/questions` through
+ * client-side nav after a mutation would serve the same `QueryClient`'s
+ * already-cached (now stale) list rather than proving anything about the
+ * backend. Both are marked "cross-screen check" below — a fresh
+ * `renderRoute` gets a fresh `QueryClient`, so what it renders can only
+ * have come from this file's own stateful MSW backend (shared, mutable,
+ * closed over by every handler), not a warm cache. The very first mount
+ * (sign-in) is also unchanged, for the obvious reason that there is no
+ * prior screen to click from.
  *
- * FINDING 3 — the row-level edit link has the same defect as Finding 1,
- * independently. `QuestionsPage`'s per-row link to `/admin/questions/$id`
- * (Task 3) is *also* a plain `<a href>`, not a `<Link>` — its own comment
- * says this was correct only until Task 4 registered that route, and
- * Task 4 never came back to convert it. Demonstrated below the same way
- * as Finding 1: click it, observe nothing happens.
+ * FINDING 2's other half is UNCHANGED and still open: there is still no
+ * control anywhere in the rendered app that creates a category.
+ * `createCategory` exists in `entities/admin/api/categories.ts`,
+ * generated, tested at that layer, and exported from `entities/admin` —
+ * but as of this commit no screen wires it up yet (checked again: no
+ * button, link, dialog or route in `pages/` or `features/` mentions
+ * creating one). §9.7 lists no category screen and never will (see the
+ * inline-creation commit that follows this one for the resolution scoped
+ * to stay inside that constraint) — this file's assertions below that no
+ * "new categor…" control exists on the Questions screen remain correct
+ * and unchanged; the story still continues against an MSW-seeded
+ * category, the same way every other admin test in this codebase already
+ * has to.
  *
  * There is a fourth, milder observation, not treated as a finding because
  * no task ever scoped it: nothing in the signed-in player app (lobby,
@@ -254,6 +235,44 @@ describe("the whole admin session, click by click", () => {
             updated_at: "2026-08-21T00:00:00Z",
           },
         );
+        // The row link's target (Task 10's Finding 3, fixed by
+        // `fix(admin-ui): navigation and entry points`) is a real
+        // client-side `<Link>` now, so this walk actually clicks through
+        // to `GET /api/admin/questions/:id` — that route needs a detail
+        // to answer with, not just the summary the list itself reads.
+        questionDetails.set("q-imported-1", {
+          id: "q-imported-1",
+          kind: "multiple_choice",
+          prompt: "Which river flows through Prague?",
+          category_id: CATEGORY.id,
+          category_slug: CATEGORY.slug,
+          difficulty: "easy",
+          is_active: true,
+          media_asset_id: null,
+          choices: [
+            { idx: 0, text: "Vltava", is_correct: true, media_asset_id: null },
+            { idx: 1, text: "Labe", is_correct: false, media_asset_id: null },
+            { idx: 2, text: "Morava", is_correct: false, media_asset_id: null },
+            { idx: 3, text: "Odra", is_correct: false, media_asset_id: null },
+          ],
+          numeric_answer: null,
+          unit: null,
+          version: 1,
+        });
+        questionDetails.set("q-imported-2", {
+          id: "q-imported-2",
+          kind: "numeric",
+          prompt: "In which year did the Velvet Revolution begin?",
+          category_id: CATEGORY.id,
+          category_slug: CATEGORY.slug,
+          difficulty: "easy",
+          is_active: true,
+          media_asset_id: null,
+          choices: null,
+          numeric_answer: "1989",
+          unit: null,
+          version: 1,
+        });
         return HttpResponse.json({
           import_id: "imp1",
           upload_sha256: "a".repeat(64),
@@ -382,16 +401,20 @@ describe("the whole admin session, click by click", () => {
     expect(screen.queryByRole("link", { name: /new categor/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /new categor/i })).not.toBeInTheDocument();
 
-    // FINDING 1, demonstrated: AdminShell's own "Invites" link is a
-    // plain `<a>`. Click it and the router does not move.
-    const adminNav = screen.getByRole("navigation", { name: "Admin" });
-    const before = session.router.state.location.pathname;
-    await userEvent.click(within(adminNav).getByRole("link", { name: "Invites" }));
-    expect(session.router.state.location.pathname).toBe(before);
-    expect(screen.queryByRole("button", { name: /issue invites/i })).not.toBeInTheDocument();
+    // FINDING 1, now fixed: a real round trip through AdminShell's own
+    // nav. "Invites" genuinely moves the router and renders that screen,
+    // and "Questions" genuinely moves it back — a client-side transition
+    // both ways, not the full-reload-only no-op this used to be.
+    const adminNav = () => screen.getByRole("navigation", { name: "Admin" });
+    await userEvent.click(within(adminNav()).getByRole("link", { name: "Invites" }));
+    await waitFor(() => expect(session.router.state.location.pathname).toBe("/admin/invites"));
+    expect(await screen.findByRole("heading", { name: "Invites" })).toBeInTheDocument();
 
-    // Contrast, same environment, same click mechanics: a genuine
-    // `<Link>` (Task 5's own entry point for Import) works immediately.
+    await userEvent.click(within(adminNav()).getByRole("link", { name: "Questions" }));
+    await waitFor(() => expect(session.router.state.location.pathname).toBe("/admin/questions"));
+    expect(await screen.findByRole("heading", { name: "Questions" })).toBeInTheDocument();
+
+    // A genuine `<Link>` (Task 5's own entry point for Import), unchanged.
     await userEvent.click(within(screen.getByRole("main")).getByRole("link", { name: "Import" }));
     await waitFor(() =>
       expect(session.router.state.location.pathname).toBe("/admin/questions/import"),
@@ -415,17 +438,13 @@ describe("the whole admin session, click by click", () => {
 
     // ---------------------------------------------------------------
     // Cross-screen check 1: the two imported questions are visible from
-    // a *different* screen visit — a fresh render, fresh QueryClient,
-    // reached the only way available (Finding 1): re-enter the URL.
+    // a *different* screen visit — a fresh render, fresh QueryClient
+    // (deliberately NOT a nav click: `createQueryClient`'s `staleTime:
+    // Infinity` means a click-through revisit on the SAME QueryClient
+    // would just serve back whatever it had cached before the import,
+    // proving nothing about the backend). See this file's header comment
+    // on why these two checks alone stay `renderRoute` mounts.
     // ---------------------------------------------------------------
-    // `cleanup()` before each fresh URL entry below — not testing-library
-    // hygiene, but the honest model of what Finding 1 costs a real operator:
-    // a plain `<a>` click is a *full document reload*, which discards the
-    // previous page's DOM entirely. Without this, unrelated elements from
-    // the previous screen would still be mounted underneath the new one,
-    // which is not what a real navigation (client-side or full-reload)
-    // ever leaves behind, and would make later queries ambiguous for the
-    // wrong reason.
     cleanup();
     const questionsAfterImport = renderRoute("/admin/questions");
     expect(
@@ -433,31 +452,44 @@ describe("the whole admin session, click by click", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("In which year did the Velvet Revolution begin?")).toBeInTheDocument();
 
-    // FINDING 2, question half, asserted at the screen it is missing
-    // from: still nothing here offers to create a brand-new question.
-    expect(screen.queryByRole("link", { name: /new question/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /new question/i })).not.toBeInTheDocument();
-
-    // FINDING 3, demonstrated the same way as Finding 1: the row link
-    // to an existing question is also a plain `<a>`.
-    const rowBefore = questionsAfterImport.router.state.location.pathname;
+    // FINDING 3, now fixed: the row link to an existing question is a
+    // real `<Link>`. Click it and land on that question's own edit
+    // screen, pre-filled with the record the import actually wrote.
     await userEvent.click(screen.getByRole("link", { name: "Which river flows through Prague?" }));
-    expect(questionsAfterImport.router.state.location.pathname).toBe(rowBefore);
-    expect(screen.queryByRole("heading", { name: "Edit question" })).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(questionsAfterImport.router.state.location.pathname).toBe(
+        "/admin/questions/q-imported-1",
+      ),
+    );
+    expect(await screen.findByRole("heading", { name: "Edit question" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Prompt")).toHaveValue("Which river flows through Prague?");
+
+    // Back to the list the same way a real operator now can — AdminShell's
+    // own nav — to reach the entry point Step 3 needs.
+    await userEvent.click(within(adminNav()).getByRole("link", { name: "Questions" }));
+    await waitFor(() =>
+      expect(questionsAfterImport.router.state.location.pathname).toBe("/admin/questions"),
+    );
+    expect(await screen.findByRole("heading", { name: "Questions" })).toBeInTheDocument();
 
     // ---------------------------------------------------------------
-    // Step 3: add a question by hand. No click path exists to
-    // `/admin/questions/new` (Finding 2) — entered directly, exactly
-    // as `question-editor-page.test.tsx` itself already has to.
+    // Step 3: add a question by hand. FINDING 2's "New question" half is
+    // now fixed too — click the page's own entry point instead of
+    // mounting `renderRoute("/admin/questions/new")` directly.
     // ---------------------------------------------------------------
-    cleanup();
-    const editor = renderRoute("/admin/questions/new");
+    await userEvent.click(
+      within(screen.getByRole("main")).getByRole("link", { name: /new question/i }),
+    );
+    await waitFor(() =>
+      expect(questionsAfterImport.router.state.location.pathname).toBe("/admin/questions/new"),
+    );
     expect(await screen.findByRole("heading", { name: "New question" })).toBeInTheDocument();
 
     // The category `<Select>` genuinely offers the one category this
-    // fake backend seeded — the closest this file can get to proving
-    // "a category is selectable when adding a question" without a way
-    // to create one through the UI (Finding 2).
+    // fake backend seeded — the closest this file can get to proving "a
+    // category is selectable when adding a question" without a click
+    // path to CREATE one (FINDING 2's category half, still open — see
+    // the header comment).
     await userEvent.click(screen.getByRole("combobox", { name: "Category" }));
     await userEvent.click(await screen.findByRole("option", { name: "Geography" }));
 
@@ -472,7 +504,9 @@ describe("the whole admin session, click by click", () => {
     await userEvent.click(screen.getByRole("button", { name: /create question/i }));
 
     await waitFor(() =>
-      expect(editor.router.state.location.pathname).toBe("/admin/questions/q-hand-typed"),
+      expect(questionsAfterImport.router.state.location.pathname).toBe(
+        "/admin/questions/q-hand-typed",
+      ),
     );
     // The redirect is a real client-side transition (create -> canonical
     // id), and the page re-fetches at the new id rather than staying on
@@ -483,10 +517,13 @@ describe("the whole admin session, click by click", () => {
     // Cross-screen check 2: the hand-typed question is visible from the
     // list too, alongside the imported ones — proving the list reads
     // the same backend state the editor just wrote, not a coincidence
-    // of the editor's own cache.
+    // of the editor's own cache. Fresh `renderRoute` again, for the same
+    // `staleTime: Infinity` reason as cross-screen check 1 — this is a
+    // genuinely new write, so a nav-click revisit on the same
+    // `QueryClient` would still show the pre-write cache.
     // ---------------------------------------------------------------
     cleanup();
-    renderRoute("/admin/questions");
+    const finalCheck = renderRoute("/admin/questions");
     expect(
       await screen.findByText(
         "How many bridges cross the Vltava in Prague?",
@@ -498,11 +535,13 @@ describe("the whole admin session, click by click", () => {
     expect(screen.getByText("In which year did the Velvet Revolution begin?")).toBeInTheDocument();
 
     // ---------------------------------------------------------------
-    // Step 4: issue an invite (Finding 1 again: reached by URL, not a
-    // click, since AdminShell's own "Invites" link does not work here).
+    // Step 4: issue an invite. FINDING 1 is fixed, and this is the
+    // *first* visit to Invites in this render's `QueryClient`, so a real
+    // nav click carries no staleness risk — no fresh `renderRoute`
+    // needed here the way Cross-screen checks 1 and 2 above still do.
     // ---------------------------------------------------------------
-    cleanup();
-    renderRoute("/admin/invites");
+    await userEvent.click(within(adminNav()).getByRole("link", { name: "Invites" }));
+    await waitFor(() => expect(finalCheck.router.state.location.pathname).toBe("/admin/invites"));
     expect(await screen.findByRole("heading", { name: "Invites" })).toBeInTheDocument();
     expect(
       await screen.findByText("No invites yet — issue some to get started."),
@@ -525,11 +564,11 @@ describe("the whole admin session, click by click", () => {
     expect(await screen.findByText("Pending")).toBeInTheDocument();
 
     // ---------------------------------------------------------------
-    // Step 5: create and retire a preset — entirely on one screen, no
-    // navigation needed for this half of the story.
+    // Step 5: create and retire a preset. First visit to Presets in this
+    // `QueryClient`, so — same reasoning as Step 4 — a real nav click.
     // ---------------------------------------------------------------
-    cleanup();
-    renderRoute("/admin/presets");
+    await userEvent.click(within(adminNav()).getByRole("link", { name: "Presets" }));
+    await waitFor(() => expect(finalCheck.router.state.location.pathname).toBe("/admin/presets"));
     expect(await screen.findByRole("heading", { name: "Presets" })).toBeInTheDocument();
     expect(await screen.findByText("Classic")).toBeInTheDocument();
     expect(screen.getByText("Default")).toBeInTheDocument();
@@ -568,10 +607,11 @@ describe("the whole admin session, click by click", () => {
     // Step 6: visit Users (the eighth and last screen) and confirm the
     // one refusal this session's own shape makes reachable — the admin
     // cannot deactivate themselves. Mirrors `test_admin_session.py`'s
-    // own closing scenario.
+    // own closing scenario. First visit to Users, same reasoning as
+    // Steps 4 and 5: a real nav click.
     // ---------------------------------------------------------------
-    cleanup();
-    renderRoute("/admin/users");
+    await userEvent.click(within(adminNav()).getByRole("link", { name: "Users" }));
+    await waitFor(() => expect(finalCheck.router.state.location.pathname).toBe("/admin/users"));
     expect(await screen.findByRole("heading", { name: "Users" })).toBeInTheDocument();
     const adminRow = (await screen.findByText("admin")).closest("tr") as HTMLElement;
 
