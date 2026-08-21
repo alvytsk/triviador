@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { adminQuestionsQueryOptions } from "@/entities/admin";
 import {
   Banner,
@@ -64,13 +64,20 @@ export function QuestionsPage() {
         {/* "Import", not "Import questions" — `admin-guard.test.tsx`
          *  (Task 1) locates `AdminShell`'s own nav link by `/questions/i`;
          *  a second link whose name also matches that regex would make
-         *  that assertion ambiguous the moment this page renders for real. */}
-        <a
-          href="/admin/questions/import"
+         *  that assertion ambiguous the moment this page renders for real.
+         *
+         *  A real `<Link to>`, not `AdminShell`'s own forward-referencing
+         *  `<a href>` (Task 1's comment on why those stay plain `<a>`s):
+         *  `/admin/questions/import` is in the route tree as of this task,
+         *  so a typo here now fails `tsc --noEmit` instead of 404ing, and
+         *  a click actually navigates client-side instead of asking jsdom
+         *  (or a real browser) for a full document load. */}
+        <Link
+          to="/admin/questions/import"
           className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-dim hover:text-ink"
         >
           Import
-        </a>
+        </Link>
       </div>
 
       <QuestionFilterBar
@@ -95,15 +102,15 @@ export function QuestionsPage() {
             <p className="text-[14px] text-ink">
               No questions yet — import a starter set to get going.
             </p>
-            {/* A styled `<a>`, not `<Button><a>` — nesting a `<button>`
-             *  inside an `<a>` is invalid HTML (two interactive elements),
+            {/* A styled `<Link>`, not `<Button><a>` — nesting a `<button>`
+             *  inside an anchor is invalid HTML (two interactive elements),
              *  and `Button` always renders a real `<button>`. */}
-            <a
-              href="/admin/questions/import"
+            <Link
+              to="/admin/questions/import"
               className="font-display text-xl tracking-wider px-6 h-12 inline-flex items-center justify-center bg-gold text-base hover:bg-gold-bright"
             >
               Get started
-            </a>
+            </Link>
           </div>
         )
       ) : (

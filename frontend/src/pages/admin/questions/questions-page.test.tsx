@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
@@ -160,5 +160,40 @@ describe("QuestionsPage", () => {
     expect(await screen.findByText(/no questions match these filters/i)).toBeInTheDocument();
     expect(screen.queryByText(/import a starter set/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /clear filters/i })).toBeInTheDocument();
+  });
+
+  it("gets an admin from the empty-bank state to the import screen by clicking, not by typing the URL", async () => {
+    withMe();
+    withCategories();
+    server.use(
+      http.get("/api/admin/questions", () =>
+        HttpResponse.json({ items: [], total: 0, limit: 50, offset: 0 }),
+      ),
+    );
+
+    const { router } = renderRoute("/admin/questions");
+    await userEvent.click(await screen.findByRole("link", { name: /get started/i }));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/admin/questions/import"));
+    expect(await screen.findByRole("heading", { name: /import questions/i })).toBeInTheDocument();
+  });
+
+  it("also reaches the import screen from the header's Import link", async () => {
+    withMe();
+    withCategories();
+    server.use(
+      http.get("/api/admin/questions", () =>
+        HttpResponse.json({ items: [summary()], total: 1, limit: 50, offset: 0 }),
+      ),
+    );
+
+    const { router } = renderRoute("/admin/questions");
+    await screen.findByText("Which river flows through Prague?");
+    // Scoped to `<main>`: `AdminShell`'s own nav (Task 1) also has a link
+    // named exactly "Import" — this is the questions page's own link, not
+    // that one.
+    await userEvent.click(within(screen.getByRole("main")).getByRole("link", { name: "Import" }));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/admin/questions/import"));
   });
 });

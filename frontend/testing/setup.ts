@@ -28,6 +28,20 @@ if (typeof globalThis.ResizeObserver === "undefined") {
   }
   globalThis.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 }
+/**
+ * jsdom 30 does not implement `URL.createObjectURL`/`revokeObjectURL` at
+ * all — not even as a throwing stub (confirmed: the property is simply
+ * absent). The import wizard's "download the rejected rows" feature
+ * (`use-import-flow.ts`) needs both to hand the browser a file, and real
+ * browsers have always had them — a test-environment gap, not a behavior
+ * the app relies on, exactly like the three stand-ins above.
+ */
+if (typeof URL.createObjectURL !== "function") {
+  URL.createObjectURL = () => "blob:mock";
+}
+if (typeof URL.revokeObjectURL !== "function") {
+  URL.revokeObjectURL = () => {};
+}
 
 beforeAll(() => {
   server.listen({ onUnhandledRequest: "error" });

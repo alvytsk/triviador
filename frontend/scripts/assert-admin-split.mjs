@@ -18,11 +18,30 @@
 // free to rename. String *literals* are never renamed by a minifier, and
 // `AdminShell`'s five nav hrefs already are real, permanent, string
 // literals that exist for no reason other than "the admin nav points at
-// admin-only screens" — `/admin/questions` itself is excluded because
-// `_authed.admin.index.tsx`'s redirect target is eager route code (only a
-// route's `component` is lazy-split, never its `beforeLoad`) and so
-// legitimately also contains that one substring; the other four do not
-// appear anywhere outside the admin tree.
+// admin-only screens" — except that once a path is actually registered
+// as a route, its `fullPath` also lands, unconditionally, in
+// `routeTree.gen.ts`'s own route-info map, and that file is not
+// lazy-split at all: it is the eager route tree every entry chunk
+// imports to build the router in the first place (only a route's
+// `component` is ever code-split — `_authed.admin.tsx`'s own comment).
+// `/admin/questions` was excluded from this list for exactly that reason
+// (Task 3's report attributed it to `_authed.admin.index.tsx`'s redirect
+// target, which is also eager route code and also true, but
+// `routeTree.gen.ts`'s `fullPath: '/admin/questions'` alone would have
+// forced the same exclusion). `/admin/questions/import` joins it here as
+// of Task 5, for the identical reason, confirmed the expensive way:
+// leaving it in this list and running `pnpm check:bundle` after wiring
+// the route failed check 1 with `/admin/questions/import found in
+// assets/index-*.js, part of the entry graph` — not from anything this
+// screen imports, but from that route's own entry in `routeTree.gen.ts`'s
+// route-info map, `fullPath: '/admin/questions/import'`. The other three
+// admin nav hrefs
+// (`/admin/invites`, `/admin/users`, `/admin/presets`) still work as
+// markers today because no route is registered at those paths yet
+// (Tasks 6–8 own them) — the day one of those tasks adds its route file,
+// its own href needs the same exclusion, for the same reason, or
+// `check:bundle` will fail on infrastructure this check was never meant
+// to flag.
 //
 // `duplicate_of` is Task 2's addition, and it is schema content rather
 // than routing content: it is the one object key in the 27 schemas
@@ -43,19 +62,13 @@
 // `questionSavedSchema`). It is listed now, ahead of that wiring, so the
 // day a screen does import it, this check starts enforcing the split on
 // real schema content immediately rather than needing a second edit here.
-// The four href markers below still make check 2 ("something is in the
+// The three href markers below still make check 2 ("something is in the
 // lazy set") non-vacuous today; Task 2's report documents a manual,
 // temporary-import verification that `duplicate_of` itself behaves
 // correctly (found only in a lazy chunk when wired in; leaks into the
 // eager set and fails check 1 when hoisted into a player-reachable file)
 // without leaving that wiring in the tree.
-const ADMIN_ONLY_MARKERS = [
-  "/admin/questions/import",
-  "/admin/invites",
-  "/admin/users",
-  "/admin/presets",
-  "duplicate_of",
-];
+const ADMIN_ONLY_MARKERS = ["/admin/invites", "/admin/users", "/admin/presets", "duplicate_of"];
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";

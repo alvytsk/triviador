@@ -18,6 +18,7 @@ import { Route as AuthedAdminIndexRouteImport } from './_authed.admin.index'
 import { Route as AuthedGamesGameIdRouteImport } from './_authed.games.$gameId'
 import { Route as AuthedAdminQuestionsIndexRouteImport } from './_authed.admin.questions.index'
 import { Route as AuthedAdminQuestionsQuestionIdRouteImport } from './_authed.admin.questions.$questionId'
+import { Route as AuthedAdminQuestionsImportRouteImport } from './_authed.admin.questions.import'
 
 const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
@@ -69,6 +70,14 @@ const AuthedAdminQuestionsQuestionIdRoute =
   } as any).lazy(() =>
     import('./_authed.admin.questions.$questionId.lazy').then((d) => d.Route),
   )
+const AuthedAdminQuestionsImportRoute =
+  AuthedAdminQuestionsImportRouteImport.update({
+    id: '/questions/import',
+    path: '/questions/import',
+    getParentRoute: () => AuthedAdminRoute,
+  } as any).lazy(() =>
+    import('./_authed.admin.questions.import.lazy').then((d) => d.Route),
+  )
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
@@ -78,6 +87,7 @@ export interface FileRoutesByFullPath {
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin/': typeof AuthedAdminIndexRoute
   '/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/admin/questions/import': typeof AuthedAdminQuestionsImportRoute
   '/admin/questions/': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -87,6 +97,7 @@ export interface FileRoutesByTo {
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin': typeof AuthedAdminIndexRoute
   '/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/admin/questions/import': typeof AuthedAdminQuestionsImportRoute
   '/admin/questions': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRoutesById {
@@ -99,6 +110,7 @@ export interface FileRoutesById {
   '/_authed/games/$gameId': typeof AuthedGamesGameIdRoute
   '/_authed/admin/': typeof AuthedAdminIndexRoute
   '/_authed/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/_authed/admin/questions/import': typeof AuthedAdminQuestionsImportRoute
   '/_authed/admin/questions/': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRouteTypes {
@@ -111,6 +123,7 @@ export interface FileRouteTypes {
     | '/games/$gameId'
     | '/admin/'
     | '/admin/questions/$questionId'
+    | '/admin/questions/import'
     | '/admin/questions/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -120,6 +133,7 @@ export interface FileRouteTypes {
     | '/games/$gameId'
     | '/admin'
     | '/admin/questions/$questionId'
+    | '/admin/questions/import'
     | '/admin/questions'
   id:
     | '__root__'
@@ -131,6 +145,7 @@ export interface FileRouteTypes {
     | '/_authed/games/$gameId'
     | '/_authed/admin/'
     | '/_authed/admin/questions/$questionId'
+    | '/_authed/admin/questions/import'
     | '/_authed/admin/questions/'
   fileRoutesById: FileRoutesById
 }
@@ -205,18 +220,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminQuestionsQuestionIdRouteImport
       parentRoute: typeof AuthedAdminRoute
     }
+    '/_authed/admin/questions/import': {
+      id: '/_authed/admin/questions/import'
+      path: '/questions/import'
+      fullPath: '/admin/questions/import'
+      preLoaderRoute: typeof AuthedAdminQuestionsImportRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
   }
 }
 
 interface AuthedAdminRouteChildren {
   AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
   AuthedAdminQuestionsQuestionIdRoute: typeof AuthedAdminQuestionsQuestionIdRoute
+  AuthedAdminQuestionsImportRoute: typeof AuthedAdminQuestionsImportRoute
   AuthedAdminQuestionsIndexRoute: typeof AuthedAdminQuestionsIndexRoute
 }
 
 const AuthedAdminRouteChildren: AuthedAdminRouteChildren = {
   AuthedAdminIndexRoute: AuthedAdminIndexRoute,
   AuthedAdminQuestionsQuestionIdRoute: AuthedAdminQuestionsQuestionIdRoute,
+  AuthedAdminQuestionsImportRoute: AuthedAdminQuestionsImportRoute,
   AuthedAdminQuestionsIndexRoute: AuthedAdminQuestionsIndexRoute,
 }
 
