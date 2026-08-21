@@ -56,6 +56,24 @@ class PresetRepository:
             preset.id, preset.name, _to_rules(preset.rules), preset.is_default, preset.is_active
         )
 
+    async def get_including_retired(self, preset_id: str) -> PresetAdminRecord | None:
+        """The admin's single-item read (`GET /api/admin/presets/{id}` and
+        its `/coverage`), which must see what `list_all` sees.
+
+        `get`/`_one` filter on `is_active` for `PresetPort`'s sake — a
+        player must never resolve `preset_id` to a retired ruleset — but
+        the admin list deliberately shows retired presets, and a detail
+        view that 404s on exactly those rows makes the `is_active` field it
+        renders unreachable. Unfiltered by design, not an oversight.
+        """
+        async with self._sessionmaker() as session:
+            preset = await session.get(RulePreset, preset_id)
+        if preset is None:
+            return None
+        return PresetAdminRecord(
+            preset.id, preset.name, _to_rules(preset.rules), preset.is_default, preset.is_active
+        )
+
     async def list_active(self) -> tuple[PresetRecord, ...]:
         """The public read (`GET /api/presets`). Active only — a retired
         preset must not be selectable, and `is_active` is exactly what

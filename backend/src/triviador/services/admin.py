@@ -490,6 +490,19 @@ class PresetAdminPort(Protocol):
 
     async def list_all(self) -> tuple[PresetAdminRecord, ...]: ...
     async def get(self, preset_id: str) -> PresetAdminRecord | None: ...
+
+    async def get_including_retired(self, preset_id: str) -> PresetAdminRecord | None:
+        """The admin's single-item read, which must see what the admin list sees.
+
+        `PresetPort.get` filters on `is_active` — a player must never start
+        a game on a retired preset — but `list_all` deliberately shows
+        retired presets to an admin, and a detail view that 404s on exactly
+        those rows makes the `is_active` field it renders unreachable. One
+        repository satisfies both ports, so the two reads differ by name
+        rather than by a flag.
+        """
+        ...
+
     async def create(
         self, *, name: str, rules: GameRules, is_default: bool
     ) -> PresetAdminRecord: ...

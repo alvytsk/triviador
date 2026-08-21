@@ -303,3 +303,31 @@ async def test_deactivate_of_an_unknown_preset_is_not_found(
 ) -> None:
     outcome = await PresetRepository(sessions).deactivate("nope")
     assert outcome is DeactivateOutcome.NOT_FOUND
+
+
+@session_loop
+async def test_get_including_retired_sees_what_get_cannot(
+    default_preset: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """Fix round 1's finding: `list_all` already shows a retired preset
+    with `is_active: false`, so a detail lookup that 404s on that same row
+    makes the field it renders unreachable. One row, two reads, opposite
+    answers — that is the whole point of the split."""
+    repository = PresetRepository(sessions)
+    created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    assert (await repository.deactivate(created.preset_id)) is DeactivateOutcome.OK
+
+    assert await repository.get(created.preset_id) is None
+
+    retrieved = await repository.get_including_retired(created.preset_id)
+    assert retrieved is not None
+    assert retrieved.preset_id == created.preset_id
+    assert retrieved.is_active is False
+    assert retrieved.rules == QUICK_RULES
+
+
+@session_loop
+async def test_get_including_retired_is_none_for_an_unknown_id(
+    default_preset: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    assert await PresetRepository(sessions).get_including_retired("nope") is None

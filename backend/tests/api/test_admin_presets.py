@@ -122,3 +122,23 @@ async def test_coverage_reports_need_and_bank_per_kind(admin_client: httpx.Async
     assert coverage["required"] == {"numeric": 9, "multiple_choice": 6}
     assert set(coverage["bank"]) == {"numeric", "multiple_choice"}
     assert isinstance(coverage["sufficient"], bool)
+
+
+async def test_a_retired_presets_detail_and_coverage_are_still_reachable(
+    admin_client: httpx.AsyncClient,
+) -> None:
+    """Fix round 1: `list_all` already shows a retired preset with
+    `is_active: false` — a detail view (or a bookmarked
+    `/admin/presets/{id}`) that 404s on exactly those rows would make that
+    field unreachable except through the list response."""
+    created = (await admin_client.post("/api/admin/presets", json=QUICK)).json()
+    assert (
+        await admin_client.delete(f"/api/admin/presets/{created['id']}")
+    ).status_code == 204
+
+    detail = await admin_client.get(f"/api/admin/presets/{created['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["is_active"] is False
+
+    coverage = await admin_client.get(f"/api/admin/presets/{created['id']}/coverage")
+    assert coverage.status_code == 200

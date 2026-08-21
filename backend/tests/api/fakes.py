@@ -395,6 +395,9 @@ class FakePresets:
         record = self.presets.get(preset_id)
         return record if record is not None and record.is_active else None
 
+    async def get_including_retired(self, preset_id: str) -> PresetAdminRecord | None:
+        return self.presets.get(preset_id)
+
     async def get_default(self) -> PresetAdminRecord | None:
         return next(
             (r for r in self.presets.values() if r.is_default and r.is_active), None

@@ -3,6 +3,13 @@
 Editing a preset never touches a running game: `games.rules` holds a
 frozen copy taken at creation (§6.2). The admin screen says so in a
 sentence; this module is where that sentence is true.
+
+No reactivation route. `PresetWriteRequest` carries no `is_active`, and
+`update` never touches that column, so a retired preset stays retired —
+deliberately, not an oversight this plan forgot to close. `GET
+/{preset_id}` and `/coverage` still resolve one by id (via
+`get_including_retired`) so the admin screen can show it, but nothing here
+un-retires it.
 """
 
 from dataclasses import asdict
@@ -61,7 +68,7 @@ async def create_preset(
 
 @router.get("/{preset_id}")
 async def get_preset(preset_id: str, deps: Deps, principal: AdminPrincipal) -> PresetDetail:
-    record = await deps.presets_admin.get(preset_id)
+    record = await deps.presets_admin.get_including_retired(preset_id)
     if record is None:
         raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such preset")
     return _detail(record)
@@ -110,7 +117,7 @@ async def deactivate_preset(preset_id: str, deps: Deps, principal: AdminPrincipa
 async def preset_coverage(
     preset_id: str, deps: Deps, principal: AdminPrincipal
 ) -> PresetCoverage:
-    record = await deps.presets_admin.get(preset_id)
+    record = await deps.presets_admin.get_including_retired(preset_id)
     if record is None:
         raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such preset")
     budget = required_question_budget(record.rules)
