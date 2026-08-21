@@ -1,12 +1,15 @@
 """`uv run triviador <command>`.
 
-Four commands. `export-contracts` needs no database at all;
+Five commands. `export-contracts` needs no database at all;
 `admin-create` needs one, and is the bootstrap Spec 1 §10.1 specifies —
 with its three outcomes spelled out so it is safe in a deployment script;
 `seed-questions` needs one too, and installs the question bank Spec 1 §14.3
 requires before `StartGame` can succeed; `media-gc` needs a database and
 both buckets, and is §9.3's expiry machine plus §10.4's asset sweep — rare
-and destructive, so it is a command an operator runs, not a screen.
+and destructive, so it is a command an operator runs, not a screen;
+`migrate` needs one too, and is §10.1's `migrate` step — the dedicated,
+non-restarting compose job that runs `alembic upgrade head` before `backend`
+is allowed to start.
 """
 
 import argparse
@@ -20,6 +23,11 @@ from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
+
+from alembic import command as alembic_command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from triviador.api.contracts import export_contracts
 from triviador.config import get_settings
@@ -300,6 +308,71 @@ async def _media_gc_command(args: argparse.Namespace) -> int:
     return 0
 
 
+# Arbitrary constant, scoped to this one lock: PostgreSQL advisory locks
+# share a single 64-bit keyspace per database, and this is the only user of
+# it. ADR-002 already guarantees exactly one running application process,
+# so this lock is not protecting against concurrent replicas — there are
+# none — it exists only to stop a human running `alembic upgrade` by hand
+# from racing this command during a deploy.
+_MIGRATE_LOCK_KEY = 7_198_402_331
+
+
+def _alembic_ini() -> Path:
+    """`alembic.ini` lives at the backend project root, not inside the
+    installed package, so finding it via `Path(__file__)` breaks the moment
+    the package is installed non-editable — exactly what
+    `infra/backend.Dockerfile`'s `uv sync --no-editable` does, at which
+    point `__file__` resolves somewhere under `site-packages`, nowhere near
+    it.
+
+    Both the container (`WORKDIR /app`) and every documented local
+    invocation (`cd backend && uv run triviador ...`) instead run with the
+    backend project root as the working directory, so that is what this
+    resolves against.
+    """
+    path = Path.cwd() / "alembic.ini"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} not found: `triviador migrate` must be run with the backend "
+            "project root (where alembic.ini lives) as the working directory"
+        )
+    return path
+
+
+async def migrate_head(engine: AsyncEngine, database_url: str) -> None:
+    """Run `alembic upgrade head` while holding a session-scoped PostgreSQL
+    advisory lock, so a second, concurrent invocation blocks instead of
+    racing this one (see `_MIGRATE_LOCK_KEY` for why that guard exists).
+
+    The lock is acquired and released on the same connection throughout —
+    `pg_advisory_lock` is tied to the backend session that took it, so
+    letting the connection be returned to a pool between the lock and the
+    unlock would silently drop it.
+    """
+    config = Config(str(_alembic_ini()))
+    config.set_main_option("sqlalchemy.url", database_url)
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATE_LOCK_KEY})
+        try:
+            # `command.upgrade` drives its own `asyncio.run(...)` inside
+            # `env.py`, which cannot be invoked from within a running event
+            # loop — so it runs on its own thread, same as the test suite's
+            # `_run_upgrade_head`.
+            await asyncio.to_thread(alembic_command.upgrade, config, "head")
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY}
+            )
+
+
+async def _migrate_command(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    async with engine_for(settings.database_url) as engine:
+        await migrate_head(engine, settings.database_url)
+    print("migrated to head")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="triviador")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -336,6 +409,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
+    commands.add_parser("migrate")
+
     args = parser.parse_args(argv)
     if args.command == "export-contracts":
         export_contracts(args.out)
@@ -344,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_seed_questions_command(args))
     if args.command == "media-gc":
         return asyncio.run(_media_gc_command(args))
+    if args.command == "migrate":
+        return asyncio.run(_migrate_command(args))
     return asyncio.run(_admin_create_command(args))
 
 
