@@ -57,6 +57,8 @@ class ApiErrorCode(StrEnum):
     MEDIA_REJECTED = "media_rejected"
     SLUG_TAKEN = "slug_taken"
     IMPORT_NOT_CONFIRMABLE = "import_not_confirmable"
+    LAST_ADMIN = "last_admin"
+    SELF_TARGET = "self_target"
     NO_DEFAULT_PRESET = "no_default_preset"
     SERVER_BUSY = "server_busy"
     SERVER_RESTARTING = "server_restarting"

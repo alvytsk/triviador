@@ -27,6 +27,7 @@ from triviador.services.admin import (
     InviteAdminPort,
     MediaAssetPort,
     QuestionAdminPort,
+    UserAdminPort,
 )
 from triviador.services.identity import (
     AuthenticatedPrincipal,
@@ -96,6 +97,7 @@ class AppDependencies:
     sessions: SessionStore
     invites: InviteStore
     invites_admin: InviteAdminPort
+    users_admin: UserAdminPort
     database: DatabaseProbe
     hub: "Hub"
     broadcaster: "WsBroadcaster"
@@ -174,6 +176,7 @@ class AppDependencies:
             sessions=unusable,
             invites=unusable,
             invites_admin=unusable,
+            users_admin=unusable,
             database=unusable,
             hub=hub,
             broadcaster=broadcaster,

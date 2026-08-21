@@ -17,7 +17,8 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
-from triviador.domain.ids import UserId
+from triviador.domain.ids import SessionId, UserId
+from triviador.services.identity import UserRecord, UserRole
 
 
 @dataclass(frozen=True)
@@ -316,6 +317,45 @@ class InviteAdminPort(Protocol):
     async def revoke(self, invite_id: str, *, at: datetime) -> bool:
         """`True` if the invite exists, whether or not this call is the one
         that revoked it — see `InviteRepository.revoke`'s docstring."""
+        ...
+
+
+class SetRoleOutcome(StrEnum):
+    """`UserAdminRepository.set_role`'s three outcomes.
+
+    Lives here, not in `db/repositories/auth.py`: the route in
+    `api/http/admin/users.py` has to name this enum, and every other admin
+    route in this plan imports its outcome/status types from `services/`,
+    never reaches into `db/` — the port module is where an `api/` route is
+    allowed to look. `db/repositories/auth.py` imports it back from here.
+    """
+
+    OK = "ok"
+    NOT_FOUND = "not_found"
+    LAST_ADMIN = "last_admin"
+
+
+class UserAdminPort(Protocol):
+    async def list(self) -> tuple[UserRecord, ...]: ...
+
+    async def get(self, user_id: UserId) -> UserRecord | None:
+        """Used to build the response after `deactivate`/`set_role`
+        mutate a row — those two hand back only what changed (revoked
+        session ids), not the updated record itself."""
+        ...
+
+    async def deactivate(self, user_id: UserId, *, at: datetime) -> tuple[SessionId, ...] | None:
+        """`None` means no such user. Otherwise, every session this call
+        just revoked, for the caller to close with `Hub.close_sessions`
+        after its own transaction commits (§10.5, §11.2's "committed
+        before published")."""
+        ...
+
+    async def set_role(
+        self, user_id: UserId, *, role: UserRole, at: datetime
+    ) -> tuple[SetRoleOutcome, tuple[SessionId, ...]]:
+        """The outcome, and — only on `OK` — the sessions a role change
+        revoked. `LAST_ADMIN` and `NOT_FOUND` never revoke anything."""
         ...
 
 

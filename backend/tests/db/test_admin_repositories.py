@@ -6,7 +6,7 @@ from sqlalchemy import text as sql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.db.conftest import _seed_user
-from triviador.db.repositories.auth import InviteRepository
+from triviador.db.repositories.auth import InviteRepository, UserAdminRepository, UserRepository
 from triviador.db.repositories.categories import CategoryRepository
 from triviador.db.repositories.imports import QuestionImportRepository
 from triviador.db.security import token_digest
@@ -18,7 +18,7 @@ from triviador.services.admin import (
     ImportStatus,
     SlugTaken,
 )
-from triviador.services.identity import RedeemOutcome
+from triviador.services.identity import RedeemOutcome, UserRole
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -455,3 +455,23 @@ async def test_revoking_twice_is_idempotent_at_the_database_level(
     assert revoked_at == now
 
     assert await repository.revoke("no-such-invite-id", at=now) is False
+
+
+async def test_two_admins_cannot_demote_each_other_into_an_empty_room(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """The exact race §10.5 names. Both transactions see two admins if the
+    check is a plain `SELECT count(*)`; the `FOR UPDATE` over every admin
+    row serialises them, so the second sees one."""
+    import asyncio
+
+    repository = UserAdminRepository(sessions)
+    await _seed_user(sessions, "a1")  # role='admin' (the helper's default)
+    await _seed_user(sessions, "a2")
+
+    outcomes = await asyncio.gather(
+        repository.set_role(UserId("a1"), role=UserRole.PLAYER, at=datetime.now(UTC)),
+        repository.set_role(UserId("a2"), role=UserRole.PLAYER, at=datetime.now(UTC)),
+    )
+    assert sorted(o.value for o, _ in outcomes) == ["last_admin", "ok"]
+    assert await UserRepository(sessions).count_admins() == 1

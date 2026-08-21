@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from triviador.db.models.auth import InviteCode, Session, User
 from triviador.db.security import new_token, token_digest
 from triviador.domain.ids import SessionId, UserId
-from triviador.services.admin import InviteRecord, InviteStatus
+from triviador.services.admin import InviteRecord, InviteStatus, SetRoleOutcome
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     RedeemOutcome,
@@ -78,6 +78,86 @@ class UserRepository:
                 .where(User.role == str(UserRole.ADMIN), User.is_active)
             )
             return result.scalar_one()
+
+
+class UserAdminRepository:
+    """Implements `services.admin.UserAdminPort`.
+
+    Separate from `UserRepository`, which is the identity path every
+    request touches: the admin surface's methods take locks and are
+    allowed to be slow, and mixing them would put a `FOR UPDATE` over the
+    whole admin set one autocomplete away from the login path.
+    """
+
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        self._sessionmaker = sessionmaker
+
+    async def list(self) -> tuple[UserRecord, ...]:
+        async with self._sessionmaker() as db:
+            rows = (await db.execute(select(User).order_by(User.username))).scalars().all()
+        return tuple(_to_record(row) for row in rows)
+
+    async def get(self, user_id: UserId) -> UserRecord | None:
+        async with self._sessionmaker() as db:
+            user = await db.get(User, user_id)
+        return None if user is None else _to_record(user)
+
+    async def deactivate(self, user_id: UserId, *, at: datetime) -> tuple[SessionId, ...] | None:
+        """One transaction: flip the flag and revoke every session, then
+        hand the caller the ids so it can close their sockets **after the
+        commit** — the same "committed before published" discipline §11.2
+        applies to game events.
+        """
+        async with self._sessionmaker() as db, db.begin():
+            user = await db.get(User, user_id, with_for_update=True)
+            if user is None:
+                return None
+            user.is_active = False
+            revoked = await db.execute(
+                update(Session)
+                .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+                .values(revoked_at=at)
+                .returning(Session.id)
+            )
+            return tuple(SessionId(i) for i in revoked.scalars().all())
+
+    async def set_role(
+        self, user_id: UserId, *, role: UserRole, at: datetime
+    ) -> tuple[SetRoleOutcome, tuple[SessionId, ...]]:
+        async with self._sessionmaker() as db, db.begin():
+            # Lock every active admin row *first*, in one statement. Two
+            # concurrent demotions then serialise here rather than both
+            # reading a count of two and both writing.
+            admins = (
+                await db.execute(
+                    select(User.id)
+                    .where(User.role == str(UserRole.ADMIN), User.is_active)
+                    .order_by(User.id)
+                    .with_for_update()
+                )
+            ).scalars().all()
+            user = await db.get(User, user_id)
+            if user is None:
+                return SetRoleOutcome.NOT_FOUND, ()
+            if (
+                role is UserRole.PLAYER
+                and user.role == str(UserRole.ADMIN)
+                and len(admins) <= 1
+            ):
+                return SetRoleOutcome.LAST_ADMIN, ()
+            if user.role == str(role):
+                return SetRoleOutcome.OK, ()
+            user.role = str(role)
+            # A live socket carries the principal it authenticated with
+            # (§6.5), so a role change has to end the sessions that hold
+            # the old one. The user signs in again and gets the new role.
+            revoked = await db.execute(
+                update(Session)
+                .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+                .values(revoked_at=at)
+                .returning(Session.id)
+            )
+            return SetRoleOutcome.OK, tuple(SessionId(i) for i in revoked.scalars().all())
 
 
 class SessionRepository:

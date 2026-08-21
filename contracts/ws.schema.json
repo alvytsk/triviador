@@ -26,6 +26,8 @@
         "media_rejected",
         "slug_taken",
         "import_not_confirmable",
+        "last_admin",
+        "self_target",
         "no_default_preset",
         "server_busy",
         "server_restarting",

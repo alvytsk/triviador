@@ -8,12 +8,13 @@ being run on every change.
 """
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
+from triviador.api.ws.hub import Hub
 from triviador.db.repositories.questions import prompt_digest
 from triviador.db.security import token_digest
 from triviador.domain.game.rules import DEFAULT_RULES
@@ -33,6 +34,7 @@ from triviador.services.admin import (
     QuestionPage,
     QuestionSummaryRecord,
     QuestionWrite,
+    SetRoleOutcome,
     SlugTaken,
 )
 from triviador.services.identity import (
@@ -100,6 +102,25 @@ class FakeHasher:
         return hashed == self.hash(password)
 
 
+class RecordingHub(Hub):
+    """The real `Hub`, plus a record of every `close_sessions` call.
+
+    Task 11's tests assert *that* a socket was told to close and with
+    which code, not the socket-plumbing details `Hub` itself already has
+    unit tests for — recording the call is cheaper and more direct than
+    wiring up a fake `Socket` and inspecting its `close_code`.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed: list[tuple[tuple[SessionId, ...], int]] = []
+
+    def close_sessions(self, session_ids: Iterable[SessionId], code: int) -> None:
+        ids = tuple(session_ids)
+        self.closed.append((ids, code))
+        super().close_sessions(ids, code)
+
+
 @dataclass
 class FakeUsers:
     records: dict[UserId, UserRecord] = field(default_factory=dict)
@@ -164,6 +185,49 @@ class FakeSessions:
                 self.rows[token_hash] = (sid, uid, exp, at)
                 closed.append(sid)
         return tuple(closed)
+
+
+@dataclass
+class FakeUserAdmin:
+    """In-memory `UserAdminPort`, over the *same* `FakeUsers`/`FakeSessions`
+    instances `deps.users`/`deps.sessions` use — mirroring the real
+    `UserAdminRepository`, which reads and writes the same `users` and
+    `sessions` tables the identity path (`UserRepository`/
+    `SessionRepository`) does.
+    """
+
+    users: FakeUsers
+    sessions: FakeSessions
+
+    async def list(self) -> tuple[UserRecord, ...]:
+        return tuple(sorted(self.users.records.values(), key=lambda r: r.username))
+
+    async def get(self, user_id: UserId) -> UserRecord | None:
+        return self.users.records.get(user_id)
+
+    async def deactivate(self, user_id: UserId, *, at: datetime) -> tuple[SessionId, ...] | None:
+        record = self.users.records.get(user_id)
+        if record is None:
+            return None
+        self.users.records[user_id] = replace(record, is_active=False)
+        return await self.sessions.revoke_for_user(user_id, at=at)
+
+    async def set_role(
+        self, user_id: UserId, *, role: UserRole, at: datetime
+    ) -> tuple[SetRoleOutcome, tuple[SessionId, ...]]:
+        record = self.users.records.get(user_id)
+        if record is None:
+            return SetRoleOutcome.NOT_FOUND, ()
+        admins = sum(
+            1 for r in self.users.records.values() if r.role is UserRole.ADMIN and r.is_active
+        )
+        if role is UserRole.PLAYER and record.role is UserRole.ADMIN and admins <= 1:
+            return SetRoleOutcome.LAST_ADMIN, ()
+        if record.role is role:
+            return SetRoleOutcome.OK, ()
+        self.users.records[user_id] = replace(record, role=role)
+        revoked = await self.sessions.revoke_for_user(user_id, at=at)
+        return SetRoleOutcome.OK, revoked
 
 
 @dataclass

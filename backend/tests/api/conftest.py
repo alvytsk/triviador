@@ -46,7 +46,9 @@ from tests.api.fakes import (
     FakeQuestionAdmin,
     FakeSessions,
     FakeStagingStore,
+    FakeUserAdmin,
     FakeUsers,
+    RecordingHub,
 )
 from tests.conftest import lobby_state
 from tests.runtime.conftest import StubExecutor, _created_managers, _NoGameQueries, a_manager
@@ -57,7 +59,6 @@ from tests.runtime.test_commit import FakeUnitOfWork
 from triviador.api.app import create_app
 from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.ws.broadcaster import WsBroadcaster
-from triviador.api.ws.hub import Hub
 from triviador.config import Settings
 from triviador.db.security import token_digest
 from triviador.domain.game.rules import GameRules
@@ -247,7 +248,7 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         token_hash=token_digest("tok"),
         expires_at=clock.now() + timedelta(days=30),
     )
-    hub = Hub()
+    hub = RecordingHub()
     games = FakeGameCatalog()
     runtime_clock = RuntimeFakeClock(T0)
     # A `GameManager` whose `_load` path (Task 18's `/api/games` routes) can
@@ -331,6 +332,7 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         sessions=sessions,
         invites=invites,
         invites_admin=invites,
+        users_admin=FakeUserAdmin(users, sessions),
         database=FakeDatabase(),
         hub=hub,
         broadcaster=WsBroadcaster(hub, media_base=settings.media_public_base),

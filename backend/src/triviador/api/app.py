@@ -31,7 +31,12 @@ from triviador.api.ws.broadcaster import WsBroadcaster
 from triviador.api.ws.hub import Hub
 from triviador.config import Settings, startup_problems
 from triviador.db.engine import EnginePing, create_engine, sessionmaker_for
-from triviador.db.repositories.auth import InviteRepository, SessionRepository, UserRepository
+from triviador.db.repositories.auth import (
+    InviteRepository,
+    SessionRepository,
+    UserAdminRepository,
+    UserRepository,
+)
 from triviador.db.repositories.categories import CategoryRepository
 from triviador.db.repositories.games import GameRepository
 from triviador.db.repositories.imports import QuestionImportRepository
@@ -162,6 +167,7 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         sessions=SessionRepository(sessions),
         invites=invites,
         invites_admin=invites,
+        users_admin=UserAdminRepository(sessions),
         database=EnginePing(engine),
         hub=hub,
         broadcaster=broadcaster,
