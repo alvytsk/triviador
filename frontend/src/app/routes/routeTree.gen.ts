@@ -13,6 +13,8 @@ import { Route as AuthedRouteImport } from './_authed'
 import { Route as LoginRouteImport } from './login'
 import { Route as RedeemRouteImport } from './redeem'
 import { Route as AuthedIndexRouteImport } from './_authed.index'
+import { Route as AuthedAdminRouteImport } from './_authed.admin'
+import { Route as AuthedAdminIndexRouteImport } from './_authed.admin.index'
 import { Route as AuthedGamesGameIdRouteImport } from './_authed.games.$gameId'
 
 const AuthedRoute = AuthedRouteImport.update({
@@ -34,6 +36,16 @@ const AuthedIndexRoute = AuthedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAdminRoute = AuthedAdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => AuthedRoute,
+} as any).lazy(() => import('./_authed.admin.lazy').then((d) => d.Route))
+const AuthedAdminIndexRoute = AuthedAdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AuthedAdminRoute,
+} as any)
 const AuthedGamesGameIdRoute = AuthedGamesGameIdRouteImport.update({
   id: '/games/$gameId',
   path: '/games/$gameId',
@@ -44,34 +56,42 @@ export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
+  '/admin': typeof AuthedAdminRouteWithChildren
   '/games/$gameId': typeof AuthedGamesGameIdRoute
+  '/admin/': typeof AuthedAdminIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
   '/': typeof AuthedIndexRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
+  '/admin': typeof AuthedAdminIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
+  '/_authed/admin': typeof AuthedAdminRouteWithChildren
   '/_authed/': typeof AuthedIndexRoute
   '/_authed/games/$gameId': typeof AuthedGamesGameIdRoute
+  '/_authed/admin/': typeof AuthedAdminIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/redeem' | '/games/$gameId'
+  fullPaths:
+    '/' | '/login' | '/redeem' | '/admin' | '/games/$gameId' | '/admin/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/redeem' | '/' | '/games/$gameId'
+  to: '/login' | '/redeem' | '/' | '/games/$gameId' | '/admin'
   id:
     | '__root__'
     | '/_authed'
     | '/login'
     | '/redeem'
+    | '/_authed/admin'
     | '/_authed/'
     | '/_authed/games/$gameId'
+    | '/_authed/admin/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -110,6 +130,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedIndexRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/admin': {
+      id: '/_authed/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AuthedAdminRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/admin/': {
+      id: '/_authed/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AuthedAdminIndexRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
     '/_authed/games/$gameId': {
       id: '/_authed/games/$gameId'
       path: '/games/$gameId'
@@ -120,12 +154,26 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AuthedAdminRouteChildren {
+  AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
+}
+
+const AuthedAdminRouteChildren: AuthedAdminRouteChildren = {
+  AuthedAdminIndexRoute: AuthedAdminIndexRoute,
+}
+
+const AuthedAdminRouteWithChildren = AuthedAdminRoute._addFileChildren(
+  AuthedAdminRouteChildren,
+)
+
 interface AuthedRouteChildren {
+  AuthedAdminRoute: typeof AuthedAdminRouteWithChildren
   AuthedIndexRoute: typeof AuthedIndexRoute
   AuthedGamesGameIdRoute: typeof AuthedGamesGameIdRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedAdminRoute: AuthedAdminRouteWithChildren,
   AuthedIndexRoute: AuthedIndexRoute,
   AuthedGamesGameIdRoute: AuthedGamesGameIdRoute,
 }

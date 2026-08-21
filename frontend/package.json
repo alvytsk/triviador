@@ -11,7 +11,8 @@
     "check": "biome check . && tsc --noEmit && steiger ./src",
     "fix": "biome check --write .",
     "codegen": "node scripts/codegen.mjs",
-    "codegen:check": "node scripts/codegen.mjs && git diff --exit-code -- src/shared/api/generated && node --experimental-strip-types scripts/verify-generated.mjs"
+    "codegen:check": "node scripts/codegen.mjs && git diff --exit-code -- src/shared/api/generated && node --experimental-strip-types scripts/verify-generated.mjs",
+    "check:bundle": "vite build && node scripts/assert-admin-split.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.9",

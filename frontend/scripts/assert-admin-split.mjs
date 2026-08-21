@@ -1,0 +1,127 @@
+// Mechanical proof of Spec 1B §9: "/admin/* is a lazily-loaded route tree
+// guarded on role === 'admin', so players never download it and never
+// construct its schemas."
+//
+// Run after `vite build` (wired as `pnpm check:bundle`). Reads
+// `dist/.vite/manifest.json` — emitted because `vite.config.ts` sets
+// `build.manifest: true` for exactly this purpose — and follows only its
+// `imports` edges (never `dynamicImports`) from every entry chunk to build
+// the true "a player's browser executes this without ever clicking
+// anything" set. Anything reachable only by crossing a `dynamicImports`
+// edge is the lazy set: code fetched on demand, the first time someone
+// actually navigates into `/admin`.
+//
+// The check greps built chunk *source text* for literal strings, not
+// identifiers. `questionWriteRequestSchema` (Plan 7A's example of an
+// "admin-only identifier") is a plausible-sounding target, but it is also
+// exactly the kind of top-level binding name a production minifier is
+// free to rename — and nothing in the app imports `generated/admin.ts`
+// yet regardless (that lands in Task 2), so no chunk anywhere would
+// contain it today. String *literals* are never renamed by a minifier,
+// and `AdminShell`'s five nav hrefs already are real, permanent, string
+// literals that exist for no reason other than "the admin nav points at
+// admin-only screens" — `/admin/questions` itself is excluded because
+// `_authed.admin.index.tsx`'s redirect target is eager route code (only a
+// route's `component` is lazy-split, never its `beforeLoad`) and so
+// legitimately also contains that one substring; the other four do not
+// appear anywhere outside the admin tree. Once Task 2 wires
+// `entities/admin` into a real screen, this list should grow to include a
+// property-key string unique to an admin DTO (property keys are string
+// literals too, and survive minification the same way) — see the plan's
+// Important #1.
+const ADMIN_ONLY_MARKERS = [
+  "/admin/questions/import",
+  "/admin/invites",
+  "/admin/users",
+  "/admin/presets",
+];
+
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const distDir = resolve(here, "../dist");
+const manifestPath = resolve(distDir, ".vite/manifest.json");
+
+let manifestRaw;
+try {
+  manifestRaw = readFileSync(manifestPath, "utf-8");
+} catch (error) {
+  console.error(
+    `assert-admin-split: no manifest at ${manifestPath}. Run \`vite build\` first ` +
+      "(this script is meant to run after it, as `check:bundle` does).",
+  );
+  throw error;
+}
+const manifest = JSON.parse(manifestRaw);
+
+/** BFS over `imports` only — `dynamicImports` edges are exactly the
+ *  boundary a player's initial page load never crosses. */
+function reachableStatically(startKeys) {
+  const seen = new Set();
+  const queue = [...startKeys];
+  while (queue.length > 0) {
+    const key = queue.shift();
+    if (seen.has(key) || !(key in manifest)) continue;
+    seen.add(key);
+    for (const next of manifest[key].imports ?? []) queue.push(next);
+  }
+  return seen;
+}
+
+const entryKeys = Object.keys(manifest).filter((key) => manifest[key].isEntry);
+if (entryKeys.length === 0) {
+  throw new Error("assert-admin-split: no entry chunk found in the manifest.");
+}
+
+const eagerKeys = reachableStatically(entryKeys);
+const allChunkKeys = Object.keys(manifest).filter((key) => manifest[key].file?.endsWith(".js"));
+const lazyOnlyKeys = allChunkKeys.filter((key) => !eagerKeys.has(key));
+
+function readChunk(key) {
+  return readFileSync(resolve(distDir, manifest[key].file), "utf-8");
+}
+
+// 1. No chunk a player's first load executes may contain admin-only
+//    content.
+const leaks = [];
+for (const key of eagerKeys) {
+  if (!allChunkKeys.includes(key)) continue;
+  const source = readChunk(key);
+  for (const marker of ADMIN_ONLY_MARKERS) {
+    if (source.includes(marker)) leaks.push({ key, file: manifest[key].file, marker });
+  }
+}
+if (leaks.length > 0) {
+  console.error("assert-admin-split: FAILED — admin-only content reachable without a redirect:");
+  for (const leak of leaks) {
+    console.error(`  ${leak.marker} found in ${leak.file} (${leak.key}), part of the entry graph`);
+  }
+  process.exit(1);
+}
+
+// 2. Some lazy chunk must actually carry that content — a check that
+//    passes vacuously (nothing anywhere, eager or lazy) proves nothing.
+const found = [];
+for (const key of lazyOnlyKeys) {
+  const source = readChunk(key);
+  for (const marker of ADMIN_ONLY_MARKERS) {
+    if (source.includes(marker)) found.push({ key, file: manifest[key].file, marker });
+  }
+}
+if (found.length === 0) {
+  console.error(
+    "assert-admin-split: FAILED — no lazily-loaded chunk contains any admin-only marker. " +
+      "Either the split regressed (AdminShell is reachable from the entry — see the leak " +
+      "check above, which would also have fired) or nothing built the admin tree at all.",
+  );
+  process.exit(1);
+}
+
+console.log("assert-admin-split: OK");
+console.log(`  entry chunks: ${entryKeys.length}, eager chunks: ${eagerKeys.size}`);
+console.log(`  lazy-only chunks: ${lazyOnlyKeys.length}`);
+for (const hit of found) {
+  console.log(`  ${hit.marker} found only in ${hit.file} (${hit.key})`);
+}

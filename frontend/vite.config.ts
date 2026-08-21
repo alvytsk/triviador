@@ -69,6 +69,15 @@ export default defineConfig({
     serveMaps(),
   ],
   resolve: { alias: { "@": resolve(here, "src") } },
+  build: {
+    // `scripts/assert-admin-split.mjs` (`pnpm check:bundle`) reads
+    // `dist/.vite/manifest.json` to build the real static-import graph
+    // rather than regex-scanning minified chunk source — a manifest's
+    // `imports`/`dynamicImports` distinction survives minification
+    // unconditionally; grepping mangled output for a bare identifier does
+    // not.
+    manifest: true,
+  },
   server: {
     port: 5173,
     proxy: {
