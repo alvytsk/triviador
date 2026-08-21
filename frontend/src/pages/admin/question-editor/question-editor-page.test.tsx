@@ -40,6 +40,14 @@ function questionDetail(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function fillCreateForm(prompt: string) {
+  await screen.findByRole("combobox", { name: "Category" });
+  await userEvent.type(screen.getByLabelText("Prompt"), prompt);
+  for (const input of screen.getAllByLabelText(/^Choice \d$/)) {
+    await userEvent.type(input, "An option");
+  }
+}
+
 describe("QuestionEditorPage", () => {
   it("loads an existing question into the form", async () => {
     withMe();
@@ -67,13 +75,33 @@ describe("QuestionEditorPage", () => {
 
     const { router } = renderRoute("/admin/questions/new");
 
-    await screen.findByRole("combobox", { name: "Category" });
-    await userEvent.type(screen.getByLabelText("Prompt"), "A brand new prompt");
-    for (const input of screen.getAllByLabelText(/^Choice \d$/)) {
-      await userEvent.type(input, "An option");
-    }
+    await fillCreateForm("A brand new prompt");
     await userEvent.click(screen.getByRole("button", { name: /create question/i }));
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/admin/questions/q-new"));
+  });
+
+  it("carries the duplicate warning through the create → redirect, so it is still visible at the canonical id", async () => {
+    withMe();
+    withCategories();
+    server.use(
+      http.post("/api/admin/questions", () =>
+        HttpResponse.json(
+          { question: questionDetail({ id: "q-dup" }), duplicate_of: ["q9"] },
+          { status: 201 },
+        ),
+      ),
+      http.get("/api/admin/questions/q-dup", () =>
+        HttpResponse.json(questionDetail({ id: "q-dup" })),
+      ),
+    );
+
+    const { router } = renderRoute("/admin/questions/new");
+
+    await fillCreateForm("A prompt that already exists");
+    await userEvent.click(screen.getByRole("button", { name: /create question/i }));
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/admin/questions/q-dup"));
+    expect(await screen.findByText(/1 existing question/i)).toBeInTheDocument();
   });
 });

@@ -23,12 +23,16 @@ import { ChoiceEditor } from "./choice-editor";
 import { MediaField } from "./media-field";
 
 export type QuestionFormProps =
-  | { mode: "create"; categories: CategoryView[]; onSaved: (question: QuestionDetail) => void }
+  | {
+      mode: "create";
+      categories: CategoryView[];
+      onSaved: (question: QuestionDetail, duplicateOf: string[]) => void;
+    }
   | {
       mode: "edit";
       question: QuestionDetail;
       categories: CategoryView[];
-      onSaved: (question: QuestionDetail) => void;
+      onSaved: (question: QuestionDetail, duplicateOf: string[]) => void;
     };
 
 const DIFFICULTIES: Difficulty[] = ["easy", "medium", "hard"];

@@ -91,12 +91,16 @@ function initialValues(
 }
 
 export type UseQuestionFormArgs =
-  | { mode: "create"; categories: CategoryView[]; onSaved: (question: QuestionDetail) => void }
+  | {
+      mode: "create";
+      categories: CategoryView[];
+      onSaved: (question: QuestionDetail, duplicateOf: string[]) => void;
+    }
   | {
       mode: "edit";
       question: QuestionDetail;
       categories: CategoryView[];
-      onSaved: (question: QuestionDetail) => void;
+      onSaved: (question: QuestionDetail, duplicateOf: string[]) => void;
     };
 
 /**
@@ -144,7 +148,7 @@ export function useQuestionForm(args: UseQuestionFormArgs) {
       const saved = await mutation.mutateAsync(body).catch(() => undefined);
       if (saved === undefined) return;
       setDuplicateOf(saved.duplicate_of);
-      args.onSaved(saved.question);
+      args.onSaved(saved.question, saved.duplicate_of);
     },
   });
 
