@@ -11,7 +11,7 @@ from triviador.db.models.presets import RulePreset
 from triviador.db.repositories.presets import PresetRepository
 from triviador.db.seed import DEFAULT_PRESET_RULES
 from triviador.domain.game.rules import DEFAULT_RULES, GameRules, validate_rules
-from triviador.services.admin import DeactivateOutcome, UpdateOutcome
+from triviador.services.admin import CreateOutcome, DeactivateOutcome, UpdateOutcome
 
 # `integration` covers every test here; the asyncio mark is applied per async
 # test rather than at module level. A module-level asyncio mark also lands on
@@ -143,7 +143,9 @@ async def test_create_inserts_an_inactive_free_non_default_preset(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
     repository = PresetRepository(sessions)
-    record = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    outcome, record = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    assert outcome is CreateOutcome.OK
+    assert record is not None
     assert record.name == "Quick" and record.rules == QUICK_RULES
     assert not record.is_default and record.is_active
     # The seed default is untouched — a non-default `create` must not
@@ -161,7 +163,9 @@ async def test_creating_a_default_preset_demotes_the_previous_one_in_the_same_tr
     rows with `is_default = true` cannot coexist even for the width of one
     statement."""
     repository = PresetRepository(sessions)
-    created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=True)
+    outcome, created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=True)
+    assert outcome is CreateOutcome.OK
+    assert created is not None
     async with sessions() as session:
         rows = (
             (await session.execute(select(RulePreset).where(RulePreset.is_default)))
@@ -176,7 +180,8 @@ async def test_list_active_excludes_a_retired_preset_that_list_all_still_shows(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
     repository = PresetRepository(sessions)
-    created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    _, created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    assert created is not None
     assert (await repository.deactivate(created.preset_id)) is DeactivateOutcome.OK
 
     active = await repository.list_active()
@@ -233,7 +238,8 @@ async def test_update_refuses_to_promote_a_retired_preset(
     `is_active` check inside `update`'s transaction is what is actually
     exercised, not a fake's copy of the same rule."""
     repository = PresetRepository(sessions)
-    created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    _, created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    assert created is not None
     assert (await repository.deactivate(created.preset_id)) is DeactivateOutcome.OK
 
     outcome, record = await repository.update(
@@ -250,7 +256,8 @@ async def test_promoting_a_new_default_demotes_the_previous_one_in_the_same_tran
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
     repository = PresetRepository(sessions)
-    created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    _, created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    assert created is not None
     outcome, record = await repository.update(
         created.preset_id, name="Quick", rules=QUICK_RULES, is_default=True
     )
@@ -290,7 +297,8 @@ async def test_deactivate_retires_a_non_default_preset(
     default_preset: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
     repository = PresetRepository(sessions)
-    created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    _, created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    assert created is not None
     assert (await repository.deactivate(created.preset_id)) is DeactivateOutcome.OK
     assert await repository.get(created.preset_id) is None
     active_ids = {r.preset_id for r in await repository.list_active()}
@@ -314,7 +322,8 @@ async def test_get_including_retired_sees_what_get_cannot(
     makes the field it renders unreachable. One row, two reads, opposite
     answers — that is the whole point of the split."""
     repository = PresetRepository(sessions)
-    created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    _, created = await repository.create(name="Quick", rules=QUICK_RULES, is_default=False)
+    assert created is not None
     assert (await repository.deactivate(created.preset_id)) is DeactivateOutcome.OK
 
     assert await repository.get(created.preset_id) is None

@@ -25,9 +25,23 @@ from triviador.api.schemas.admin.presets import (
 )
 from triviador.api.schemas.presets import RulesView
 from triviador.domain.game.rules import GameRules, required_question_budget, validate_rules
-from triviador.services.admin import DeactivateOutcome, PresetAdminRecord, UpdateOutcome
+from triviador.services.admin import (
+    CreateOutcome,
+    DeactivateOutcome,
+    PresetAdminRecord,
+    UpdateOutcome,
+)
 
 router = APIRouter(prefix="/presets", tags=["admin"])
+
+# Shared between `create_preset` and `update_preset`: both lose the exact
+# same race (see `UpdateOutcome.LOST_DEFAULT_RACE`'s docstring), and both
+# owe the admin the same two facts — what happened, and that retrying will
+# work, since the request itself was never wrong.
+_LOST_DEFAULT_RACE_MESSAGE = (
+    "another preset was just made the default at the same moment; "
+    "retry to make this one the default instead"
+)
 
 
 def _detail(record: PresetAdminRecord) -> PresetDetail:
@@ -60,9 +74,12 @@ async def list_presets(deps: Deps, principal: AdminPrincipal) -> list[PresetDeta
 async def create_preset(
     body: PresetWriteRequest, deps: Deps, principal: AdminPrincipal
 ) -> PresetDetail:
-    record = await deps.presets_admin.create(
+    outcome, record = await deps.presets_admin.create(
         name=body.name, rules=_rules(body.rules), is_default=body.is_default
     )
+    if outcome is CreateOutcome.LOST_DEFAULT_RACE:
+        raise ApiError(ApiErrorCode.DEFAULT_PRESET, 409, _LOST_DEFAULT_RACE_MESSAGE)
+    assert record is not None  # the only other outcome
     return _detail(record)
 
 
@@ -95,6 +112,8 @@ async def update_preset(
             409,
             "a retired preset cannot be the default; reactivate it first",
         )
+    if outcome is UpdateOutcome.LOST_DEFAULT_RACE:
+        raise ApiError(ApiErrorCode.DEFAULT_PRESET, 409, _LOST_DEFAULT_RACE_MESSAGE)
     assert record is not None  # every other outcome carries one
     return _detail(record)
 

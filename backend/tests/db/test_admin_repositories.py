@@ -159,6 +159,105 @@ async def test_two_confirms_introducing_the_same_new_category_do_not_race(
     assert category_ids == [categories[0]]
 
 
+async def test_two_admins_promoting_different_presets_do_not_leak_a_503(
+    clean_db: None,
+    default_preset: None,
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """Reproduced live against `backend-postgres-test-1`. Two admins each
+    promote a DIFFERENT non-default preset to default. Neither request is
+    wrong on its own — each holds `FOR UPDATE` on its own target row, so
+    they never block each other there — but both race `_clear_default`'s
+    unconditional `UPDATE ... WHERE is_default = true`. The loser blocks,
+    then correctly finds nothing left to clear once the winner commits,
+    and its own `is_default = True` then collides with the winner's row
+    on `uq_rule_presets_single_default`.
+
+    Before the fix, that raw `IntegrityError` propagates straight out of
+    `update()` — this test fails with an unhandled `IntegrityError` on
+    whichever side loses, not with the clean `["lost_default_race", "ok"]`
+    it asserts below. (The API layer would turn that same unhandled error
+    into a misleading 503 `database_unavailable` — see
+    `errors.py`'s `SQLAlchemyError` handler — for a request that was
+    never actually wrong.) After the fix, the loser gets the typed
+    `LOST_DEFAULT_RACE` outcome, and the database still ends up with
+    exactly one default: the invariant was never actually broken, only
+    misreported.
+    """
+    import asyncio
+
+    from sqlalchemy import text as sql
+
+    from triviador.db.models.presets import RulePreset
+    from triviador.db.repositories.presets import PresetRepository
+    from triviador.db.seed import DEFAULT_PRESET_RULES
+    from triviador.domain.game.rules import DEFAULT_RULES
+
+    async with sessions() as session, session.begin():
+        session.add_all(
+            [
+                RulePreset(
+                    id="preset-a",
+                    name="A",
+                    is_default=False,
+                    rules=dict(DEFAULT_PRESET_RULES),
+                    version=1,
+                    is_active=True,
+                ),
+                RulePreset(
+                    id="preset-b",
+                    name="B",
+                    is_default=False,
+                    rules=dict(DEFAULT_PRESET_RULES),
+                    version=1,
+                    is_active=True,
+                ),
+            ]
+        )
+
+    repository = PresetRepository(sessions)
+
+    async def promote(preset_id: str) -> str:
+        outcome, _ = await repository.update(
+            preset_id, name=preset_id, rules=DEFAULT_RULES, is_default=True
+        )
+        return outcome.value
+
+    # A bare `asyncio.gather` of the two promotions is not enough to force
+    # the race reliably: both transactions' first lock (`FOR UPDATE` on
+    # their own, *different* target row) never contends, and the actual
+    # point of contention — `_clear_default`'s `UPDATE ... WHERE
+    # is_default = true` against the shared "default" row — is reached
+    # late enough that one promotion can finish and commit before the
+    # other's equivalent statement is even issued, over a socket this
+    # fast. So a third connection locks "default" first and holds it,
+    # forcing both promotions to actually queue up behind the same lock
+    # before it lets go — which is when they race each other for real.
+    async with sessions() as holder, holder.begin():
+        await holder.execute(sql("SELECT id FROM rule_presets WHERE id = 'default' FOR UPDATE"))
+        task_a = asyncio.create_task(promote("preset-a"))
+        task_b = asyncio.create_task(promote("preset-b"))
+        await asyncio.sleep(0.3)
+        # Still blocked on the lock this transaction is holding — proof
+        # the two promotions are genuinely queued up together, not merely
+        # scheduled.
+        assert not task_a.done()
+        assert not task_b.done()
+    # `holder`'s COMMIT above releases "default"; both blocked UPDATEs
+    # resolve against each other from here.
+    first, second = await asyncio.gather(task_a, task_b)
+    assert sorted([first, second]) == ["lost_default_race", "ok"]
+
+    async with sessions() as session:
+        defaults = (
+            await session.execute(sql("SELECT id FROM rule_presets WHERE is_default = true"))
+        ).scalars().all()
+    # Exactly one default survives, and it is whichever of the two
+    # promotions actually won — never the original seeded "default" row,
+    # and never both.
+    assert defaults in (["preset-a"], ["preset-b"])
+
+
 async def test_confirm_writes_every_kind_of_row_in_one_transaction(
     sessions: async_sessionmaker[AsyncSession], clean_db: None
 ) -> None:

@@ -500,15 +500,41 @@ class DeactivateOutcome(StrEnum):
 
 
 class UpdateOutcome(StrEnum):
-    """`PresetAdminRepository.update`'s four outcomes. The two refusals
-    are both about the same invariant — "never zero defaults, and never a
-    retired one" — approached from opposite directions; see that method's
-    docstring."""
+    """`PresetAdminRepository.update`'s five outcomes. `WOULD_LEAVE_NO_DEFAULT`
+    and `RETIRED_CANNOT_BE_DEFAULT` are both about the same invariant —
+    "never zero defaults, and never a retired one" — approached from
+    opposite directions; see that method's docstring.
+
+    `LOST_DEFAULT_RACE` is a third, purely concurrent way to fail the same
+    invariant: two admins each promote a *different* preset to default at
+    the same moment. Neither request is wrong on its own — each holds
+    `FOR UPDATE` on its own target row, so they never block each other
+    there — but both race `_clear_default`'s unconditional `UPDATE ...
+    WHERE is_default = true`. The loser finds nothing left to clear once
+    the winner commits, then its own `is_default = True` collides with the
+    winner's row on `uq_rule_presets_single_default`. That is a
+    `UniqueViolationError` surfacing an ordinary lost race, not a broken
+    invariant (the final state is still exactly one default) and not a
+    database outage — so it is caught here and turned into this outcome
+    rather than left to reach the generic `SQLAlchemyError` handler as a
+    misleading 503."""
 
     OK = "ok"
     NOT_FOUND = "not_found"
     WOULD_LEAVE_NO_DEFAULT = "would_leave_no_default"
     RETIRED_CANNOT_BE_DEFAULT = "retired_cannot_be_default"
+    LOST_DEFAULT_RACE = "lost_default_race"
+
+
+class CreateOutcome(StrEnum):
+    """`PresetAdminRepository.create`'s two outcomes. `LOST_DEFAULT_RACE`
+    is the same race `UpdateOutcome.LOST_DEFAULT_RACE` documents, from the
+    creating side: a brand-new preset created with `is_default=True` can
+    just as easily lose the race against a concurrent promotion as an
+    edit can."""
+
+    OK = "ok"
+    LOST_DEFAULT_RACE = "lost_default_race"
 
 
 class PresetAdminPort(Protocol):
@@ -533,7 +559,7 @@ class PresetAdminPort(Protocol):
 
     async def create(
         self, *, name: str, rules: GameRules, is_default: bool
-    ) -> PresetAdminRecord: ...
+    ) -> tuple[CreateOutcome, PresetAdminRecord | None]: ...
     async def update(
         self, preset_id: str, *, name: str, rules: GameRules, is_default: bool
     ) -> tuple[UpdateOutcome, PresetAdminRecord | None]: ...

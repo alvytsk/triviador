@@ -24,6 +24,7 @@ from triviador.services.admin import (
     CategoryNotFound,
     CategoryRecord,
     ChoiceRecord,
+    CreateOutcome,
     DeactivateOutcome,
     ImportedImage,
     ImportedQuestion,
@@ -417,12 +418,15 @@ class FakePresets:
 
     async def create(
         self, *, name: str, rules: GameRules, is_default: bool
-    ) -> PresetAdminRecord:
+    ) -> tuple[CreateOutcome, PresetAdminRecord | None]:
+        # Single-process fake: there is no second connection to race
+        # against, so `LOST_DEFAULT_RACE` is unreachable here — the real
+        # repository's two-connection race test covers it instead.
         if is_default:
             self._clear_default()
         record = PresetAdminRecord(str(uuid4()), name, rules, is_default, True)
         self.presets[record.preset_id] = record
-        return record
+        return CreateOutcome.OK, record
 
     async def update(
         self, preset_id: str, *, name: str, rules: GameRules, is_default: bool

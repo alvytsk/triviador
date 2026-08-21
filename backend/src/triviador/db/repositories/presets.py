@@ -5,11 +5,17 @@ from dataclasses import asdict, fields
 from uuid import uuid4
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from triviador.db.models.presets import RulePreset
 from triviador.domain.game.rules import GameRules, validate_rules
-from triviador.services.admin import DeactivateOutcome, PresetAdminRecord, UpdateOutcome
+from triviador.services.admin import (
+    CreateOutcome,
+    DeactivateOutcome,
+    PresetAdminRecord,
+    UpdateOutcome,
+)
 from triviador.services.ports import PresetRecord
 
 
@@ -101,20 +107,27 @@ class PresetRepository:
 
     async def create(
         self, *, name: str, rules: GameRules, is_default: bool
-    ) -> PresetAdminRecord:
-        async with self._sessionmaker() as session, session.begin():
-            if is_default:
-                await self._clear_default(session)
-            preset = RulePreset(
-                id=str(uuid4()),
-                name=name,
-                rules=asdict(rules),
-                is_default=is_default,
-                version=1,
-                is_active=True,
-            )
-            session.add(preset)
-        return PresetAdminRecord(preset.id, name, rules, is_default, True)
+    ) -> tuple[CreateOutcome, PresetAdminRecord | None]:
+        preset = RulePreset(
+            id=str(uuid4()),
+            name=name,
+            rules=asdict(rules),
+            is_default=is_default,
+            version=1,
+            is_active=True,
+        )
+        try:
+            async with self._sessionmaker() as session, session.begin():
+                if is_default:
+                    await self._clear_default(session)
+                session.add(preset)
+        except IntegrityError:
+            # Lost the race against a concurrent promotion of a different
+            # preset to default — see `UpdateOutcome.LOST_DEFAULT_RACE`.
+            # The transaction above is already rolled back, so this new
+            # preset was never created; the admin can simply retry.
+            return CreateOutcome.LOST_DEFAULT_RACE, None
+        return CreateOutcome.OK, PresetAdminRecord(preset.id, name, rules, is_default, True)
 
     async def update(
         self, preset_id: str, *, name: str, rules: GameRules, is_default: bool
@@ -139,24 +152,41 @@ class PresetRepository:
                                            cannot return, because it filters
                                            on `is_active` — the same outage,
                                            reached from the other side
+
+        **A third way in exists purely from concurrency, not from either
+        rule above.** Two admins each promote a *different* preset to
+        default at the same moment: each takes `FOR UPDATE` on its own
+        row, so they never block each other there, but both race
+        `_clear_default`'s unconditional `UPDATE ... WHERE is_default =
+        true`. The loser finds nothing left to clear once the winner
+        commits, and its own `is_default = True` then collides with the
+        winner's on `uq_rule_presets_single_default`, raising
+        `IntegrityError`. That is an ordinary lost race — the invariant
+        itself is never broken — so it is caught here and reported as
+        `LOST_DEFAULT_RACE` rather than left to escape as a raw
+        `IntegrityError` and land on the generic `SQLAlchemyError` handler
+        as a misleading 503.
         """
-        async with self._sessionmaker() as session, session.begin():
-            row = await session.get(RulePreset, preset_id, with_for_update=True)
-            if row is None:
-                return UpdateOutcome.NOT_FOUND, None
-            if row.is_default and not is_default:
-                return UpdateOutcome.WOULD_LEAVE_NO_DEFAULT, None
-            if is_default and not row.is_active:
-                return UpdateOutcome.RETIRED_CANNOT_BE_DEFAULT, None
-            if is_default and not row.is_default:
-                await self._clear_default(session)
-            row.name = name
-            row.rules = asdict(rules)
-            row.is_default = is_default
-            row.version = row.version + 1
-            return UpdateOutcome.OK, PresetAdminRecord(
-                row.id, name, rules, is_default, row.is_active
-            )
+        try:
+            async with self._sessionmaker() as session, session.begin():
+                row = await session.get(RulePreset, preset_id, with_for_update=True)
+                if row is None:
+                    return UpdateOutcome.NOT_FOUND, None
+                if row.is_default and not is_default:
+                    return UpdateOutcome.WOULD_LEAVE_NO_DEFAULT, None
+                if is_default and not row.is_active:
+                    return UpdateOutcome.RETIRED_CANNOT_BE_DEFAULT, None
+                if is_default and not row.is_default:
+                    await self._clear_default(session)
+                row.name = name
+                row.rules = asdict(rules)
+                row.is_default = is_default
+                row.version = row.version + 1
+                return UpdateOutcome.OK, PresetAdminRecord(
+                    row.id, name, rules, is_default, row.is_active
+                )
+        except IntegrityError:
+            return UpdateOutcome.LOST_DEFAULT_RACE, None
 
     async def deactivate(self, preset_id: str) -> DeactivateOutcome:
         async with self._sessionmaker() as session, session.begin():
