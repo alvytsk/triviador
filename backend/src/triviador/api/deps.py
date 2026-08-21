@@ -26,6 +26,7 @@ from triviador.services.admin import (
     ImportPort,
     InviteAdminPort,
     MediaAssetPort,
+    PresetAdminPort,
     QuestionAdminPort,
     UserAdminPort,
 )
@@ -106,6 +107,7 @@ class AppDependencies:
     games: GameCatalogPort
     maps: MapProvider
     presets: PresetPort
+    presets_admin: PresetAdminPort
     media_store: MediaStore
     media_assets: MediaAssetPort
     questions_admin: QuestionAdminPort
@@ -185,6 +187,7 @@ class AppDependencies:
             games=unusable,
             maps=unusable,
             presets=unusable,
+            presets_admin=unusable,
             media_store=unusable,
             media_assets=unusable,
             questions_admin=unusable,

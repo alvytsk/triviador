@@ -250,6 +250,20 @@ class QuestionAdminRepository:
             )
             return frozenset(rows.scalars().all())
 
+    async def active_counts(self) -> dict[str, int]:
+        """Active questions per kind. The same shape `seed-questions`
+        prints, computed the same way — one query, grouped."""
+        async with self._sessionmaker() as session:
+            rows = await session.execute(
+                select(Question.kind, func.count())
+                .where(Question.is_active.is_(True))
+                .group_by(Question.kind)
+            )
+            counts = {kind.value: 0 for kind in QuestionKind}
+            for kind, count in rows.all():
+                counts[kind] = count
+            return counts
+
     @staticmethod
     def _write_children(session: AsyncSession, question_id: str, write: QuestionWrite) -> None:
         if write.kind == QuestionKind.NUMERIC.value:

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.errors import install_error_handlers
 from triviador.api.http import admin, auth, games, health, maps
+from triviador.api.http import presets as public_presets
 from triviador.api.logging import RequestContextMiddleware, configure_logging
 from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, OriginMiddleware
 from triviador.api.ws import endpoint
@@ -87,6 +88,10 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(maps.router)
     app.include_router(games.router)
+    # Public and admin-only, side by side but never the same router:
+    # `/api/presets` (Plan 7A Decision 1) is signed-in-only, while every
+    # other preset route lives under `admin.router`'s `current_admin` guard.
+    app.include_router(public_presets.router)
     app.include_router(admin.router)
     app.include_router(health.router)
     app.include_router(endpoint.router)
@@ -156,6 +161,10 @@ def build_dependencies(settings: Settings) -> BuiltApp:
     # `InviteAdminPort` (this task's issue/list/revoke) — the same pattern
     # `games` already uses for `GameCatalogPort`/`GameQueriesPort`.
     invites = InviteRepository(sessions)
+    # Likewise one instance for `PresetPort` (the public read) and
+    # `PresetAdminPort` (this task's CRUD) — see `PresetAdminRecord`'s
+    # docstring for why one repository method can satisfy both.
+    presets = PresetRepository(sessions)
     deps = AppDependencies(
         settings=settings,
         clock=clock,
@@ -175,7 +184,8 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         readiness=Readiness(),
         games=games,
         maps=maps_registry,
-        presets=PresetRepository(sessions),
+        presets=presets,
+        presets_admin=presets,
         media_store=media_store,
         media_assets=MediaAssetRepository(sessions),
         questions_admin=QuestionAdminRepository(sessions),

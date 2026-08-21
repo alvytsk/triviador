@@ -29,6 +29,7 @@
         "last_admin",
         "self_target",
         "no_default_preset",
+        "default_preset",
         "server_busy",
         "server_restarting",
         "game_recovering",
@@ -1007,6 +1008,34 @@
       "title": "PickingTurn",
       "type": "object"
     },
+    "PresetSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "is_default": {
+          "title": "Is Default",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "rules": {
+          "$ref": "#/$defs/RulesView"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "is_default",
+        "rules"
+      ],
+      "title": "PresetSummary",
+      "type": "object"
+    },
     "QuestionKind": {
       "enum": [
         "multiple_choice",
@@ -1128,6 +1157,79 @@
       ],
       "title": "RejectCode",
       "type": "string"
+    },
+    "RulesView": {
+      "additionalProperties": false,
+      "description": "`GameRules`, field for field. Written out rather than generated\nfrom the dataclass so the contract is reviewable in the diff \u2014 this\nmodel is what the lobby's rules readout renders.",
+      "properties": {
+        "answer_timeout_ms": {
+          "title": "Answer Timeout Ms",
+          "type": "integer"
+        },
+        "base_hp": {
+          "title": "Base Hp",
+          "type": "integer"
+        },
+        "battle_rounds": {
+          "title": "Battle Rounds",
+          "type": "integer"
+        },
+        "claims_by_rank": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Claims By Rank",
+          "type": "array"
+        },
+        "expansion_rounds": {
+          "title": "Expansion Rounds",
+          "type": "integer"
+        },
+        "pick_timeout_ms": {
+          "title": "Pick Timeout Ms",
+          "type": "integer"
+        },
+        "player_count": {
+          "title": "Player Count",
+          "type": "integer"
+        },
+        "pts_base": {
+          "title": "Pts Base",
+          "type": "integer"
+        },
+        "pts_conquered": {
+          "title": "Pts Conquered",
+          "type": "integer"
+        },
+        "pts_defense": {
+          "title": "Pts Defense",
+          "type": "integer"
+        },
+        "pts_territory": {
+          "title": "Pts Territory",
+          "type": "integer"
+        },
+        "warmup_ms": {
+          "title": "Warmup Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "player_count",
+        "expansion_rounds",
+        "battle_rounds",
+        "base_hp",
+        "answer_timeout_ms",
+        "pick_timeout_ms",
+        "warmup_ms",
+        "claims_by_rank",
+        "pts_base",
+        "pts_territory",
+        "pts_conquered",
+        "pts_defense"
+      ],
+      "title": "RulesView",
+      "type": "object"
     },
     "SubmittedValue": {
       "additionalProperties": false,

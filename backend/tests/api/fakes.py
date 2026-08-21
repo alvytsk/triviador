@@ -17,11 +17,13 @@ from uuid import uuid4
 from triviador.api.ws.hub import Hub
 from triviador.db.repositories.questions import prompt_digest
 from triviador.db.security import token_digest
-from triviador.domain.game.rules import DEFAULT_RULES
+from triviador.domain.game.rules import DEFAULT_RULES, GameRules
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
+from triviador.domain.questions.types import QuestionKind
 from triviador.services.admin import (
     CategoryRecord,
     ChoiceRecord,
+    DeactivateOutcome,
     ImportedImage,
     ImportedQuestion,
     ImportRecord,
@@ -29,6 +31,7 @@ from triviador.services.admin import (
     InviteRecord,
     InviteStatus,
     MediaAssetRecord,
+    PresetAdminRecord,
     QuestionDetailRecord,
     QuestionFilters,
     QuestionPage,
@@ -36,6 +39,7 @@ from triviador.services.admin import (
     QuestionWrite,
     SetRoleOutcome,
     SlugTaken,
+    UpdateOutcome,
 )
 from triviador.services.identity import (
     AuthenticatedPrincipal,
@@ -367,27 +371,83 @@ class FakeGameCatalog:
 
 @dataclass
 class FakePresets:
-    """`PresetPort`. Two presets: `default` (three players, `DEFAULT_RULES`)
-    and `two-player`, which exists because a test that wants to assert
-    *authorization* on `start` must not be blocked by
-    `NOT_ENOUGH_PLAYERS`."""
+    """`PresetPort` and `PresetAdminPort` in one instance — the same
+    pattern the real `PresetRepository` follows (see
+    `PresetAdminRecord`'s docstring). Two presets seeded: `default` (three
+    players, `DEFAULT_RULES`, the one `is_default`) and `two-player`,
+    which exists because a test that wants to assert *authorization* on
+    `start` must not be blocked by `NOT_ENOUGH_PLAYERS`."""
 
-    presets: dict[str, PresetRecord] = field(
+    presets: dict[str, PresetAdminRecord] = field(
         default_factory=lambda: {
-            "default": PresetRecord("default", "Default", DEFAULT_RULES),
-            "two-player": PresetRecord(
+            "default": PresetAdminRecord("default", "Default", DEFAULT_RULES, True, True),
+            "two-player": PresetAdminRecord(
                 "two-player",
                 "Two",
                 replace(DEFAULT_RULES, player_count=2, claims_by_rank=(2, 1)),
+                False,
+                True,
             ),
         }
     )
 
-    async def get(self, preset_id: str) -> PresetRecord | None:
-        return self.presets.get(preset_id)
+    async def get(self, preset_id: str) -> PresetAdminRecord | None:
+        record = self.presets.get(preset_id)
+        return record if record is not None and record.is_active else None
 
-    async def get_default(self) -> PresetRecord | None:
-        return self.presets.get("default")
+    async def get_default(self) -> PresetAdminRecord | None:
+        return next(
+            (r for r in self.presets.values() if r.is_default and r.is_active), None
+        )
+
+    async def list_active(self) -> tuple[PresetRecord, ...]:
+        return tuple(
+            PresetRecord(r.preset_id, r.name, r.rules)
+            for r in sorted(self.presets.values(), key=lambda r: r.name)
+            if r.is_active
+        )
+
+    async def list_all(self) -> tuple[PresetAdminRecord, ...]:
+        return tuple(sorted(self.presets.values(), key=lambda r: r.name))
+
+    async def create(
+        self, *, name: str, rules: GameRules, is_default: bool
+    ) -> PresetAdminRecord:
+        if is_default:
+            self._clear_default()
+        record = PresetAdminRecord(str(uuid4()), name, rules, is_default, True)
+        self.presets[record.preset_id] = record
+        return record
+
+    async def update(
+        self, preset_id: str, *, name: str, rules: GameRules, is_default: bool
+    ) -> tuple[UpdateOutcome, PresetAdminRecord | None]:
+        row = self.presets.get(preset_id)
+        if row is None:
+            return UpdateOutcome.NOT_FOUND, None
+        if row.is_default and not is_default:
+            return UpdateOutcome.WOULD_LEAVE_NO_DEFAULT, None
+        if is_default and not row.is_active:
+            return UpdateOutcome.RETIRED_CANNOT_BE_DEFAULT, None
+        if is_default and not row.is_default:
+            self._clear_default()
+        record = PresetAdminRecord(preset_id, name, rules, is_default, row.is_active)
+        self.presets[preset_id] = record
+        return UpdateOutcome.OK, record
+
+    async def deactivate(self, preset_id: str) -> DeactivateOutcome:
+        row = self.presets.get(preset_id)
+        if row is None:
+            return DeactivateOutcome.NOT_FOUND
+        if row.is_default:
+            return DeactivateOutcome.IS_DEFAULT
+        self.presets[preset_id] = replace(row, is_active=False)
+        return DeactivateOutcome.OK
+
+    def _clear_default(self) -> None:
+        for preset_id, row in self.presets.items():
+            if row.is_default:
+                self.presets[preset_id] = replace(row, is_default=False)
 
 
 class FakeMediaStore:
@@ -573,6 +633,13 @@ class FakeQuestionAdmin:
     async def existing_prompt_digests(self, digests: frozenset[str]) -> frozenset[str]:
         bank_digests = {prompt_digest(r.prompt) for r in self.records.values()}
         return frozenset(digest for digest in digests if digest in bank_digests)
+
+    async def active_counts(self) -> dict[str, int]:
+        counts = {kind.value: 0 for kind in QuestionKind}
+        for record in self.records.values():
+            if record.is_active:
+                counts[record.kind] = counts.get(record.kind, 0) + 1
+        return counts
 
 
 def _choice_records(write: QuestionWrite) -> tuple[ChoiceRecord, ...] | None:

@@ -323,6 +323,7 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
     # and `deps.invites_admin` (this task) — mirroring the real
     # `InviteRepository`, which also satisfies both.
     invites = FakeInvites(users)
+    presets = FakePresets()
     return AppDependencies(
         settings=settings,
         clock=clock,
@@ -340,7 +341,8 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         readiness=Readiness(migrations_current=True, recovery_complete=True),
         games=games,
         maps=MapRegistry(root=map_root),
-        presets=FakePresets(),
+        presets=presets,
+        presets_admin=presets,
         media_store=FakeMediaStore(clock),
         media_assets=media_assets,
         questions_admin=questions_admin,

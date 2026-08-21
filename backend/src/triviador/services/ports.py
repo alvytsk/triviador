@@ -224,11 +224,14 @@ class PresetRecord:
 
 
 class PresetPort(Protocol):
-    """Read-only. Preset CRUD is Plan 7; `POST /api/games` only needs to
-    resolve one id, or the default, into a frozen `GameRules`."""
+    """Read-only. Preset CRUD lives in `services.admin.PresetAdminPort`
+    (Plan 7A Task 12); `POST /api/games` only needs to resolve one id, or
+    the default, into a frozen `GameRules`, and `GET /api/presets` (the one
+    public preset route, Plan 7A Decision 1) needs every active one."""
 
     async def get(self, preset_id: str) -> PresetRecord | None: ...
     async def get_default(self) -> PresetRecord | None: ...
+    async def list_active(self) -> tuple[PresetRecord, ...]: ...
 
 
 class DatabaseProbe(Protocol):

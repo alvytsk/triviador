@@ -11,7 +11,15 @@ and "forgot the dependency" stops being a thing that can happen.
 from fastapi import APIRouter, Depends
 
 from triviador.api.deps import current_admin
-from triviador.api.http.admin import categories, imports, invites, media, questions, users
+from triviador.api.http.admin import (
+    categories,
+    imports,
+    invites,
+    media,
+    presets,
+    questions,
+    users,
+)
 
 # The two routes that take a body larger than `max_body_bytes`, and so opt
 # out of `BodyLimitMiddleware`'s buffering. Each imposes its own cap while
@@ -30,5 +38,11 @@ def build_admin_router(*routers: APIRouter) -> APIRouter:
 
 # Sub-routers are added to this call as the tasks that create them land.
 router = build_admin_router(
-    categories.router, imports.router, invites.router, media.router, questions.router, users.router
+    categories.router,
+    imports.router,
+    invites.router,
+    media.router,
+    presets.router,
+    questions.router,
+    users.router,
 )

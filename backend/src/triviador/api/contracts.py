@@ -19,6 +19,7 @@ from triviador.api.schemas.auth import LoginRequest, Me, RedeemRequest
 from triviador.api.schemas.errors import ErrorEnvelope
 from triviador.api.schemas.games import CreateGameRequest, GameSnapshot, LobbyGameSummary
 from triviador.api.schemas.maps import MapDetail, MapSummary
+from triviador.api.schemas.presets import PresetSummary
 from triviador.api.schemas.ws import ClientMessage, ServerMessage
 from triviador.domain.game.actions import RejectCode
 
@@ -31,6 +32,7 @@ REST_MODELS = (
     LobbyGameSummary,
     MapSummary,
     MapDetail,
+    PresetSummary,
     ErrorEnvelope,
 )
 

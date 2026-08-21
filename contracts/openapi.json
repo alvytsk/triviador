@@ -1340,6 +1340,127 @@
         "title": "PickingTurn",
         "type": "object"
       },
+      "PresetCoverage": {
+        "additionalProperties": false,
+        "description": "\u00a710.6's readout, and its honesty in a field.\n\n`informative` is `True` and always will be: between reading this and\nstarting a game an admin can deactivate a question, so the\nauthoritative check is the one `StartGame` makes in the transaction\nthat draws the pool. The field exists so the screen has something to\nrender that sentence from rather than inventing it.",
+        "properties": {
+          "bank": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Bank",
+            "type": "object"
+          },
+          "informative": {
+            "default": true,
+            "title": "Informative",
+            "type": "boolean"
+          },
+          "required": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Required",
+            "type": "object"
+          },
+          "sufficient": {
+            "title": "Sufficient",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "required",
+          "bank",
+          "sufficient"
+        ],
+        "title": "PresetCoverage",
+        "type": "object"
+      },
+      "PresetDetail": {
+        "additionalProperties": false,
+        "description": "`PresetSummary` plus `is_active`: the admin screen shows retired\npresets (Spec 1B \u00a76.1's soft delete) where the public listing must\nnot.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/RulesView"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_default",
+          "is_active",
+          "rules"
+        ],
+        "title": "PresetDetail",
+        "type": "object"
+      },
+      "PresetSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/RulesView"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_default",
+          "rules"
+        ],
+        "title": "PresetSummary",
+        "type": "object"
+      },
+      "PresetWriteRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/RulesView"
+          }
+        },
+        "required": [
+          "name",
+          "is_default",
+          "rules"
+        ],
+        "title": "PresetWriteRequest",
+        "type": "object"
+      },
       "QuestionDetail": {
         "additionalProperties": false,
         "properties": {
@@ -1783,6 +1904,79 @@
           "name"
         ],
         "title": "RenameCategoryRequest",
+        "type": "object"
+      },
+      "RulesView": {
+        "additionalProperties": false,
+        "description": "`GameRules`, field for field. Written out rather than generated\nfrom the dataclass so the contract is reviewable in the diff \u2014 this\nmodel is what the lobby's rules readout renders.",
+        "properties": {
+          "answer_timeout_ms": {
+            "title": "Answer Timeout Ms",
+            "type": "integer"
+          },
+          "base_hp": {
+            "title": "Base Hp",
+            "type": "integer"
+          },
+          "battle_rounds": {
+            "title": "Battle Rounds",
+            "type": "integer"
+          },
+          "claims_by_rank": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Claims By Rank",
+            "type": "array"
+          },
+          "expansion_rounds": {
+            "title": "Expansion Rounds",
+            "type": "integer"
+          },
+          "pick_timeout_ms": {
+            "title": "Pick Timeout Ms",
+            "type": "integer"
+          },
+          "player_count": {
+            "title": "Player Count",
+            "type": "integer"
+          },
+          "pts_base": {
+            "title": "Pts Base",
+            "type": "integer"
+          },
+          "pts_conquered": {
+            "title": "Pts Conquered",
+            "type": "integer"
+          },
+          "pts_defense": {
+            "title": "Pts Defense",
+            "type": "integer"
+          },
+          "pts_territory": {
+            "title": "Pts Territory",
+            "type": "integer"
+          },
+          "warmup_ms": {
+            "title": "Warmup Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "player_count",
+          "expansion_rounds",
+          "battle_rounds",
+          "base_hp",
+          "answer_timeout_ms",
+          "pick_timeout_ms",
+          "warmup_ms",
+          "claims_by_rank",
+          "pts_base",
+          "pts_territory",
+          "pts_conquered",
+          "pts_defense"
+        ],
+        "title": "RulesView",
         "type": "object"
       },
       "SetRoleRequest": {
@@ -2280,6 +2474,243 @@
           }
         },
         "summary": "Upload Media",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/presets": {
+      "get": {
+        "operationId": "list_presets_api_admin_presets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PresetDetail"
+                  },
+                  "title": "Response List Presets Api Admin Presets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Presets",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "create_preset_api_admin_presets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Preset",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/presets/{preset_id}": {
+      "delete": {
+        "operationId": "deactivate_preset_api_admin_presets__preset_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deactivate Preset",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      },
+      "get": {
+        "operationId": "get_preset_api_admin_presets__preset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Preset",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      },
+      "patch": {
+        "operationId": "update_preset_api_admin_presets__preset_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PresetWriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Preset",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/presets/{preset_id}/coverage": {
+      "get": {
+        "operationId": "preset_coverage_api_admin_presets__preset_id__coverage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "preset_id",
+            "required": true,
+            "schema": {
+              "title": "Preset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresetCoverage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preset Coverage",
         "tags": [
           "admin",
           "admin"
@@ -3333,6 +3764,31 @@
         "summary": "Get Map",
         "tags": [
           "maps"
+        ]
+      }
+    },
+    "/api/presets": {
+      "get": {
+        "operationId": "list_presets_api_presets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PresetSummary"
+                  },
+                  "title": "Response List Presets Api Presets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Presets",
+        "tags": [
+          "presets"
         ]
       }
     }

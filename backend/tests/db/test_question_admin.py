@@ -216,3 +216,17 @@ async def test_a_non_finite_numeric_answer_is_rejected_even_off_the_schema(
                 unit=None,
             ),
         )
+
+
+async def test_active_counts_groups_by_kind_and_ignores_retired_questions(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """§10.6's coverage readout (Plan 7A Task 12) reads this bank half.
+    `_bank` alone (one active MC, one active numeric, one retired MC)
+    would leave both kinds at the same count by coincidence; a second MC
+    question makes the two counts genuinely different, so a test that
+    only checked the *set* of keys could not pass by accident."""
+    await _bank(sessions)
+    await _seed_mc_question(sessions, "q-mc-2", prompt="A second active multiple-choice question")
+    counts = await QuestionAdminRepository(sessions).active_counts()
+    assert counts == {"multiple_choice": 2, "numeric": 1}

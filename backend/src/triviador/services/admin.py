@@ -17,8 +17,10 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
+from triviador.domain.game.rules import GameRules
 from triviador.domain.ids import SessionId, UserId
 from triviador.services.identity import UserRecord, UserRole
+from triviador.services.ports import PresetRecord
 
 
 @dataclass(frozen=True)
@@ -204,6 +206,13 @@ class QuestionAdminPort(Protocol):
         rather than calling `duplicates_of` per row — same rule, same
         digest, one round trip.
         """
+        ...
+
+    async def active_counts(self) -> dict[str, int]:
+        """Active questions per kind — the bank half of a preset's
+        coverage readout (§10.6, Plan 7A Task 12). The same shape
+        `seed-questions` prints, computed the same way: one query,
+        grouped."""
         ...
 
 
@@ -430,3 +439,61 @@ class ImportPort(Protocol):
         gone: clear `staged_key`, and move `expired` to `cleaned`.
         `confirmed` stays `confirmed` — that row is the audit trail."""
         ...
+
+
+@dataclass(frozen=True)
+class PresetAdminRecord(PresetRecord):
+    """`PresetRecord` plus the two flags only the admin screen needs.
+
+    A subclass, not a sibling dataclass: `PresetRepository.get` and
+    `.get_default` (already `PresetPort`) return exactly this type now, so
+    `deps.presets` and `deps.presets_admin` can be the same instance —
+    the pattern `InviteRepository`/`invites`/`invites_admin` already uses.
+    That only type-checks because `PresetAdminRecord` *is a* `PresetRecord`
+    (covariant return): `PresetPort.get() -> PresetRecord | None` accepts a
+    method that actually returns the wider type, but not the reverse.
+    """
+
+    is_default: bool
+    is_active: bool
+
+
+class DeactivateOutcome(StrEnum):
+    """`PresetAdminRepository.deactivate`'s three outcomes. `IS_DEFAULT` is
+    Spec 1B §6.1's soft-delete rule: physically deleting a preset would
+    break historical `games.preset_id`, so retirement is `is_active =
+    false`, and the current default may never be retired — that would
+    leave `POST /api/games` with `preset_id: null` answering
+    `no_default_preset` to every player."""
+
+    OK = "ok"
+    NOT_FOUND = "not_found"
+    IS_DEFAULT = "is_default"
+
+
+class UpdateOutcome(StrEnum):
+    """`PresetAdminRepository.update`'s four outcomes. The two refusals
+    are both about the same invariant — "never zero defaults, and never a
+    retired one" — approached from opposite directions; see that method's
+    docstring."""
+
+    OK = "ok"
+    NOT_FOUND = "not_found"
+    WOULD_LEAVE_NO_DEFAULT = "would_leave_no_default"
+    RETIRED_CANNOT_BE_DEFAULT = "retired_cannot_be_default"
+
+
+class PresetAdminPort(Protocol):
+    """§10.6's CRUD screen. `get` returns `PresetAdminRecord`, not the
+    narrower `PresetPort.get`'s `PresetRecord` — see that class's
+    docstring for why one repository method can satisfy both."""
+
+    async def list_all(self) -> tuple[PresetAdminRecord, ...]: ...
+    async def get(self, preset_id: str) -> PresetAdminRecord | None: ...
+    async def create(
+        self, *, name: str, rules: GameRules, is_default: bool
+    ) -> PresetAdminRecord: ...
+    async def update(
+        self, preset_id: str, *, name: str, rules: GameRules, is_default: bool
+    ) -> tuple[UpdateOutcome, PresetAdminRecord | None]: ...
+    async def deactivate(self, preset_id: str) -> DeactivateOutcome: ...

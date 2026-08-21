@@ -60,6 +60,7 @@ class ApiErrorCode(StrEnum):
     LAST_ADMIN = "last_admin"
     SELF_TARGET = "self_target"
     NO_DEFAULT_PRESET = "no_default_preset"
+    DEFAULT_PRESET = "default_preset"
     SERVER_BUSY = "server_busy"
     SERVER_RESTARTING = "server_restarting"
     GAME_RECOVERING = "game_recovering"
