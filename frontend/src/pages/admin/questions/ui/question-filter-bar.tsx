@@ -29,7 +29,11 @@ export function QuestionFilterBar({
    *  from showing the same control twice. */
   hideClear?: boolean;
 }) {
-  const navigate = useNavigate({ from: "/admin/questions" });
+  // Trailing slash: Task 4 renamed the underlying route file to
+  // `...questions.index.tsx` (see its own comment), which registered its
+  // path as `/admin/questions/` rather than `/admin/questions` — the URL
+  // itself is unaffected, only this typed `from` anchor.
+  const navigate = useNavigate({ from: "/admin/questions/" });
   const categories = useQuery(adminCategoriesQueryOptions());
 
   function setFilter(patch: Partial<QuestionSearch>) {

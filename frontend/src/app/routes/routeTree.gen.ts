@@ -15,8 +15,9 @@ import { Route as RedeemRouteImport } from './redeem'
 import { Route as AuthedIndexRouteImport } from './_authed.index'
 import { Route as AuthedAdminRouteImport } from './_authed.admin'
 import { Route as AuthedAdminIndexRouteImport } from './_authed.admin.index'
-import { Route as AuthedAdminQuestionsRouteImport } from './_authed.admin.questions'
 import { Route as AuthedGamesGameIdRouteImport } from './_authed.games.$gameId'
+import { Route as AuthedAdminQuestionsIndexRouteImport } from './_authed.admin.questions.index'
+import { Route as AuthedAdminQuestionsQuestionIdRouteImport } from './_authed.admin.questions.$questionId'
 
 const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
@@ -47,35 +48,46 @@ const AuthedAdminIndexRoute = AuthedAdminIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthedAdminRoute,
 } as any)
-const AuthedAdminQuestionsRoute = AuthedAdminQuestionsRouteImport.update({
-  id: '/questions',
-  path: '/questions',
-  getParentRoute: () => AuthedAdminRoute,
-} as any).lazy(() =>
-  import('./_authed.admin.questions.lazy').then((d) => d.Route),
-)
 const AuthedGamesGameIdRoute = AuthedGamesGameIdRouteImport.update({
   id: '/games/$gameId',
   path: '/games/$gameId',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAdminQuestionsIndexRoute =
+  AuthedAdminQuestionsIndexRouteImport.update({
+    id: '/questions/',
+    path: '/questions/',
+    getParentRoute: () => AuthedAdminRoute,
+  } as any).lazy(() =>
+    import('./_authed.admin.questions.index.lazy').then((d) => d.Route),
+  )
+const AuthedAdminQuestionsQuestionIdRoute =
+  AuthedAdminQuestionsQuestionIdRouteImport.update({
+    id: '/questions/$questionId',
+    path: '/questions/$questionId',
+    getParentRoute: () => AuthedAdminRoute,
+  } as any).lazy(() =>
+    import('./_authed.admin.questions.$questionId.lazy').then((d) => d.Route),
+  )
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
   '/admin': typeof AuthedAdminRouteWithChildren
-  '/admin/questions': typeof AuthedAdminQuestionsRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin/': typeof AuthedAdminIndexRoute
+  '/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/admin/questions/': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
   '/': typeof AuthedIndexRoute
-  '/admin/questions': typeof AuthedAdminQuestionsRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin': typeof AuthedAdminIndexRoute
+  '/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/admin/questions': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -84,9 +96,10 @@ export interface FileRoutesById {
   '/redeem': typeof RedeemRoute
   '/_authed/admin': typeof AuthedAdminRouteWithChildren
   '/_authed/': typeof AuthedIndexRoute
-  '/_authed/admin/questions': typeof AuthedAdminQuestionsRoute
   '/_authed/games/$gameId': typeof AuthedGamesGameIdRoute
   '/_authed/admin/': typeof AuthedAdminIndexRoute
+  '/_authed/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/_authed/admin/questions/': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -95,17 +108,19 @@ export interface FileRouteTypes {
     | '/login'
     | '/redeem'
     | '/admin'
-    | '/admin/questions'
     | '/games/$gameId'
     | '/admin/'
+    | '/admin/questions/$questionId'
+    | '/admin/questions/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
     | '/redeem'
     | '/'
-    | '/admin/questions'
     | '/games/$gameId'
     | '/admin'
+    | '/admin/questions/$questionId'
+    | '/admin/questions'
   id:
     | '__root__'
     | '/_authed'
@@ -113,9 +128,10 @@ export interface FileRouteTypes {
     | '/redeem'
     | '/_authed/admin'
     | '/_authed/'
-    | '/_authed/admin/questions'
     | '/_authed/games/$gameId'
     | '/_authed/admin/'
+    | '/_authed/admin/questions/$questionId'
+    | '/_authed/admin/questions/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -168,13 +184,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminIndexRouteImport
       parentRoute: typeof AuthedAdminRoute
     }
-    '/_authed/admin/questions': {
-      id: '/_authed/admin/questions'
-      path: '/questions'
-      fullPath: '/admin/questions'
-      preLoaderRoute: typeof AuthedAdminQuestionsRouteImport
-      parentRoute: typeof AuthedAdminRoute
-    }
     '/_authed/games/$gameId': {
       id: '/_authed/games/$gameId'
       path: '/games/$gameId'
@@ -182,17 +191,33 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedGamesGameIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/admin/questions/': {
+      id: '/_authed/admin/questions/'
+      path: '/questions'
+      fullPath: '/admin/questions/'
+      preLoaderRoute: typeof AuthedAdminQuestionsIndexRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
+    '/_authed/admin/questions/$questionId': {
+      id: '/_authed/admin/questions/$questionId'
+      path: '/questions/$questionId'
+      fullPath: '/admin/questions/$questionId'
+      preLoaderRoute: typeof AuthedAdminQuestionsQuestionIdRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
   }
 }
 
 interface AuthedAdminRouteChildren {
-  AuthedAdminQuestionsRoute: typeof AuthedAdminQuestionsRoute
   AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
+  AuthedAdminQuestionsQuestionIdRoute: typeof AuthedAdminQuestionsQuestionIdRoute
+  AuthedAdminQuestionsIndexRoute: typeof AuthedAdminQuestionsIndexRoute
 }
 
 const AuthedAdminRouteChildren: AuthedAdminRouteChildren = {
-  AuthedAdminQuestionsRoute: AuthedAdminQuestionsRoute,
   AuthedAdminIndexRoute: AuthedAdminIndexRoute,
+  AuthedAdminQuestionsQuestionIdRoute: AuthedAdminQuestionsQuestionIdRoute,
+  AuthedAdminQuestionsIndexRoute: AuthedAdminQuestionsIndexRoute,
 }
 
 const AuthedAdminRouteWithChildren = AuthedAdminRoute._addFileChildren(

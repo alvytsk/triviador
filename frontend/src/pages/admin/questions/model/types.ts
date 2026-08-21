@@ -1,10 +1,11 @@
 import type { Difficulty, QuestionKind } from "@/shared/api/generated/admin";
 
 /**
- * Mirrors `_authed.admin.questions.tsx`'s `questionSearchSchema` shape —
- * not imported from there, because that file lives in `app/`, and `pages`
- * may not import `app` (FSD's own direction, the wrong way). Every value
- * this page actually reads comes from `useSearch({ from: "/_authed/admin/questions" })`,
+ * Mirrors `_authed.admin.questions.index.tsx`'s `questionSearchSchema`
+ * shape — not imported from there, because that file lives in `app/`, and
+ * `pages` may not import `app` (FSD's own direction, the wrong way). Every
+ * value this page actually reads comes from
+ * `useSearch({ from: "/_authed/admin/questions/" })`,
  * which TanStack Router types correctly against the *registered* route
  * without needing that import either — this interface exists only so
  * `QuestionFilterBar`, `QuestionTable` and `QuestionPager` can name the

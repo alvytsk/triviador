@@ -29,15 +29,21 @@ const DIFFICULTY_LABEL: Record<string, string> = {
 /**
  * §10.2's question list: server-side paged and filtered entirely through
  * the URL (`useSearch`/`useNavigate` against the registered route, rather
- * than an import of `_authed.admin.questions.tsx` — see
+ * than an import of `_authed.admin.questions.index.tsx` — see
  * `pages/admin/questions/model/types.ts` for why pages can't reach up into
  * `app`). `keepPreviousData` (Task 2's `adminQuestionsQueryOptions`) keeps
  * the previous page's rows on screen while a filter or page change is in
  * flight, rather than a spinner on every keystroke.
  */
 export function QuestionsPage() {
-  const search = useSearch({ from: "/_authed/admin/questions" });
-  const navigate = useNavigate({ from: "/admin/questions" });
+  // Route id, not path: Task 4 renamed the file to `...questions.index.tsx`
+  // (see that file's own comment for why), which changes the *id*
+  // `useSearch`'s `from` must match — the public path `/admin/questions`
+  // is unaffected and is what `useNavigate` below still uses.
+  const search = useSearch({ from: "/_authed/admin/questions/" });
+  // Trailing slash — see question-filter-bar.tsx's comment on the same
+  // line: Task 4 renamed the route file to `...questions.index.tsx`.
+  const navigate = useNavigate({ from: "/admin/questions/" });
   const questions = useQuery(adminQuestionsQueryOptions(toAdminQuestionSearch(search)));
 
   const page = questions.data;

@@ -72,7 +72,21 @@ export type QuestionSearch = z.infer<typeof questionSearchSchema>;
  * instead, through its own `useQuery(adminQuestionsQueryOptions(...))`;
  * `keepPreviousData` (Task 2) keeps that feeling instant on every filter
  * or page change even without a router-level prefetch.
+ *
+ * Filename is `...questions.index.tsx`, not `...questions.tsx` (Task 4):
+ * TanStack Router's file-based routing treats a bare `...questions.tsx`
+ * as an implicit pathless *layout* for every deeper `...questions.*`
+ * segment, which is exactly wrong here — `_authed.admin.questions.$questionId.tsx`
+ * (Task 4) needs `/admin/questions` and `/admin/questions/$questionId` to
+ * be siblings under `_authed/admin`, not parent and child. Proven wrong
+ * the expensive way first: with the bare filename, `router.state.matches`
+ * correctly included both routes on a visit to `/admin/questions/q1`, but
+ * only `QuestionsPage` (this route's own component) ever painted, because
+ * it renders no `<Outlet/>` for a child to mount into — the editor route
+ * matched and then rendered nothing. `.index` removes the implicit-layout
+ * behavior entirely, so both routes hang directly off `_authed/admin`'s
+ * own `<Outlet/>` (`AdminShell`), and neither needs one of its own.
  */
-export const Route = createFileRoute("/_authed/admin/questions")({
+export const Route = createFileRoute("/_authed/admin/questions/")({
   validateSearch: questionSearchSchema,
 });
