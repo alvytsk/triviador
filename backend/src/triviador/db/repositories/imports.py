@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -84,7 +84,16 @@ class QuestionImportRepository:
         return None if row is None else _to_record(row)
 
     async def count_expirable(self, now: datetime, *, all_unconfirmed: bool) -> int:
-        """What `mark_expired` would touch. Read-only, for `--dry-run`."""
+        """What `mark_expired` would touch. Read-only, for `--dry-run`.
+
+        `expires_at <= now`, not `<`: `apply_if_confirmable` already
+        refuses a row the instant `expires_at <= now`, so a row sitting
+        exactly on that boundary is unconfirmable *now*, and the boundary
+        here has to agree — a strict `<` would leave it refused for
+        confirmation yet not yet counted as expirable, stuck in
+        `validated` until the clock ticks past the same instant a second
+        time.
+        """
         async with self._sessionmaker() as session:
             statement = (
                 select(func.count())
@@ -92,7 +101,7 @@ class QuestionImportRepository:
                 .where(QuestionImport.status == ImportStatus.VALIDATED.value)
             )
             if not all_unconfirmed:
-                statement = statement.where(QuestionImport.expires_at < now)
+                statement = statement.where(QuestionImport.expires_at <= now)
             return (await session.execute(statement)).scalar_one()
 
     async def mark_expired(self, now: datetime, *, all_unconfirmed: bool) -> int:
@@ -104,8 +113,32 @@ class QuestionImportRepository:
                 .returning(QuestionImport.id)
             )
             if not all_unconfirmed:
-                statement = statement.where(QuestionImport.expires_at < now)
+                statement = statement.where(QuestionImport.expires_at <= now)
             return len((await session.execute(statement)).scalars().all())
+
+    async def expirable_staged_count(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        """`retirable_staged()`'s rows, plus `count_expirable`'s — the
+        union `media-gc --dry-run` needs so it does not undercount what a
+        real run would delete. See `ImportPort.expirable_staged_count`'s
+        docstring."""
+        would_also_expire = QuestionImport.status == ImportStatus.VALIDATED.value
+        if not all_unconfirmed:
+            would_also_expire = and_(would_also_expire, QuestionImport.expires_at <= now)
+        async with self._sessionmaker() as session:
+            statement = (
+                select(func.count())
+                .select_from(QuestionImport)
+                .where(
+                    QuestionImport.staged_key.is_not(None),
+                    or_(
+                        QuestionImport.status.in_(
+                            (ImportStatus.EXPIRED.value, ImportStatus.CONFIRMED.value)
+                        ),
+                        would_also_expire,
+                    ),
+                )
+            )
+            return (await session.execute(statement)).scalar_one()
 
     async def retirable_staged(self) -> tuple[tuple[str, str], ...]:
         async with self._sessionmaker() as session:

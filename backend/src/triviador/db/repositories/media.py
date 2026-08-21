@@ -102,6 +102,15 @@ class MediaAssetRepository:
             SELECT ma.id, ma.mime_type, ma.width, ma.height, ma.byte_size, ma.storage_key
             FROM media_assets ma
             WHERE NOT EXISTS (SELECT 1 FROM questions q WHERE q.media_asset_id = ma.id)
+              -- `question_choices.media_asset_id` is reserved, not
+              -- unreachable-by-design: no write path populates it today
+              -- (`question_admin.py::_write_children` always inserts
+              -- `NULL`, and the CSV importer supports one `media_file`
+              -- per QUESTION, not per choice), so this branch never
+              -- actually excludes a row right now. Kept anyway — it is
+              -- the column's own half of §10.4's two-way check, and the
+              -- day a per-choice image write path exists, an asset it
+              -- references must not be swept as unreferenced.
               AND NOT EXISTS (
                     SELECT 1 FROM question_choices c WHERE c.media_asset_id = ma.id
               )

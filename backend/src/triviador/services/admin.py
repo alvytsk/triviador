@@ -446,6 +446,25 @@ class ImportPort(Protocol):
         preview and the real run always agree on the count."""
         ...
 
+    async def expirable_staged_count(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        """What a real `ImportRetirer.run()` would delete, for `media-gc
+        --dry-run`'s `objects_deleted` figure.
+
+        Not the same set `retirable_staged()` returns. A real run's second
+        step only ever sees a row *after* `mark_expired` has already
+        promoted it out of `validated`, so `retirable_staged()` alone —
+        `expired`/`confirmed` rows with a `staged_key` — undercounts: a
+        `validated` row whose `expires_at` has already passed (or every
+        `validated` row, under `all_unconfirmed`) still owns a staged
+        object that the real run is about to delete, and `--dry-run` has
+        to say so *before* running `mark_expired`, not after. This unions
+        that same still-`validated`-but-about-to-expire set — exactly
+        what `count_expirable`'s `now`/`all_unconfirmed` already select —
+        with `retirable_staged()`'s own rows, both restricted to a
+        `staged_key` that is not null.
+        """
+        ...
+
     async def mark_expired(self, now: datetime, *, all_unconfirmed: bool) -> int:
         """§9.3's first step: `validated` -> `expired`, never touching the
         staged object. `all_unconfirmed` is `--after-restore` (§10.9):

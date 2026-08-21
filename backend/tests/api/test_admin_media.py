@@ -1,12 +1,15 @@
 import httpx
-import pytest
 
 from tests.api.conftest import ORIGIN
 from tests.api.fakes import FakeMediaStore
 from tests.media.test_pipeline import SVG, png
 from triviador.api.deps import AppDependencies
 
-pytestmark = pytest.mark.asyncio
+# No module-level `pytestmark = pytest.mark.asyncio`: `asyncio_mode = "auto"`
+# (pyproject.toml) already collects every `async def test_*` here without
+# it, and this file also has a sync test
+# (`test_every_exempt_upload_path_is_a_real_route`) that the mark would
+# otherwise land on too, which pytest-asyncio warns about on every run.
 
 
 async def _upload(client: httpx.AsyncClient, body: bytes, content_type: str) -> httpx.Response:

@@ -466,6 +466,53 @@ async def test_all_unconfirmed_expires_every_validated_row_regardless_of_ttl(
     assert future is not None and future.status is ImportStatus.EXPIRED
 
 
+async def test_expirable_staged_count_sees_what_a_real_run_would_delete_before_it_runs(
+    sessions: async_sessionmaker[AsyncSession], clean_db: None
+) -> None:
+    """`media-gc --dry-run`'s SQL, against the real schema. `imp-past` is
+    still `validated` here — this is the row `retirable_staged()` alone
+    cannot see, because nothing has run `mark_expired` yet — and it must
+    still be counted, or `--dry-run` undercounts exactly the object a
+    real run is about to delete.
+    """
+    await _seed_user(sessions, "admin-1")
+    now = datetime.now(UTC)
+    repository = QuestionImportRepository(sessions)
+    # validated, past its TTL, still has a staged object: the row the fix
+    # is for.
+    await _seed_import(repository, "imp-past", expires_at=now - timedelta(hours=1))
+    # validated, not yet past its TTL: must not be counted.
+    await _seed_import(repository, "imp-future", expires_at=now + timedelta(hours=1))
+    # already expired by an earlier run: `retirable_staged()`'s own case.
+    await _seed_import(repository, "imp-expired-already", expires_at=now - timedelta(days=2))
+    await repository.mark_expired(now - timedelta(days=1), all_unconfirmed=False)
+    # confirmed, still holding its upload: `retirable_staged()`'s other case.
+    await repository.create(
+        import_id="imp-confirmed",
+        uploaded_by="admin-1",
+        upload_sha256="sha",
+        filename="c.csv",
+        staged_key="imp-confirmed/c.csv",
+        row_count=1,
+        rejected_count=0,
+        report={"rejections": [], "notices": []},
+        expires_at=now + timedelta(hours=1),
+    )
+    assert await repository.apply_if_confirmable(
+        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+    ) is True
+
+    # imp-past + imp-expired-already + imp-confirmed; imp-future excluded.
+    assert await repository.expirable_staged_count(now, all_unconfirmed=False) == 3
+    # Nothing above was actually mutated by the count itself: this is
+    # still a preview, not a demonstration that ran `mark_expired`.
+    still_validated = await repository.get("imp-past")
+    assert still_validated is not None and still_validated.status is ImportStatus.VALIDATED
+
+    # `all_unconfirmed` (--after-restore) also pulls in `imp-future`.
+    assert await repository.expirable_staged_count(now, all_unconfirmed=True) == 4
+
+
 async def test_retirable_staged_returns_expired_and_confirmed_rows_with_a_staged_key(
     sessions: async_sessionmaker[AsyncSession], clean_db: None
 ) -> None:

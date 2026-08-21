@@ -796,10 +796,13 @@ class FakeImports:
         return record
 
     async def count_expirable(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        # `<=`, not `<`: mirrors `QuestionImportRepository.count_expirable`
+        # — see its docstring for why the boundary has to agree with
+        # `apply_if_confirmable`'s own `expires_at <= now` refusal.
         return sum(
             1
             for r in self.records.values()
-            if r.status is ImportStatus.VALIDATED and (all_unconfirmed or r.expires_at < now)
+            if r.status is ImportStatus.VALIDATED and (all_unconfirmed or r.expires_at <= now)
         )
 
     async def mark_expired(self, now: datetime, *, all_unconfirmed: bool) -> int:
@@ -807,11 +810,30 @@ class FakeImports:
         for import_id, record in list(self.records.items()):
             if record.status is not ImportStatus.VALIDATED:
                 continue
-            if not all_unconfirmed and record.expires_at >= now:
+            if not all_unconfirmed and record.expires_at > now:
                 continue
             self.records[import_id] = replace(record, status=ImportStatus.EXPIRED)
             count += 1
         return count
+
+    async def expirable_staged_count(self, now: datetime, *, all_unconfirmed: bool) -> int:
+        """Mirrors `QuestionImportRepository.expirable_staged_count`: the
+        same status filter `retirable_staged` uses, unioned with the same
+        still-`validated`-but-about-to-expire predicate `count_expirable`
+        uses — kept in agreement with the real repository on purpose, not
+        by coincidence, per that method's docstring."""
+        return sum(
+            1
+            for record in self.records.values()
+            if record.staged_key is not None
+            and (
+                record.status in (ImportStatus.EXPIRED, ImportStatus.CONFIRMED)
+                or (
+                    record.status is ImportStatus.VALIDATED
+                    and (all_unconfirmed or record.expires_at <= now)
+                )
+            )
+        )
 
     async def retirable_staged(self) -> tuple[tuple[str, str], ...]:
         return tuple(

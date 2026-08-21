@@ -48,7 +48,16 @@ class ImportRetirer:
             )
             return RetireReport(
                 expired=would_expire,
-                objects_deleted=len(await self._imports.retirable_staged()),
+                # Not `len(await self._imports.retirable_staged())`: that
+                # only sees rows already `expired`/`confirmed`. A real run
+                # would first flip every row `would_expire` counts out of
+                # `validated`, and only then would `retirable_staged()`
+                # see it — `--dry-run` has to report that same blast
+                # radius *before* running `mark_expired`, or it undercounts
+                # exactly the rows this call just promised to expire.
+                objects_deleted=await self._imports.expirable_staged_count(
+                    now, all_unconfirmed=after_restore
+                ),
                 rows_cleaned=0,
                 deleted=False,
             )

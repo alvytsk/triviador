@@ -2,7 +2,6 @@ from dataclasses import replace as dc_replace
 from datetime import timedelta
 
 import httpx
-import pytest
 import pytest_asyncio
 
 from tests.api.conftest import ORIGIN
@@ -20,7 +19,11 @@ from triviador.api.deps import AppDependencies
 from triviador.config import Settings
 from triviador.media.pipeline import ImageNormalizer
 
-pytestmark = pytest.mark.asyncio
+# No module-level `pytestmark = pytest.mark.asyncio`: `asyncio_mode = "auto"`
+# (pyproject.toml) already collects every `async def test_*` here without
+# it, and this file also has a sync test
+# (`test_confirmable_is_false_once_the_upload_expires`) that the mark would
+# otherwise land on too, which pytest-asyncio warns about on every run.
 
 
 @pytest_asyncio.fixture

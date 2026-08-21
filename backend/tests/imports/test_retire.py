@@ -91,6 +91,12 @@ async def test_a_dry_run_expires_nothing_and_deletes_nothing() -> None:
     )
     assert report.deleted is False
     assert report.expired == 1          # what it *would* have expired
+    # What it *would* have deleted, too: "imp-1" is still `validated` here
+    # (this is a dry run), so a real run's `mark_expired` step would flip
+    # it to `expired` first and only then see its `staged_key` — undercounting
+    # this to 0, as it used to, would tell an operator running `media-gc
+    # --dry-run` that nothing would be deleted when one object actually would.
+    assert report.objects_deleted == 1
     assert imports.records["imp-1"].status is ImportStatus.VALIDATED
     assert staging.objects == {"k": b"raw"}
 
