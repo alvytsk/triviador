@@ -182,24 +182,114 @@ git commit -m "chore(infra): move .env.example to the repository root"
 
 ---
 
-## Task 2: The backend image
+## Task 2: An ASGI entrypoint, and the backend image
 
 **Files:**
+- Create: `backend/src/triviador/asgi.py`, `backend/tests/test_asgi.py`
 - Create: `infra/backend.Dockerfile`, `.dockerignore` (repo root)
 
 **Interfaces:**
-- Produces: an image that runs `uvicorn triviador.api.app:app --host 0.0.0.0 --port 8000
+- Produces: `triviador.asgi:app`, a module-level `FastAPI` instance.
+- Produces: an image that runs `uvicorn triviador.asgi:app --host 0.0.0.0 --port 8000
   --workers 1` in production, and is reusable as the `migrate` one-shot's image.
 
 Read `backend/pyproject.toml` first: `requires-python = ">=3.13"`, hatchling build
 backend, `packages = ["src/triviador"]`, and a console script
 `triviador = "triviador.cli:main"`.
 
+**Pre-flight ruling — this task is larger than "write a Dockerfile".** There is no
+module-level `app` anywhere in `backend/src/triviador/`. `build_app(settings: Settings)
+-> FastAPI` (`api/app.py:225`) is a factory that takes an argument, so:
+
+- `uvicorn triviador.api.app:app` cannot resolve it,
+- `uvicorn --factory triviador.api.app:build_app` cannot either — a uvicorn factory must
+  take no arguments,
+- `uv run fastapi dev` (Task 6) auto-discovers a *module-level* app and fails the same way,
+- and the CLI has no `serve` command (`cli.py` has `export-contracts`, `admin-create`,
+  `seed-questions`, `media-gc`).
+
+Tests call `build_app`/`create_app` directly, so **this plan is the first time the
+application is run as a server**. Build the entrypoint first, with a test, before the
+image that depends on it.
+
 **`--workers 1` is not a performance choice.** ADR-002 guarantees exactly one
 application process; a second worker would give two processes ownership of the same
 game runtimes. Do not make it configurable.
 
-- [ ] **Step 1: Write `.dockerignore`**
+- [ ] **Step 1: Write the failing test**
+
+`backend/tests/test_asgi.py`:
+
+```python
+"""The server entrypoint. Until this module existed the application had no
+module-level app at all — `build_app` takes a `Settings` argument, so neither
+uvicorn nor `fastapi dev` could find anything to serve."""
+
+def test_asgi_exposes_a_module_level_app(monkeypatch, tmp_path):
+    # Import-time construction means an unconfigured deploy fails here, at
+    # startup, which is §10.4's stated intent. Give it a valid environment.
+    monkeypatch.setenv("TRIVIADOR_DATABASE_URL", "postgresql+asyncpg://u:p@db:5432/t")
+    monkeypatch.setenv("TRIVIADOR_ALLOWED_ORIGINS", "http://localhost:5173")
+
+    from fastapi import FastAPI
+
+    import triviador.asgi as asgi
+
+    assert isinstance(asgi.app, FastAPI)
+
+
+def test_asgi_app_carries_the_real_routes(monkeypatch):
+    """A FastAPI instance with no routes would satisfy the test above and
+    serve 404s in production."""
+    monkeypatch.setenv("TRIVIADOR_DATABASE_URL", "postgresql+asyncpg://u:p@db:5432/t")
+    monkeypatch.setenv("TRIVIADOR_ALLOWED_ORIGINS", "http://localhost:5173")
+
+    import triviador.asgi as asgi
+
+    paths = {getattr(r, "path", None) for r in asgi.app.routes}
+    assert "/api/health/live" in paths
+    assert "/api/health/ready" in paths
+```
+
+`get_settings` is `@lru_cache`d, so a module already imported by an earlier test will
+not re-read the environment. If the tests interfere, clear the cache
+(`get_settings.cache_clear()`) or use `importlib.reload` — do not weaken the assertions
+to work around import caching.
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `cd backend && uv run pytest tests/test_asgi.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'triviador.asgi'`.
+
+- [ ] **Step 3: Write `backend/src/triviador/asgi.py`**
+
+```python
+"""The ASGI entrypoint uvicorn imports.
+
+`build_app` is a factory taking `Settings`, which uvicorn cannot call (its
+`--factory` mode requires a zero-argument callable) and `fastapi dev` cannot
+discover. This module is the one place that binds the two together.
+
+Constructed at import rather than behind a lazy factory on purpose: §10.4
+wants an unconfigured deploy to fail loudly, and `build_app` already raises
+`RuntimeError` listing every configuration problem. Deferring that to the
+first request would turn a startup failure into a 500 on a live request.
+"""
+
+from fastapi import FastAPI
+
+from triviador.api.app import build_app
+from triviador.config import get_settings
+
+app: FastAPI = build_app(get_settings())
+```
+
+- [ ] **Step 4: Run the test**
+
+Run: `cd backend && uv run pytest tests/test_asgi.py -v`
+Expected: PASS, 2 tests.
+
+- [ ] **Step 5: Write `.dockerignore`**
 
 ```
 .git
@@ -217,7 +307,7 @@ backups
 docs
 ```
 
-- [ ] **Step 2: Write `infra/backend.Dockerfile`**
+- [ ] **Step 6: Write `infra/backend.Dockerfile`**
 
 ```dockerfile
 # syntax=docker/dockerfile:1
@@ -255,33 +345,38 @@ RUN useradd --create-home --uid 10001 triviador
 USER triviador
 
 EXPOSE 8000
-CMD ["uvicorn", "triviador.api.app:app", \
+CMD ["uvicorn", "triviador.asgi:app", \
      "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
 ```
 
-**Verify the app import path before writing it.** Run
-`grep -rn "^app = \|FastAPI(" backend/src/triviador/api/app.py | head` and use the
-module path that actually exists. If it is not `triviador.api.app:app`, fix the `CMD`
-and say so in the report — do not leave a path that only looks right.
+`triviador.asgi:app` is the module Step 3 creates. Do not point this at
+`triviador.api.app` — nothing importable lives there.
 
-- [ ] **Step 3: Build it**
+- [ ] **Step 7: Build it**
 
 Run: `docker build -f infra/backend.Dockerfile -t triviador-backend:dev .`
 Expected: builds clean.
 
-- [ ] **Step 4: Prove the entrypoint resolves**
+- [ ] **Step 8: Prove the entrypoint resolves**
 
-Run: `docker run --rm triviador-backend:dev python -c "import triviador.api.app; print('ok')"`
+Run:
+```bash
+docker run --rm -e TRIVIADOR_DATABASE_URL=postgresql+asyncpg://u:p@db:5432/t \
+  -e TRIVIADOR_ALLOWED_ORIGINS=http://localhost:5173 \
+  triviador-backend:dev python -c "import triviador.asgi; print('ok')"
+```
 Expected: `ok`.
 
-This is the check that catches a wrong `CMD` module path at build time rather than at
-first deploy.
+This catches a wrong `CMD` module path at build time rather than at first deploy. The
+two env vars are required because the module builds the app at import and `build_app`
+refuses invalid configuration — which is the behaviour §10.4 asks for.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add infra/backend.Dockerfile .dockerignore
-git commit -m "feat(infra): backend image"
+git add backend/src/triviador/asgi.py backend/tests/test_asgi.py \
+        infra/backend.Dockerfile .dockerignore
+git commit -m "feat(infra): an ASGI entrypoint and the backend image"
 ```
 
 ---
@@ -313,9 +408,9 @@ RUN --mount=type=cache,target=/pnpm-store \
     pnpm config set store-dir /pnpm-store && pnpm install --frozen-lockfile
 
 COPY frontend/ ./
-# `contracts/` sits outside frontend/ and codegen reads it, so the build
-# needs it present at the path the script expects.
-COPY contracts/ ../contracts/
+# No `contracts/` copy: `pnpm build` is `tsc --noEmit && vite build`, which
+# does not run codegen, and `src/shared/api/generated` is committed. CI's
+# `contracts` job (Task 12) is what catches drift between the two.
 RUN pnpm build
 
 # A scratch stage holding only the artifacts. `docker build --target dist
@@ -324,13 +419,8 @@ FROM scratch AS dist
 COPY --from=build /app/dist /dist
 ```
 
-**Check `frontend/package.json` for `packageManager` first.** If it is absent, add it
-(matching the pnpm version in use) rather than letting corepack pick a default — an
-unpinned pnpm is exactly the drift this stage exists to prevent.
-
-**Check what `pnpm build` depends on.** If the build runs codegen and codegen reads
-`../contracts`, the relative copy above is right; if it reads an env var or a
-different path, fix the `COPY` to match and say so.
+`frontend/package.json` already pins `packageManager: pnpm@11.22.0`, which is what
+`corepack enable` reads — verified during pre-flight. Do not edit that field.
 
 - [ ] **Step 2: Build it**
 
@@ -732,7 +822,12 @@ services:
     # kills the container mid-COMMIT and manufactures the ambiguous-commit
     # case §5.6 exists to avoid.
     stop_grace_period: 30s
-    command: ["uv", "run", "fastapi", "dev", "--host", "0.0.0.0", "--port", "8000"]
+    # NOT `fastapi dev`: it auto-discovers a module-level app, and until
+    # Task 2 there was none — `build_app` takes a Settings argument. uvicorn
+    # against the explicit entrypoint is the same reload behaviour without
+    # the discovery guesswork.
+    command: ["uvicorn", "triviador.asgi:app", "--host", "0.0.0.0",
+              "--port", "8000", "--reload", "--reload-dir", "/app/src"]
 
   frontend:
     image: node:22-alpine
@@ -801,12 +896,17 @@ and `/ws`; set the `Host` header explicitly for `/media`.
 `frontend/vite.config.test.ts`:
 
 ```ts
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 // Importing the config module executes defineConfig, so the proxy table is
 // inspectable without starting a server.
 import config from "./vite.config";
 
+// Asserts the DEFAULTS, deliberately. The shipped bug is in the default
+// (`/media` -> :8000), so a test that sets VITE_MEDIA_TARGET first would
+// assert its own fixture and pass against the broken code. A test that only
+// passes under a particular shell environment also fails in CI for reasons
+// unrelated to the code.
 function proxy() {
   const resolved = typeof config === "function" ? config({ command: "serve", mode: "development" }) : config;
   const table = (resolved as { server?: { proxy?: Record<string, unknown> } }).server?.proxy;
@@ -820,7 +920,7 @@ describe("the dev proxy", () => {
     // The bug this test exists to prevent: /media pointed at :8000, where
     // nothing serves media, so every question image 404d in development.
     expect(media.target).not.toContain("8000");
-    expect(media.target).toBe("http://garage:3902");
+    expect(media.target).toBe("http://127.0.0.1:3902");
   });
 
   it("rewrites Host for /media so Garage can resolve the bucket", () => {
@@ -829,6 +929,18 @@ describe("the dev proxy", () => {
     // (localhost:5173) means no bucket matches and every image 404s.
     const media = proxy()["/media"] as { headers?: Record<string, string> };
     expect(media.headers?.Host).toBe("triviador-media.web.garage.internal");
+  });
+
+  it("honours a compose-network override", async () => {
+    // The dev overlay sets these to service names; the default is the
+    // host-side port for `pnpm dev` outside compose. Both must work.
+    vi.stubEnv("VITE_MEDIA_TARGET", "http://garage:3902");
+    const fresh = await import(`./vite.config?${Math.random()}`);
+    const resolved = typeof fresh.default === "function"
+      ? fresh.default({ command: "serve", mode: "development" })
+      : fresh.default;
+    expect(resolved.server.proxy["/media"].target).toBe("http://garage:3902");
+    vi.unstubAllEnvs();
   });
 
   it("leaves the browser's Origin intact for /api and /ws", () => {
@@ -891,14 +1003,16 @@ const MEDIA_TARGET = process.env.VITE_MEDIA_TARGET ?? "http://127.0.0.1:3902";
 const MEDIA_HOST = process.env.VITE_MEDIA_HOST ?? "triviador-media.web.garage.internal";
 ```
 
-The test asserts the compose-network values, so run it with those set, or make the
-test set them before importing. Choose one and be consistent — do not weaken the
-assertions to accommodate whichever default happens to load.
+**Pre-flight ruling:** the first two tests assert the DEFAULTS, because that is where
+the shipped bug lives; the third asserts an override is honoured. If the cache-busting
+dynamic import proves awkward under this Vite/Vitest version, use `vi.resetModules()`
+plus a plain re-import — but do not drop the override test, and do not convert the
+default assertions into fixture assertions.
 
 - [ ] **Step 4: Run the test**
 
 Run: `cd frontend && pnpm vitest run vite.config.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS, 4 tests.
 
 - [ ] **Step 5: Run the full gate**
 
@@ -1033,7 +1147,9 @@ services:
       target: build
     # Build-only: produces the static output Caddy serves, then exits.
     restart: "no"
-    command: ["true"]
+    # No `command:` — Compose appends command to entrypoint, so a `["true"]`
+    # here would land as $0 inside the `sh -c` script below: meaningless, and
+    # it reads as though `true` were the command being run.
     volumes:
       - web:/out
     entrypoint: ["sh", "-c", "cp -r /app/dist/. /out/ && echo frontend-build: ok"]
@@ -1375,20 +1491,26 @@ rclone copy garage:"$S3_MEDIA_BUCKET" "$DEST/media/"
 pg_restore --list "$DEST/db/$TS.dump" > /dev/null
 rclone check garage:"$S3_MEDIA_BUCKET" "$DEST/media/" --one-way
 
-# 4. Retention: 7 daily, 4 weekly. Media is append-only and never pruned —
-#    an old dump may still reference an object no live row does.
-ls -1t "$DEST"/db/*.dump 2>/dev/null | tail -n +8 \
-  | grep -v 'T0[0-9]:.*-W' || true
+# 4. Retention: keep every dump from the last 7 days, PLUS the newest dump
+#    in each of the last 4 ISO weeks; delete the rest. Media is append-only
+#    and never pruned — an old dump may still reference an object no live
+#    row does.
+#    Implement this here (see Step 2's note); a retention bug deletes the
+#    wrong backup silently.
+prune_dumps "$DEST/db"
 
 echo "backup: ok $TS"
 ```
 
-**Finish the retention logic properly** — the `ls | tail` sketch above keeps the 7
-most recent and does not implement the weekly tier. Implement "7 daily, 4 weekly"
-explicitly (for example: keep every dump from the last 7 days, plus the newest dump in
-each of the last 4 ISO weeks, delete the rest), and write a test fixture directory of
-timestamped filenames proving the right ones survive. A retention rule that silently
-deletes the wrong file is worse than none.
+**Write `prune_dumps` yourself — the plan deliberately ships no sketch for it.** The
+rule is exactly: keep every dump whose timestamp is within the last 7 days, plus the
+newest dump in each of the last 4 ISO weeks; delete everything else.
+
+Test it against a fixture directory of timestamped filenames spanning ~8 weeks,
+asserting precisely which survive and which do not. Run the test before wiring it in,
+and confirm it fails when the rule is inverted. A retention rule that silently deletes
+the wrong file is worse than no retention at all, and it is not observable until the
+day someone needs the file it deleted.
 
 - [ ] **Step 3: Add the `backup` service under a profile**
 
@@ -1428,9 +1550,13 @@ sleep 1
 timeout 3 docker compose -f compose.yaml -f compose.prod.yaml --profile backup run --rm backup || echo "blocked as expected"
 ```
 
-Expected: the backup does not complete within the timeout. If it completes, the two
-`flock` calls are not resolving to the same inode and the whole section is decorative
-— fix it before continuing.
+Expected: the backup does not complete within the timeout.
+
+**This check is blocking.** If the backup completes, the two `flock` calls are not
+resolving to the same inode, and every safety claim in this task is decorative:
+`media-gc` could delete a blob between the copy and the verify, turning a healthy
+backup into a corrupt one. Do not proceed to Step 5 until it genuinely blocks. Report
+the exact paths both sides bind.
 
 - [ ] **Step 5: Write `infra/restore-drill.md`**
 
