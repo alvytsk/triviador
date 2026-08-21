@@ -40,12 +40,18 @@
 // `pnpm check:bundle` fail check 1 with `/admin/invites found in
 // assets/index-*.js, part of the entry graph`, traced to
 // `routeTree.gen.ts`'s new `fullPath: '/admin/invites'` entry, not to
-// anything `InvitesPage` itself imports. The remaining two admin nav
-// hrefs (`/admin/users`, `/admin/presets`) still work as markers today
-// because no route is registered at those paths yet (Tasks 7–8 own them)
-// — the day one of those tasks adds its route file, its own href needs
-// the same exclusion, for the same reason, or `check:bundle` will fail on
-// infrastructure this check was never meant to flag.
+// anything `InvitesPage` itself imports. `/admin/users` joins it here as
+// of Task 7, same mechanism, same confirmation: wiring
+// `_authed.admin.users.tsx` and leaving the href in this list made
+// `pnpm check:bundle` fail check 1 with `/admin/users found in
+// assets/index-*.js, part of the entry graph`, traced to
+// `routeTree.gen.ts`'s new `fullPath: '/admin/users'` entry, not to
+// anything `UsersPage` itself imports. The remaining admin nav href
+// (`/admin/presets`) still works as a marker today because no route is
+// registered at that path yet (Task 8 owns it) — the day that task adds
+// its route file, its own href needs the same exclusion, for the same
+// reason, or `check:bundle` will fail on infrastructure this check was
+// never meant to flag.
 //
 // `duplicate_of` is Task 2's addition, and it is schema content rather
 // than routing content: it is the one object key in the 27 schemas
@@ -92,7 +98,7 @@
 // constructed at runtime and would not have worked as a marker). Found
 // only in `_authed.admin.invites.lazy-*.js` when this task wired the
 // route (see this task's report for the `pnpm check:bundle` output).
-const ADMIN_ONLY_MARKERS = ["/admin/users", "/admin/presets", "duplicate_of", "used_by"];
+const ADMIN_ONLY_MARKERS = ["/admin/presets", "duplicate_of", "used_by"];
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
