@@ -147,6 +147,10 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         backoff_max_s=settings.recovery_backoff_max_s,
     )
     hasher = Argon2Hasher()
+    # One instance satisfies both `InviteStore` (the public redeem path) and
+    # `InviteAdminPort` (this task's issue/list/revoke) — the same pattern
+    # `games` already uses for `GameCatalogPort`/`GameQueriesPort`.
+    invites = InviteRepository(sessions)
     deps = AppDependencies(
         settings=settings,
         clock=clock,
@@ -156,7 +160,8 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         dummy_password_hash=hasher.hash(secrets.token_urlsafe(32)),
         users=UserRepository(sessions),
         sessions=SessionRepository(sessions),
-        invites=InviteRepository(sessions),
+        invites=invites,
+        invites_admin=invites,
         database=EnginePing(engine),
         hub=hub,
         broadcaster=broadcaster,

@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from triviador.db.repositories.questions import prompt_digest
+from triviador.db.security import token_digest
 from triviador.domain.game.rules import DEFAULT_RULES
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.services.admin import (
@@ -24,6 +25,8 @@ from triviador.services.admin import (
     ImportedQuestion,
     ImportRecord,
     ImportStatus,
+    InviteRecord,
+    InviteStatus,
     MediaAssetRecord,
     QuestionDetailRecord,
     QuestionFilters,
@@ -164,9 +167,32 @@ class FakeSessions:
 
 
 @dataclass
+class _InviteEntry:
+    """One `issue()`-created invite, tracked only for the admin surface —
+    a code a test drops straight into `FakeInvites.valid` (as
+    `test_auth.py`'s `register` helper does) has no entry here and is
+    invisible to `list_all`/`revoke`, exactly as a real invite that never
+    went through `InviteRepository.issue` would be invisible to the admin
+    listing."""
+
+    invite_id: str
+    code_hash: str
+    expires_at: datetime
+    created_at: datetime
+    used_by: str | None = None
+    revoked_at: datetime | None = None
+
+
+@dataclass
 class FakeInvites:
+    """Implements both `InviteStore` (`redeem`) and `InviteAdminPort`
+    (`issue`/`list_all`/`revoke`) — the same one-instance-two-ports shape
+    `InviteRepository` has for real, so `deps.invites` and
+    `deps.invites_admin` are the same object in the `deps` fixture too."""
+
     users: FakeUsers
     valid: dict[str, bool] = field(default_factory=dict)  # code_hash -> unused
+    entries: dict[str, _InviteEntry] = field(default_factory=dict)  # invite_id -> entry
 
     async def redeem(
         self,
@@ -192,7 +218,57 @@ class FakeInvites:
             display_name=display_name,
             role=UserRole.PLAYER,
         )
+        for entry in self.entries.values():
+            if entry.code_hash == code_hash:
+                entry.used_by = user_id
         return RedeemOutcome.OK
+
+    async def issue(
+        self, *, count: int, expires_at: datetime, created_by: UserId
+    ) -> tuple[tuple[str, str], ...]:
+        issued: list[tuple[str, str]] = []
+        for _ in range(count):
+            invite_id = str(uuid4())
+            code = uuid4().hex
+            code_hash = token_digest(code)
+            self.valid[code_hash] = True
+            self.entries[invite_id] = _InviteEntry(
+                invite_id=invite_id,
+                code_hash=code_hash,
+                expires_at=expires_at,
+                created_at=datetime.now(UTC),
+            )
+            issued.append((invite_id, code))
+        return tuple(issued)
+
+    async def list_all(self, *, now: datetime) -> tuple[InviteRecord, ...]:
+        return tuple(
+            InviteRecord(
+                invite_id=entry.invite_id,
+                status=_fake_invite_status(entry, now=now),
+                expires_at=entry.expires_at,
+                created_at=entry.created_at,
+                used_by=entry.used_by,
+            )
+            for entry in self.entries.values()
+        )
+
+    async def revoke(self, invite_id: str, *, at: datetime) -> bool:
+        entry = self.entries.get(invite_id)
+        if entry is None:
+            return False
+        if entry.revoked_at is None:
+            entry.revoked_at = at
+            self.valid[entry.code_hash] = False
+        return True
+
+
+def _fake_invite_status(entry: _InviteEntry, *, now: datetime) -> InviteStatus:
+    if entry.used_by is not None:
+        return "used"
+    if entry.revoked_at is not None:
+        return "revoked"
+    return "expired" if entry.expires_at <= now else "pending"
 
 
 @dataclass

@@ -21,7 +21,13 @@ from triviador.api.errors import ApiError, ApiErrorCode
 from triviador.api.schemas.ws import LobbyGame, LobbyMessage
 from triviador.config import Settings
 from triviador.db.security import token_digest
-from triviador.services.admin import CategoryPort, ImportPort, MediaAssetPort, QuestionAdminPort
+from triviador.services.admin import (
+    CategoryPort,
+    ImportPort,
+    InviteAdminPort,
+    MediaAssetPort,
+    QuestionAdminPort,
+)
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     InviteStore,
@@ -89,6 +95,7 @@ class AppDependencies:
     users: UserStore
     sessions: SessionStore
     invites: InviteStore
+    invites_admin: InviteAdminPort
     database: DatabaseProbe
     hub: "Hub"
     broadcaster: "WsBroadcaster"
@@ -166,6 +173,7 @@ class AppDependencies:
             users=unusable,
             sessions=unusable,
             invites=unusable,
+            invites_admin=unusable,
             database=unusable,
             hub=hub,
             broadcaster=broadcaster,

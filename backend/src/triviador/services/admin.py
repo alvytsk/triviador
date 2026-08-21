@@ -15,7 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+
+from triviador.domain.ids import UserId
 
 
 @dataclass(frozen=True)
@@ -281,6 +283,41 @@ class ImportedQuestion:
     choices: tuple[tuple[str, bool], ...] | None
     numeric_answer: Decimal | None
     unit: str | None
+
+
+InviteStatus = Literal["pending", "used", "revoked", "expired"]
+
+
+@dataclass(frozen=True)
+class InviteRecord:
+    """One `invite_codes` row, in the vocabulary of the admin listing.
+
+    No `code`: the plaintext exists in exactly one response, `issue`'s, and
+    a record type that could carry both would make it too easy for some
+    future caller to leak it into a listing by accident.
+    """
+
+    invite_id: str
+    status: InviteStatus
+    expires_at: datetime
+    created_at: datetime
+    used_by: str | None
+
+
+class InviteAdminPort(Protocol):
+    async def issue(
+        self, *, count: int, expires_at: datetime, created_by: UserId
+    ) -> tuple[tuple[str, str], ...]:
+        """`(invite_id, code)` pairs — the only moment the plaintext exists
+        anywhere outside the admin's clipboard."""
+        ...
+
+    async def list_all(self, *, now: datetime) -> tuple[InviteRecord, ...]: ...
+
+    async def revoke(self, invite_id: str, *, at: datetime) -> bool:
+        """`True` if the invite exists, whether or not this call is the one
+        that revoked it — see `InviteRepository.revoke`'s docstring."""
+        ...
 
 
 class ImportPort(Protocol):

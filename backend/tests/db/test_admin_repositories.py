@@ -2,11 +2,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text as sql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.db.conftest import _seed_user
+from triviador.db.repositories.auth import InviteRepository
 from triviador.db.repositories.categories import CategoryRepository
 from triviador.db.repositories.imports import QuestionImportRepository
+from triviador.db.security import token_digest
+from triviador.domain.ids import UserId
 from triviador.services.admin import (
     CategoryRecord,
     ImportedImage,
@@ -14,6 +18,7 @@ from triviador.services.admin import (
     ImportStatus,
     SlugTaken,
 )
+from triviador.services.identity import RedeemOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -351,3 +356,102 @@ async def test_mark_cleaned_only_flips_expired_to_cleaned_and_always_clears_stag
     assert confirmed is not None
     assert confirmed.status is ImportStatus.CONFIRMED
     assert confirmed.staged_key is None
+
+
+async def test_issuing_n_codes_inserts_n_rows_each_with_its_own_digest(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """Against the real schema, not a fake: `invite_codes.code_hash` is
+    UNIQUE (Plan 3), so a repository that ever computed the same digest
+    twice would fail here with an `IntegrityError`, not silently pass."""
+    await _seed_user(sessions, "admin-1")
+    repository = InviteRepository(sessions)
+    now = datetime.now(UTC)
+
+    issued = await repository.issue(
+        count=5, expires_at=now + timedelta(hours=1), created_by=UserId("admin-1")
+    )
+    assert len(issued) == 5
+    assert len({invite_id for invite_id, _ in issued}) == 5
+    assert len({code for _, code in issued}) == 5
+
+    async with sessions() as session:
+        rows = (await session.execute(sql("SELECT id, code_hash FROM invite_codes"))).all()
+    assert len(rows) == 5
+    stored = {(row.id, row.code_hash) for row in rows}
+    # Every plaintext `issue` handed back hashes to exactly the digest its
+    # own row stored in the database — not merely "5 distinct digests
+    # exist somewhere", which a bug that stored the wrong pairing could
+    # still satisfy.
+    assert stored == {(invite_id, token_digest(code)) for invite_id, code in issued}
+
+
+async def test_list_all_derives_every_status_from_rows_genuinely_in_that_state(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """Each of the four statuses, from a row that actually earned it: a
+    real `redeem` for `used`, a real `revoke` for `revoked`, a past
+    `expires_at` for `expired`, and an untouched row for `pending` — never
+    a status column set directly, since there is no such column to set."""
+    await _seed_user(sessions, "admin-1")
+    repository = InviteRepository(sessions)
+    now = datetime.now(UTC)
+
+    [(pending_id, _)] = await repository.issue(
+        count=1, expires_at=now + timedelta(hours=1), created_by=UserId("admin-1")
+    )
+    [(used_id, used_code)] = await repository.issue(
+        count=1, expires_at=now + timedelta(hours=1), created_by=UserId("admin-1")
+    )
+    [(revoked_id, _)] = await repository.issue(
+        count=1, expires_at=now + timedelta(hours=1), created_by=UserId("admin-1")
+    )
+    [(expired_id, _)] = await repository.issue(
+        count=1, expires_at=now - timedelta(hours=1), created_by=UserId("admin-1")
+    )
+
+    outcome = await repository.redeem(
+        code_hash=token_digest(used_code),
+        user_id=UserId("new-player"),
+        username="new-player",
+        password_hash="hash",
+        display_name="New Player",
+        now=now,
+    )
+    assert outcome is RedeemOutcome.OK
+    assert await repository.revoke(revoked_id, at=now) is True
+
+    records = {record.invite_id: record for record in await repository.list_all(now=now)}
+    assert records[pending_id].status == "pending"
+    assert records[used_id].status == "used"
+    assert records[used_id].used_by == "new-player"
+    assert records[revoked_id].status == "revoked"
+    assert records[expired_id].status == "expired"
+
+
+async def test_revoking_twice_is_idempotent_at_the_database_level(
+    clean_db: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """The second revoke does not overwrite `revoked_at` with a later
+    timestamp — an admin's retry must not be able to move the audited
+    revocation time forward."""
+    await _seed_user(sessions, "admin-1")
+    repository = InviteRepository(sessions)
+    now = datetime.now(UTC)
+    [(invite_id, _)] = await repository.issue(
+        count=1, expires_at=now + timedelta(hours=1), created_by=UserId("admin-1")
+    )
+
+    assert await repository.revoke(invite_id, at=now) is True
+    later = now + timedelta(minutes=5)
+    assert await repository.revoke(invite_id, at=later) is True
+
+    async with sessions() as session:
+        revoked_at = (
+            await session.execute(
+                sql("SELECT revoked_at FROM invite_codes WHERE id = :id"), {"id": invite_id}
+            )
+        ).scalar_one()
+    assert revoked_at == now
+
+    assert await repository.revoke("no-such-invite-id", at=now) is False

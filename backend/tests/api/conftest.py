@@ -318,6 +318,10 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         }
     )
     categories = FakeCategories()
+    # One instance for both ports — `deps.invites` (the public redeem path)
+    # and `deps.invites_admin` (this task) — mirroring the real
+    # `InviteRepository`, which also satisfies both.
+    invites = FakeInvites(users)
     return AppDependencies(
         settings=settings,
         clock=clock,
@@ -325,7 +329,8 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         dummy_password_hash=hasher.hash("nobody"),
         users=users,
         sessions=sessions,
-        invites=FakeInvites(users),
+        invites=invites,
+        invites_admin=invites,
         database=FakeDatabase(),
         hub=hub,
         broadcaster=WsBroadcaster(hub, media_base=settings.media_public_base),

@@ -12,7 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from triviador.db.models.auth import InviteCode, Session, User
+from triviador.db.security import new_token, token_digest
 from triviador.domain.ids import SessionId, UserId
+from triviador.services.admin import InviteRecord, InviteStatus
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     RedeemOutcome,
@@ -225,3 +227,68 @@ class InviteRepository:
                 # rolled back, so the invite is untouched and claimable.
                 return RedeemOutcome.USERNAME_TAKEN
         return RedeemOutcome.OK
+
+    async def issue(
+        self, *, count: int, expires_at: datetime, created_by: UserId
+    ) -> tuple[tuple[str, str], ...]:
+        """`(invite_id, code)` pairs — the only moment the plaintext exists.
+
+        Generated with `new_token()`, the same 32-byte `secrets` source as
+        a session token, and stored as `token_digest(code)`: an invite that
+        can be read back out of the database is a credential sitting in a
+        backup.
+        """
+        issued: list[tuple[str, str]] = []
+        async with self._sessionmaker() as db, db.begin():
+            for _ in range(count):
+                code = new_token()
+                invite = InviteCode(
+                    code_hash=token_digest(code),
+                    created_by=created_by,
+                    expires_at=expires_at,
+                )
+                db.add(invite)
+                await db.flush()
+                issued.append((invite.id, code))
+        return tuple(issued)
+
+    async def list_all(self, *, now: datetime) -> tuple[InviteRecord, ...]:
+        """Status is derived, never stored: `used_by`, `revoked_at` and
+        `expires_at` already say everything, and a fourth column would be
+        a copy of them that can disagree."""
+        async with self._sessionmaker() as db:
+            rows = (
+                await db.execute(select(InviteCode).order_by(InviteCode.expires_at.desc()))
+            ).scalars().all()
+        return tuple(
+            InviteRecord(
+                invite_id=row.id,
+                status=_invite_status(row, now=now),
+                created_at=row.created_at,
+                expires_at=row.expires_at,
+                used_by=row.used_by,
+            )
+            for row in rows
+        )
+
+    async def revoke(self, invite_id: str, *, at: datetime) -> bool:
+        """`True` means "this invite exists", not "this call revoked it" —
+        a second revoke of an already-revoked row still returns `True` and
+        leaves `revoked_at` at its first value, which is what makes the
+        admin route's "revoking twice is not an error" idempotent all the
+        way down."""
+        async with self._sessionmaker() as db, db.begin():
+            row = await db.get(InviteCode, invite_id)
+            if row is None:
+                return False
+            if row.revoked_at is None:
+                row.revoked_at = at
+            return True
+
+
+def _invite_status(row: InviteCode, *, now: datetime) -> InviteStatus:
+    if row.used_by is not None:
+        return "used"
+    if row.revoked_at is not None:
+        return "revoked"
+    return "expired" if row.expires_at <= now else "pending"

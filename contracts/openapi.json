@@ -913,6 +913,98 @@
         "title": "ImportSummary",
         "type": "object"
       },
+      "InviteView": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "used",
+              "revoked",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "used_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used By"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "expires_at",
+          "used_by"
+        ],
+        "title": "InviteView",
+        "type": "object"
+      },
+      "IssueInvitesRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "expires_in_hours": {
+            "default": 168,
+            "maximum": 8760.0,
+            "minimum": 1.0,
+            "title": "Expires In Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "IssueInvitesRequest",
+        "type": "object"
+      },
+      "IssuedInvite": {
+        "additionalProperties": false,
+        "description": "Carries `code`. This model appears in exactly one response and\nnever in a listing \u2014 see `InviteView`.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "expires_at"
+        ],
+        "title": "IssuedInvite",
+        "type": "object"
+      },
       "LobbyGameSummary": {
         "additionalProperties": false,
         "properties": {
@@ -2006,6 +2098,120 @@
           }
         },
         "summary": "Rename Category",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/invites": {
+      "get": {
+        "operationId": "list_invites_api_admin_invites_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InviteView"
+                  },
+                  "title": "Response List Invites Api Admin Invites Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Invites",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "issue_invites_api_admin_invites_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueInvitesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/IssuedInvite"
+                  },
+                  "title": "Response Issue Invites Api Admin Invites Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Invites",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
+    "/api/admin/invites/{invite_id}/revoke": {
+      "post": {
+        "description": "Idempotent: revoking an already-revoked code answers 200 with the\nsame body. An admin clicking twice has not made a mistake worth an\nerror, and the second click is indistinguishable from a retry.",
+        "operationId": "revoke_invite_api_admin_invites__invite_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "invite_id",
+            "required": true,
+            "schema": {
+              "title": "Invite Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Invite",
         "tags": [
           "admin",
           "admin"
