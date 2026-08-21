@@ -9,3 +9,4 @@ export const meKey = () => ["me"] as const;
 export const lobbyKey = () => ["lobby"] as const;
 export const gameKey = (gameId: string) => ["game", gameId] as const;
 export const mapsKey = () => ["maps"] as const;
+export const presetsKey = () => ["presets"] as const;
