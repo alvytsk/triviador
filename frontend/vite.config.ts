@@ -9,6 +9,12 @@ import { defineConfig, type Plugin } from "vite";
 const here = fileURLToPath(new URL(".", import.meta.url));
 const MAPS_ROOT = resolve(here, "../data/maps");
 
+// Defaults are the host-side ports (`pnpm dev` outside compose); the compose
+// dev overlay overrides all three with service names.
+const API_TARGET = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8000";
+const MEDIA_TARGET = process.env.VITE_MEDIA_TARGET ?? "http://127.0.0.1:3902";
+const MEDIA_HOST = process.env.VITE_MEDIA_HOST ?? "triviador-media.web.garage.internal";
+
 /**
  * Serves `data/maps` at `/maps` in development.
  *
@@ -129,9 +135,22 @@ export default defineConfig({
       // `TRIVIADOR_ALLOWED_ORIGINS` has to contain and what the socket
       // handshake checks (§6.4). Rewriting it would make development pass a
       // check that production performs differently.
-      "/api": { target: "http://127.0.0.1:8000", changeOrigin: false },
-      "/media": { target: "http://127.0.0.1:8000", changeOrigin: false },
-      "/ws": { target: "ws://127.0.0.1:8000", ws: true, changeOrigin: false },
+      "/api": { target: API_TARGET, changeOrigin: false },
+      "/ws": { target: API_TARGET.replace(/^http/, "ws"), ws: true, changeOrigin: false },
+      // NOT the backend. Media never passes through the API — that is §9.1's
+      // whole point, and pointing this at :8000 (as it once did) 404s every
+      // question image in development.
+      //
+      // Garage resolves a bucket from the Host header against
+      // `root_domain = ".web.garage.internal"`, so the browser's own Host
+      // (`localhost:5173`) matches no bucket. §10.2's Caddy config sets the
+      // identical header for the same reason; this is the dev half of that
+      // rule.
+      "/media": {
+        target: MEDIA_TARGET,
+        changeOrigin: false,
+        headers: { Host: MEDIA_HOST },
+      },
     },
   },
 });

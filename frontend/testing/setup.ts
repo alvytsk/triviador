@@ -10,15 +10,22 @@ import { server } from "./msw";
  * browsers have always had them; this is a test-environment gap, not a
  * behavior the app relies on, so a no-op stand-in is correct rather than
  * a workaround.
+ *
+ * Guarded on `typeof Element` because this file runs for every test
+ * (`vitest.config.ts`'s `setupFiles` is global), and `vite.config.test.ts`
+ * opts into `@vitest-environment node` — no `Element` there, no DOM
+ * behavior to patch, and no jsdom tests lose the patch either way.
  */
-if (!Element.prototype.hasPointerCapture) {
-  Element.prototype.hasPointerCapture = () => false;
-}
-if (!Element.prototype.releasePointerCapture) {
-  Element.prototype.releasePointerCapture = () => {};
-}
-if (!Element.prototype.scrollIntoView) {
-  Element.prototype.scrollIntoView = () => {};
+if (typeof Element !== "undefined") {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false;
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = () => {};
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {};
+  }
 }
 if (typeof globalThis.ResizeObserver === "undefined") {
   class ResizeObserverStub {
