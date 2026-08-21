@@ -7,7 +7,7 @@ five-minute one.
 
 import httpx
 
-from tests.api.fakes import FakeDatabase
+from tests.api.fakes import FakeDatabase, FakeGarageProbe
 from triviador.api.deps import AppDependencies
 
 
@@ -50,6 +50,7 @@ async def test_a_ready_process_reports_each_check(client: httpx.AsyncClient) -> 
     assert body["database"] is True
     assert body["migrations_current"] is True
     assert body["recovery_complete"] is True
+    assert body["garage_ready"] is True
     assert body["degraded_games"] == []
 
 
@@ -69,6 +70,36 @@ async def test_a_failed_game_is_reported_as_a_degraded_detail_without_failing_re
     assert response.json()["degraded_games"] == [
         {"game_id": "g9", "reason": "stream will never decode"}
     ]
+
+
+async def test_readiness_reports_garage_initialisation(
+    client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """§10.6's fourth condition. The backend verifies at startup that its
+    buckets exist and that the staging bucket is not website-enabled; a
+    deploy where garage-init silently did not run must not report ready."""
+    deps.readiness.garage_ready = False
+
+    response = await client.get("/api/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["garage_ready"] is False
+
+
+async def test_readiness_does_not_probe_garage_per_poll(
+    client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """Reporting the recorded startup result, not re-probing: a probe on
+    every poll turns a Garage blip into a backend that takes itself out of
+    rotation, which is the failure §10.6 explicitly rejects."""
+    deps.readiness.garage_ready = True
+    assert isinstance(deps.garage, FakeGarageProbe)
+    before = deps.garage.calls
+
+    response = await client.get("/api/health/ready")
+
+    assert response.status_code == 200
+    assert deps.garage.calls == before
 
 
 async def test_readiness_reports_a_database_that_went_away_after_startup(

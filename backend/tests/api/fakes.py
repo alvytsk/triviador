@@ -88,6 +88,24 @@ class FakeDatabase:
         return self.reachable
 
 
+class FakeGarageProbe:
+    """`GarageProbe`. `calls` exists for the opposite reason `FakeDatabase.
+    pings` does: `database` is correctly probed by `ready()` on every
+    request (`test_readiness_reports_a_database_that_went_away_after_
+    startup` pins that), while `garage_ready` is recorded once at startup
+    and only *read* by `ready()` — `test_readiness_does_not_probe_garage_
+    per_poll` asserts `calls` stays at zero across a poll, which is only
+    true if `ready()` never reaches for this collaborator at all."""
+
+    def __init__(self, ready: bool = True) -> None:
+        self.ready_result = ready
+        self.calls = 0
+
+    async def ready(self) -> bool:
+        self.calls += 1
+        return self.ready_result
+
+
 class FakeHasher:
     """A digest with a marker prefix, not the password with a prefix.
 

@@ -31,6 +31,7 @@ class ReadinessReport(BaseModel):
     database: bool
     migrations_current: bool
     recovery_complete: bool
+    garage_ready: bool
     degraded_games: tuple[DegradedGame, ...]
 
 
@@ -49,11 +50,18 @@ async def ready(deps: Deps, response: Response) -> ReadinessReport:
         database=await deps.database.ping(),
         migrations_current=state.migrations_current,
         recovery_complete=state.recovery_complete,
+        # Remembered, not probed — the opposite of `database`, and
+        # deliberately so: `garage_ready` is the result of the startup
+        # assertion (`Readiness.garage_ready`'s docstring has the full
+        # reasoning), never a fresh call to `deps.garage`.
+        garage_ready=state.garage_ready,
         degraded_games=tuple(
             DegradedGame(game_id=str(gid), reason=reason) for gid, reason in deps.manager.degraded()
         ),
     )
-    if not (body.database and body.migrations_current and body.recovery_complete):
+    if not (
+        body.database and body.migrations_current and body.recovery_complete and body.garage_ready
+    ):
         # A degraded game is deliberately *not* part of this condition:
         # §5.6 clears `Failed` only by operator action, and ADR-002 gives
         # the process no peer to fail over to, so taking the whole server

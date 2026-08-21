@@ -1833,6 +1833,10 @@
             "title": "Degraded Games",
             "type": "array"
           },
+          "garage_ready": {
+            "title": "Garage Ready",
+            "type": "boolean"
+          },
           "migrations_current": {
             "title": "Migrations Current",
             "type": "boolean"
@@ -1846,6 +1850,7 @@
           "database",
           "migrations_current",
           "recovery_complete",
+          "garage_ready",
           "degraded_games"
         ],
         "title": "ReadinessReport",

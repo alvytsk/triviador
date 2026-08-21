@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from triviador.storage.s3 import S3ImportStagingStore, S3MediaStore
+from triviador.storage.s3 import S3GarageProbe, S3ImportStagingStore, S3MediaStore
 
 HERE = Path(__file__).parent
 
@@ -75,4 +75,16 @@ async def staging_store() -> AsyncIterator[S3ImportStagingStore]:
         access_key_id=KEY_ID,
         secret_access_key=KEY_SECRET,
         bucket="triviador-staging",
+    )
+
+
+@pytest_asyncio.fixture
+async def garage_probe() -> AsyncIterator[S3GarageProbe]:
+    yield S3GarageProbe(
+        endpoint_url=ENDPOINT,
+        region="garage",
+        access_key_id=KEY_ID,
+        secret_access_key=KEY_SECRET,
+        media_bucket="triviador-media",
+        staging_bucket="triviador-staging",
     )

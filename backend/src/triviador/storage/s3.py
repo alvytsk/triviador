@@ -139,3 +139,76 @@ class S3MediaStore(_S3Base):
                     for item in page.get("Contents", ())
                 )
         return tuple(objects)
+
+
+class S3GarageProbe:
+    """Implements `services.ports.GarageProbe`, over the plain S3 API — the
+    backend holds an S3 access key, not the Garage admin RPC socket
+    `infra/garage/init.sh` talks to, so this checks the same two facts
+    that script's own guard checks, through the only door the backend has.
+
+    `head_bucket` answers "does this bucket exist" the ordinary way: a
+    `ClientError` (404 for a missing bucket, but any `ClientError` is
+    treated the same — an unreachable Garage is exactly as not-ready as a
+    missing bucket).
+
+    The website check does **not** work the way it would against real
+    AWS S3, where `get_bucket_website` raises `NoSuchWebsiteConfiguration`
+    for an unconfigured bucket. Verified empirically against a running
+    `dxflrs/garage:v1.1.0` (see task report): Garage's `get_bucket_website`
+    returns success — HTTP 204, an *empty* body — for a bucket with no
+    website configuration, and only populates `IndexDocument` (or the
+    other website fields) once one is actually set. Treating "it didn't
+    raise" as "it's the good state" the way the AWS-shaped API suggests
+    would make this guard report ready unconditionally, on every Garage
+    version this runs against — so the signal used here is the response's
+    *content*, not whether the call raised.
+    """
+
+    def __init__(
+        self,
+        *,
+        endpoint_url: str,
+        region: str,
+        access_key_id: str,
+        secret_access_key: str,
+        media_bucket: str,
+        staging_bucket: str,
+    ) -> None:
+        self._session = aioboto3.Session()
+        self._media_bucket = media_bucket
+        self._staging_bucket = staging_bucket
+        self._client_kwargs: dict[str, Any] = {
+            "endpoint_url": endpoint_url,
+            "region_name": region,
+            "aws_access_key_id": access_key_id,
+            "aws_secret_access_key": secret_access_key,
+            "config": BotoConfig(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
+        }
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[Any]:
+        async with self._session.client("s3", **self._client_kwargs) as client:
+            yield client
+
+    async def ready(self) -> bool:
+        async with self._client() as client:
+            for bucket in (self._media_bucket, self._staging_bucket):
+                try:
+                    await client.head_bucket(Bucket=bucket)
+                except ClientError:
+                    return False
+            try:
+                website = await client.get_bucket_website(Bucket=self._staging_bucket)
+            except ClientError:
+                # Real S3's "not configured" answer. Never observed against
+                # Garage v1.1.0 (see class docstring), kept for the API
+                # contract `get_bucket_website` documents.
+                return True
+            # Garage's "not configured" answer: success, with nothing in
+            # the body beyond `ResponseMetadata`.
+            return not any(key != "ResponseMetadata" for key in website)

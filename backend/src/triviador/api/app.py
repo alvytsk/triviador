@@ -54,7 +54,7 @@ from triviador.runtime.manager import GameManager
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.reaper import Reaper
 from triviador.runtime.watchdog import Watchdog
-from triviador.storage.s3 import S3ImportStagingStore, S3MediaStore
+from triviador.storage.s3 import S3GarageProbe, S3ImportStagingStore, S3MediaStore
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,14 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         secret_access_key=settings.s3_secret_access_key.get_secret_value(),
         bucket=settings.staging_bucket,
     )
+    garage = S3GarageProbe(
+        endpoint_url=settings.s3_endpoint_url,
+        region=settings.s3_region,
+        access_key_id=settings.s3_access_key_id,
+        secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        media_bucket=settings.media_bucket,
+        staging_bucket=settings.staging_bucket,
+    )
 
     manager = GameManager(
         loader=GameLoader(uow=uow, maps=maps_registry),
@@ -178,6 +186,7 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         invites_admin=invites,
         users_admin=UserAdminRepository(sessions),
         database=EnginePing(engine),
+        garage=garage,
         hub=hub,
         broadcaster=broadcaster,
         manager=manager,
@@ -250,6 +259,20 @@ def _lifespan(built: BuiltApp) -> Callable[[FastAPI], AbstractAsyncContextManage
         readiness.migrations_current = current == _head_revision()
         if not readiness.migrations_current:
             raise RuntimeError(f"database is at revision {current!r}, expected head")
+
+        # §10.6's fourth check, recorded once here rather than raised on
+        # failure: unlike a stale schema (actively dangerous to run
+        # against), a Garage that `infra/garage/init.sh` never reached is
+        # safe to boot next to — it just means media and imports do not
+        # work yet. `garage_ready` staying `False` keeps `/api/health/ready`
+        # at 503, which is what takes this process out of `caddy`'s
+        # rotation (`service_healthy`) without crash-looping the container.
+        readiness.garage_ready = await deps.garage.ready()
+        if not readiness.garage_ready:
+            logger.error(
+                "startup Garage assertion failed: a bucket is missing, or the "
+                "staging bucket is website-enabled"
+            )
 
         unloadable = await deps.manager.recover_active_games()
         if unloadable:

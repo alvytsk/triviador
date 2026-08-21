@@ -38,7 +38,14 @@ from triviador.services.identity import (
     UserRole,
     UserStore,
 )
-from triviador.services.ports import Clock, DatabaseProbe, GameCatalogPort, MapProvider, PresetPort
+from triviador.services.ports import (
+    Clock,
+    DatabaseProbe,
+    GameCatalogPort,
+    GarageProbe,
+    MapProvider,
+    PresetPort,
+)
 from triviador.services.storage import ImportStagingStore, MediaStore
 
 if TYPE_CHECKING:
@@ -75,14 +82,20 @@ class Readiness:
 
     §10.6: readiness reports the *result* of the startup assertions rather
     than re-running them on every poll — that is true of the migration
-    check and of recovery, both of which are settled by the time the
-    process serves. It is **not** true of the database, which can go away
+    check, of recovery, and of `garage_ready`, all three settled by the
+    time the process serves. `garage_ready` in particular must stay this
+    way rather than follow `database`'s lead: a probe on every poll turns
+    a transient Garage blip into a backend that removes itself from
+    rotation, and `caddy` gates on `service_healthy`, so that takes the
+    whole site down over a hiccup Garage would otherwise have recovered
+    from on its own. It is **not** true of the database, which can go away
     while the process keeps running; that one is probed per request through
     `AppDependencies.database` (see `DatabaseProbe`).
     """
 
     migrations_current: bool = False
     recovery_complete: bool = False
+    garage_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +113,7 @@ class AppDependencies:
     invites_admin: InviteAdminPort
     users_admin: UserAdminPort
     database: DatabaseProbe
+    garage: GarageProbe
     hub: "Hub"
     broadcaster: "WsBroadcaster"
     manager: "GameManager"
@@ -180,6 +194,7 @@ class AppDependencies:
             invites_admin=unusable,
             users_admin=unusable,
             database=unusable,
+            garage=unusable,
             hub=hub,
             broadcaster=broadcaster,
             manager=manager,
