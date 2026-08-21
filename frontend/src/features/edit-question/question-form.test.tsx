@@ -87,11 +87,19 @@ describe("QuestionForm", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(/1 existing question/i);
   });
 
-  it("keeps the form when an image is rejected", async () => {
+  it("keeps the form when an image is rejected, showing the server's own reason", async () => {
+    // `media_rejected` has 6 distinct raise sites in `triviador/media/
+    // pipeline.py`, each with its own message — this screen must show
+    // whichever one the server actually sent, not a fixed sentence that
+    // could only be right for one of them (see `shared/lib/admin-errors.ts`).
     server.use(
       http.post("/api/admin/media", () =>
         HttpResponse.json(
-          { code: "media_rejected", message: "not an image", details: null },
+          {
+            code: "media_rejected",
+            message: "that file is not an image this server can decode",
+            details: null,
+          },
           { status: 415 },
         ),
       ),
@@ -108,7 +116,9 @@ describe("QuestionForm", () => {
     // that broken click sequence.
     fireEvent.change(screen.getByLabelText("Upload media"), { target: { files: [file] } });
 
-    expect(await screen.findByText(/cannot be used/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/that file is not an image this server can decode/i),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText("Prompt")).toHaveValue("half typed prompt survives");
   });
 

@@ -212,4 +212,67 @@ describe("PresetList", () => {
 
     expect(screen.getByDisplayValue("Old rules")).toBeInTheDocument();
   });
+
+  it("offers a retire control for an active preset but not for an already-retired one", () => {
+    // Same reasoning as `UserTable`'s `DeactivateControl`: a preset that
+    // is already retired has nothing left to retire.
+    const presets = [
+      preset({ id: "p1", name: "Classic", is_active: true, is_default: false }),
+      preset({ id: "p2", name: "Old rules", is_active: false, is_default: false }),
+    ];
+    renderWithApp(<PresetList presets={presets} selectedId={null} onSelect={vi.fn()} />);
+
+    const activeRow = screen.getByRole("button", { name: /open classic/i }).closest("tr");
+    const retiredRow = screen.getByRole("button", { name: /open old rules/i }).closest("tr");
+    expect(activeRow).not.toBeNull();
+    expect(retiredRow).not.toBeNull();
+
+    expect(
+      within(activeRow as HTMLElement).getByRole("button", { name: /^retire$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(retiredRow as HTMLElement).queryByRole("button", { name: /^retire$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says retiring cannot be undone before it happens", async () => {
+    // §6.1's soft delete is one-way — no reactivation route — so the
+    // confirmation copy must say so before the second click sends
+    // anything, same two-step shape as `DeactivateControl`.
+    const presets = [preset({ id: "p1", name: "Classic", is_active: true, is_default: false })];
+    renderWithApp(<PresetList presets={presets} selectedId={null} onSelect={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^retire$/i }));
+
+    expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^retire$/i })).not.toBeInTheDocument();
+  });
+
+  it("renders default_preset's third sentence when retiring the current default", async () => {
+    // The DELETE path's own refusal (`DeactivateOutcome.IS_DEFAULT` in
+    // `api/http/admin/presets.py`) is a THIRD distinct message for
+    // `default_preset` — different from both of the PATCH refusals this
+    // file's `PresetForm` tests already cover.
+    server.use(
+      http.delete("/api/admin/presets/p1", () =>
+        HttpResponse.json(
+          {
+            code: "default_preset",
+            message: "this is the default preset; make another one default first",
+            details: null,
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    const presets = [preset({ id: "p1", name: "Classic", is_active: true, is_default: true })];
+    renderWithApp(<PresetList presets={presets} selectedId={null} onSelect={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^retire$/i }));
+    await userEvent.click(screen.getByRole("button", { name: /confirm retire/i }));
+
+    expect(
+      await screen.findByText(/this is the default preset; make another one default first/),
+    ).toBeInTheDocument();
+  });
 });

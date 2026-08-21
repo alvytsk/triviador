@@ -1,19 +1,47 @@
 import type { ErrorCode } from "@/shared/api/generated/errors";
 
-/** Five of Plan 7A's six new codes, as a literal tuple rather than inferred
- *  from `ADMIN_MESSAGES`'s keys below. `default_preset` (the sixth) is
- *  deliberately NOT here — see the comment on `ADMIN_MESSAGES` for why a
- *  fixed sentence is the wrong shape for that one code.
+/** This is NOT a lookup table from code to meaning — every one of this
+ *  file's 8 call sites already passes the server's own sentence as
+ *  `fallback` (`grep -rn "adminErrorMessage" frontend/src`), and that
+ *  sentence is always available. What lives below is an OVERRIDE list: a
+ *  fixed sentence that *replaces* the server's own text with a friendlier
+ *  one, for the few codes where that is safe to do.
  *
- * `satisfies readonly ErrorCode[]` is the other half of the exhaustiveness
- * this file promises: it guarantees every one of these five strings is a
- * real member of the generated `ErrorCode` union, so a rename upstream
- * (the code renamed or dropped entirely) breaks *this* line, rather than
- * silently leaving a stale key sitting in `ADMIN_MESSAGES` that no error
- * envelope can ever carry. */
+ * An override is only defensible when BOTH hold:
+ *   (a) the server's message is worse for an admin than the replacement, and
+ *   (b) the code is raised from exactly one backend site, so one fixed
+ *       sentence cannot silently paper over two different refusals.
+ *
+ * (b) is not a one-time check — it was violated twice on this branch
+ * before being caught (`media_rejected`: 6 raise sites in
+ * `triviador/media/pipeline.py`, each with its own message, surfaced
+ * verbatim via `ApiError(MEDIA_REJECTED, 415, exc.reason)` in
+ * `api/http/admin/media.py`; `import_not_confirmable`: 7 raise sites in
+ * `api/http/admin/imports.py`, each with its own message) and once
+ * before that (`default_preset`: see below). Every code kept in this map
+ * was re-verified by grepping every `raise ApiError(ApiErrorCode.<CODE>`
+ * (and, for `LAST_ADMIN`, its `SetRoleOutcome` enum route) in
+ * `backend/src/triviador/` at the time this comment was written:
+ * `slug_taken` — one site, `api/http/admin/categories.py`. `last_admin` —
+ * one site, `api/http/admin/users.py`'s `/role` route. `self_target` —
+ * one site, `api/http/admin/users.py`'s `/deactivate` route. That is a
+ * fact about the backend today, not a promise about tomorrow — if any of
+ * these three grows a second raise site, its entry here goes stale the
+ * same way `media_rejected`'s and `import_not_confirmable`'s did, and
+ * this file will not know. Whoever adds that second site is on the hook
+ * to remove the entry.
+ *
+ * `default_preset` has no entry: it is raised from THREE sites (two in
+ * `PATCH /{preset_id}` — clearing the current default, and promoting a
+ * retired preset to default — and one in `DELETE /{preset_id}` —
+ * retiring the current default), each with its own message, so a fixed
+ * sentence keyed only on `code` cannot distinguish them without lying
+ * about which refusal happened. `media_rejected` and
+ * `import_not_confirmable` fail rule (b) the same way `default_preset`
+ * does, so they are not overridden either — all three fall through to
+ * `fallback` (the server's own message), which is already accurate per
+ * call site. */
 const ADMIN_ERROR_CODES = [
-  "media_rejected",
-  "import_not_confirmable",
   "slug_taken",
   "last_admin",
   "self_target",
@@ -29,36 +57,27 @@ type AdminErrorCode = (typeof ADMIN_ERROR_CODES)[number];
  * entry here fails the build instead of quietly rendering a generic
  * apology at the one moment an admin needs to know what to do. Together
  * with `ADMIN_ERROR_CODES` above, both a dropped code and a mistyped key
- * fail `tsc`, not just one of the two.
- *
- * `default_preset` has NO entry here, unlike the other five. Those five
- * each have exactly one trigger, so one fixed sentence is a faithful
- * summary of the server's message. `default_preset` does not: the admin
- * presets screen (Task 8) can hit it from clearing the current default
- * (`"this is the default preset; make another one default instead of
- * clearing this one"`) or from promoting a retired preset to default
- * (`"a retired preset cannot be the default; reactivate it first"`) —
- * two different refusals sharing one `code`. A fixed sentence keyed only
- * on `code` cannot distinguish them; it would show the SAME text for
- * both, which is worse than no sentence at all, because it actively
- * tells the admin the wrong reason. So `default_preset` falls through to
- * `fallback` below (the server's own `message`) instead, which is
- * already accurate per refusal — see presets.ts and `test_admin_presets.py`
- * for both exact sentences. */
+ * fail `tsc`, not just one of the two. */
 const ADMIN_MESSAGES = {
-  media_rejected: "That image cannot be used — check the format and size, then try another.",
-  import_not_confirmable: "This upload can no longer be applied. Run the dry-run again.",
   slug_taken: "A category with that slug already exists.",
   last_admin: "This is the last administrator. Promote someone else first.",
   self_target: "You cannot do that to your own account. Ask another administrator.",
 } satisfies Record<AdminErrorCode, string>;
 
-/** Looks up the admin-facing sentence for `code`, falling back to
- *  `fallback` for any code this map does not (yet, or ever, or
- *  deliberately never — see `default_preset` above) own — the wider
- *  `ErrorCode` union also carries codes every screen shares
- *  (`validation_failed`, `not_found`, …), which stay each caller's own
- *  business rather than this file's. */
+/** Looks up the admin-facing override sentence for `code`, falling back
+ *  to `fallback` (the caller's own — always the server's `message`) for
+ *  any code this map does not own — either because it never will (see
+ *  the file comment above) or because it is a code every screen shares
+ *  (`validation_failed`, `not_found`, …), which stays each caller's own
+ *  business rather than this file's.
+ *
+ * `fallback` is guarded rather than rendered blindly: today every caller
+ * passes a non-empty server `message`, but nothing enforces that at the
+ * type level, and a `Banner` rendering literally nothing is a worse
+ * failure than a generic line. */
 export function adminErrorMessage(code: ErrorCode, fallback: string): string {
-  return code in ADMIN_MESSAGES ? ADMIN_MESSAGES[code as AdminErrorCode] : fallback;
+  if (code in ADMIN_MESSAGES) {
+    return ADMIN_MESSAGES[code as AdminErrorCode];
+  }
+  return fallback.trim().length > 0 ? fallback : "Something went wrong. Try again.";
 }

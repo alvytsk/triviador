@@ -9,6 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/shared/ui";
+import { RetireControl } from "./retire-control";
 
 export interface PresetListProps {
   presets: PresetDetail[];
@@ -23,6 +24,11 @@ export interface PresetListProps {
  * this list can show a retired row and let an admin open it — there is
  * deliberately no reactivation route (§6.1's soft delete is one-way), so
  * "open" here means read access, not a way to bring it back.
+ *
+ * A retired preset already has nothing left to retire — same reasoning as
+ * `UserTable`'s `DeactivateControl`, which withdraws itself once
+ * `is_active` is false rather than offering a click with no further
+ * effect — so `RetireControl` only renders for an active row.
  */
 export function PresetList({ presets, selectedId, onSelect }: PresetListProps) {
   return (
@@ -32,6 +38,7 @@ export function PresetList({ presets, selectedId, onSelect }: PresetListProps) {
           <TableHead>Name</TableHead>
           <TableHead>Status</TableHead>
           <TableHead />
+          <TableHead>Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -57,6 +64,7 @@ export function PresetList({ presets, selectedId, onSelect }: PresetListProps) {
                 Open
               </Button>
             </TableCell>
+            <TableCell>{preset.is_active && <RetireControl preset={preset} />}</TableCell>
           </TableRow>
         ))}
       </TableBody>

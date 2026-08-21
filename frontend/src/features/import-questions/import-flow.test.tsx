@@ -144,12 +144,21 @@ describe("ImportWizard", () => {
     await expect(seen.blob?.text()).resolves.toBe(csv);
   });
 
-  it("surfaces import_not_confirmable on a second confirm", async () => {
+  it("surfaces the server's own import_not_confirmable sentence on a second confirm", async () => {
+    // `import_not_confirmable` has 7 distinct raise sites in
+    // `api/http/admin/imports.py`, each with its own message — this
+    // screen must show whichever one the server actually sent, not a
+    // fixed sentence that could only be right for one of them (see
+    // `shared/lib/admin-errors.ts`).
     mockDryRun(summary({ rejected_count: 0, confirmable: true }));
     server.use(
       http.post("/api/admin/questions/import/imp1/confirm", () =>
         HttpResponse.json(
-          { code: "import_not_confirmable", message: "this import expired", details: null },
+          {
+            code: "import_not_confirmable",
+            message: "this import expired; upload it again",
+            details: null,
+          },
           { status: 409 },
         ),
       ),
@@ -159,9 +168,7 @@ describe("ImportWizard", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /confirm import/i }));
 
-    expect(
-      await screen.findByText(/this upload can no longer be applied\. run the dry-run again\./i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/this import expired; upload it again/i)).toBeInTheDocument();
   });
 
   it("sends the file as raw bytes with X-Filename", async () => {
