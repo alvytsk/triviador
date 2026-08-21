@@ -34,14 +34,18 @@
 // the route failed check 1 with `/admin/questions/import found in
 // assets/index-*.js, part of the entry graph` — not from anything this
 // screen imports, but from that route's own entry in `routeTree.gen.ts`'s
-// route-info map, `fullPath: '/admin/questions/import'`. The other three
-// admin nav hrefs
-// (`/admin/invites`, `/admin/users`, `/admin/presets`) still work as
-// markers today because no route is registered at those paths yet
-// (Tasks 6–8 own them) — the day one of those tasks adds its route file,
-// its own href needs the same exclusion, for the same reason, or
-// `check:bundle` will fail on infrastructure this check was never meant
-// to flag.
+// route-info map, `fullPath: '/admin/questions/import'`. `/admin/invites`
+// joins it here as of Task 6, same mechanism, same confirmation: wiring
+// `_authed.admin.invites.tsx` and leaving the href in this list made
+// `pnpm check:bundle` fail check 1 with `/admin/invites found in
+// assets/index-*.js, part of the entry graph`, traced to
+// `routeTree.gen.ts`'s new `fullPath: '/admin/invites'` entry, not to
+// anything `InvitesPage` itself imports. The remaining two admin nav
+// hrefs (`/admin/users`, `/admin/presets`) still work as markers today
+// because no route is registered at those paths yet (Tasks 7–8 own them)
+// — the day one of those tasks adds its route file, its own href needs
+// the same exclusion, for the same reason, or `check:bundle` will fail on
+// infrastructure this check was never meant to flag.
 //
 // `duplicate_of` is Task 2's addition, and it is schema content rather
 // than routing content: it is the one object key in the 27 schemas
@@ -68,7 +72,27 @@
 // correctly (found only in a lazy chunk when wired in; leaks into the
 // eager set and fails check 1 when hoisted into a player-reachable file)
 // without leaving that wiring in the tree.
-const ADMIN_ONLY_MARKERS = ["/admin/invites", "/admin/users", "/admin/presets", "duplicate_of"];
+//
+// `used_by` is Task 6's addition, and — like `duplicate_of` — it is
+// schema content, drawn this time from an invites-only DTO rather than
+// the questions subtree `duplicate_of` already covers: it is the one
+// object key of `inviteViewSchema` (`InviteView`'s `status`/`expires_at`/
+// `id`/`used_by`) that appears nowhere else in `generated/admin.ts` and
+// nowhere in this codebase outside that file and `entities/admin`'s own
+// test fixture — confirmed with `grep -rn '"used_by"' frontend/src` (only
+// `generated/admin.ts` and `invites.test.ts`, the latter not shipped)
+// before it was chosen. `duplicate_of` alone would stay silent forever
+// about a hypothetical future screen that imports admin schemas without
+// ever touching `questionSavedSchema` — `used_by` is that second,
+// independent witness, actually constructed at runtime by
+// `InviteTable`/`InvitesPage` (`inviteViewSchema` parses every response
+// `adminInvitesQueryOptions`/`revokeInvite` return, unlike
+// `issueInvitesRequestSchema`'s `expires_in_hours`, whose *type* — not
+// its schema — is all `issueInvites` imports, so that schema is never
+// constructed at runtime and would not have worked as a marker). Found
+// only in `_authed.admin.invites.lazy-*.js` when this task wired the
+// route (see this task's report for the `pnpm check:bundle` output).
+const ADMIN_ONLY_MARKERS = ["/admin/users", "/admin/presets", "duplicate_of", "used_by"];
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
