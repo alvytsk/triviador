@@ -147,4 +147,104 @@ describe("QuestionForm", () => {
     await userEvent.click(screen.getByRole("button", { name: /activate/i }));
     await waitFor(() => expect(screen.getByText("Active")).toBeInTheDocument());
   });
+
+  describe("inline category creation", () => {
+    // `QuestionForm` itself only ever renders whatever `categories` prop
+    // it is given — it does not own the categories query, so this level
+    // can only prove the FORM half of the feature: the field is set to
+    // the created id, the inline form closes, and a save afterward
+    // actually carries that id. Proving the picker shows the new
+    // category *by name* needs the real query + invalidation round trip,
+    // which only exists one level up — see
+    // `question-editor-page.test.tsx`'s own "inline category creation"
+    // test for that half.
+    it("selects the created category by id and saves a question with it", async () => {
+      // Empty categories — the fresh-install scenario the gap actually
+      // matters for: on a brand-new server the picker has nothing to
+      // offer until this affordance exists.
+      server.use(
+        http.post("/api/admin/categories", async ({ request }) => {
+          const body = (await request.json()) as { name: string; slug: string };
+          return HttpResponse.json(
+            { id: "cat-new", name: body.name, slug: body.slug },
+            { status: 201 },
+          );
+        }),
+        http.post("/api/admin/questions", async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(
+            {
+              question: questionDetail({
+                id: "q-new",
+                category_id: body.category_id as string,
+                category_slug: "sports",
+                prompt: body.prompt as string,
+              }),
+              duplicate_of: [],
+            },
+            { status: 201 },
+          );
+        }),
+      );
+      const onSaved = vi.fn();
+      renderWithApp(<QuestionForm mode="create" categories={[]} onSaved={onSaved} />);
+
+      // The picker starts genuinely empty — no category to choose yet.
+      expect(screen.queryByRole("option")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /new category/i }));
+      await userEvent.type(screen.getByLabelText("Category name"), "Sports");
+      await userEvent.type(screen.getByLabelText("Slug"), "sports");
+      await userEvent.click(screen.getByRole("button", { name: /create category/i }));
+
+      // The inline form closes once its job is done.
+      await waitFor(() => expect(screen.queryByLabelText("Category name")).not.toBeInTheDocument());
+
+      await userEvent.type(screen.getByLabelText("Prompt"), "Which sport uses a shuttlecock?");
+      // The generated schema requires non-empty choice text — this test
+      // actually submits, unlike the kind/correctness tests above, so
+      // the four blank choices `blankChoices()` starts with need real
+      // text or `questionWriteRequestSchema`'s own `onSubmit` validator
+      // blocks the mutation before it ever fires.
+      await userEvent.type(screen.getByLabelText("Choice 1"), "Badminton");
+      await userEvent.type(screen.getByLabelText("Choice 2"), "Tennis");
+      await userEvent.type(screen.getByLabelText("Choice 3"), "Squash");
+      await userEvent.type(screen.getByLabelText("Choice 4"), "Table tennis");
+      await userEvent.click(screen.getByRole("button", { name: /create question/i }));
+
+      // The save carries the created category's id — proof the field was
+      // actually selected, not just that creation succeeded somewhere.
+      await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+      expect(onSaved.mock.calls[0]?.[0]).toMatchObject({ id: "q-new", category_id: "cat-new" });
+    });
+
+    it("shows the fixed sentence and keeps the form open on a slug_taken refusal", async () => {
+      server.use(
+        http.post("/api/admin/categories", () =>
+          HttpResponse.json(
+            { code: "slug_taken", message: "a category with slug geography exists", details: null },
+            { status: 409 },
+          ),
+        ),
+      );
+      renderWithApp(<QuestionForm mode="create" categories={CATEGORIES} onSaved={vi.fn()} />);
+
+      await userEvent.click(screen.getByRole("button", { name: /new category/i }));
+      await userEvent.type(screen.getByLabelText("Category name"), "Geography again");
+      await userEvent.type(screen.getByLabelText("Slug"), "geography");
+      await userEvent.click(screen.getByRole("button", { name: /create category/i }));
+
+      // `shared/lib/admin-errors.ts`'s fixed sentence, not the fake
+      // backend's own message — proving the override list, not just that
+      // *some* error rendered.
+      expect(
+        await screen.findByText(/a category with that slug already exists/i),
+      ).toBeInTheDocument();
+      // Refused, not silently discarded: the inline form is still open
+      // with what the admin typed, and the original category list is
+      // untouched.
+      expect(screen.getByLabelText("Category name")).toHaveValue("Geography again");
+      expect(screen.getByRole("combobox", { name: "Category" })).toHaveTextContent("Geography");
+    });
+  });
 });

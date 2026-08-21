@@ -104,4 +104,96 @@ describe("QuestionEditorPage", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/admin/questions/q-dup"));
     expect(await screen.findByText(/1 existing question/i)).toBeInTheDocument();
   });
+
+  describe("inline category creation", () => {
+    // Unlike `question-form.test.tsx`'s own "inline category creation"
+    // tests (which prove the FORM half — the field gets set to the
+    // created id), this is the only place that can prove the picker
+    // shows the new category BY NAME: this page owns the real
+    // `adminCategoriesQueryOptions()` query, so `useCreateCategory`'s
+    // `invalidateQueries` genuinely triggers a refetch here, which a
+    // stateful MSW category list (not a fixed fixture) can answer with
+    // the row that now exists.
+    it("shows the created category by name in the picker, then saves a question with it", async () => {
+      withMe();
+      const categories = [...CATEGORIES];
+      server.use(
+        http.get("/api/admin/categories", () => HttpResponse.json(categories)),
+        http.post("/api/admin/categories", async ({ request }) => {
+          const body = (await request.json()) as { name: string; slug: string };
+          const created = { id: "cat-new", name: body.name, slug: body.slug };
+          categories.push(created);
+          return HttpResponse.json(created, { status: 201 });
+        }),
+        http.post("/api/admin/questions", async ({ request }) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json(
+            {
+              question: questionDetail({
+                id: "q-new",
+                category_id: body.category_id as string,
+                category_slug: "sports",
+                prompt: body.prompt as string,
+              }),
+              duplicate_of: [],
+            },
+            { status: 201 },
+          );
+        }),
+      );
+
+      const { router } = renderRoute("/admin/questions/new");
+      await screen.findByRole("combobox", { name: "Category" });
+
+      await userEvent.click(screen.getByRole("button", { name: /new category/i }));
+      await userEvent.type(screen.getByLabelText("Category name"), "Sports");
+      await userEvent.type(screen.getByLabelText("Slug"), "sports");
+      await userEvent.click(screen.getByRole("button", { name: /create category/i }));
+
+      // The real query invalidation + refetch round trip: once it
+      // resolves, the picker shows the new category by its NAME, not
+      // just its opaque id — proof the picker itself, not just the
+      // form's internal state, reflects the created row.
+      await waitFor(() =>
+        expect(screen.getByRole("combobox", { name: "Category" })).toHaveTextContent("Sports"),
+      );
+
+      await userEvent.type(screen.getByLabelText("Prompt"), "Which sport uses a shuttlecock?");
+      for (const input of screen.getAllByLabelText(/^Choice \d$/)) {
+        await userEvent.type(input, "An option");
+      }
+      await userEvent.click(screen.getByRole("button", { name: /create question/i }));
+
+      await waitFor(() => expect(router.state.location.pathname).toBe("/admin/questions/q-new"));
+    });
+
+    it("shows the fixed sentence and keeps the form open on a slug_taken refusal", async () => {
+      withMe();
+      withCategories();
+      server.use(
+        http.post("/api/admin/categories", () =>
+          HttpResponse.json(
+            { code: "slug_taken", message: "a category with slug geography exists", details: null },
+            { status: 409 },
+          ),
+        ),
+      );
+
+      renderRoute("/admin/questions/new");
+      await screen.findByRole("combobox", { name: "Category" });
+
+      await userEvent.click(screen.getByRole("button", { name: /new category/i }));
+      await userEvent.type(screen.getByLabelText("Category name"), "Geography again");
+      await userEvent.type(screen.getByLabelText("Slug"), "geography");
+      await userEvent.click(screen.getByRole("button", { name: /create category/i }));
+
+      expect(
+        await screen.findByText(/a category with that slug already exists/i),
+      ).toBeInTheDocument();
+      // Refused, not silently discarded: the inline form is still open,
+      // and the original category is still the only option.
+      expect(screen.getByLabelText("Category name")).toHaveValue("Geography again");
+      expect(screen.getByRole("combobox", { name: "Category" })).toHaveTextContent("Geography");
+    });
+  });
 });

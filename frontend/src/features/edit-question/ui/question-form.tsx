@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { activateQuestion, adminKeys, deactivateQuestion } from "@/entities/admin";
 import type {
   CategoryView,
@@ -20,6 +20,7 @@ import {
 } from "@/shared/ui";
 import { blankChoices, markCorrect, useQuestionForm } from "../model/use-question-form";
 import { ChoiceEditor } from "./choice-editor";
+import { CreateCategoryInline } from "./create-category-inline";
 import { MediaField } from "./media-field";
 
 export type QuestionFormProps =
@@ -65,7 +66,44 @@ export function QuestionForm(props: QuestionFormProps) {
   );
 
   const [isActive, setIsActive] = useState(question?.is_active ?? true);
+  const [isCreatingCategory, setIsCreatingCategory] = useState(false);
+  // The category the inline picker just created, kept independently of
+  // the `categories` prop's own async refetch (`useCreateCategory`
+  // invalidates the categories query, but that round trip does not
+  // resolve within this same render). Traced this down to a real bug,
+  // not a guess: Radix Select keeps a hidden native `<select>` in sync
+  // via its own `useEffect` (`SelectBubbleInput` in
+  // `@radix-ui/react-select`), which programmatically sets that
+  // element's `.value` to the new selection and dispatches a `change`
+  // event. Setting a native `<select>`'s `.value` to something with no
+  // matching `<option>` is a silent no-op per the DOM spec — the element
+  // just keeps its old value — so the dispatched event reports the OLD
+  // value back through `onValueChange`, which is indistinguishable from
+  // the admin picking "nothing". Confirmed by instrumenting
+  // `@tanstack/form-core`'s own `setState`: the value flipped from the
+  // created id straight back to `""`, called from Radix's
+  // `BubbleSelect` sync, not from anything in this file. `categoryOptions`
+  // below adds a matching `SelectItem` in the render BEFORE the value
+  // changes (see the `useEffect` after this block, which defers the
+  // actual field write by one commit for exactly that reason) so the
+  // native `<option>` genuinely exists by the time Radix's effect looks
+  // for it.
+  const [justCreatedCategory, setJustCreatedCategory] = useState<CategoryView | null>(null);
   const queryClient = useQueryClient();
+
+  // Deferred by design, not an oversight — see the comment above.
+  // Setting `justCreatedCategory` and the field value in the SAME
+  // commit would render the new `SelectItem` and change the selected
+  // value together, which is exactly the ordering that trips Radix's
+  // native-select sync. Splitting it into two renders — this state
+  // update lands the `SelectItem` first, then this effect writes the
+  // field value on the NEXT commit — gives the native `<option>` a
+  // chance to exist before Radix looks for it.
+  useEffect(() => {
+    if (justCreatedCategory !== null) {
+      form.setFieldValue("category_id", justCreatedCategory.id);
+    }
+  }, [justCreatedCategory, form]);
 
   const activate = useMutation({
     mutationFn: () => activateQuestion(question?.id ?? ""),
@@ -169,26 +207,70 @@ export function QuestionForm(props: QuestionFormProps) {
 
       <div className="flex gap-4">
         <form.Field name="category_id">
-          {(field) => (
-            <div className="flex flex-1 flex-col gap-2">
-              <span className={FIELD_LABEL_CLASS}>Category</span>
-              <Select
-                value={field.state.value}
-                onValueChange={(value) => field.handleChange(value)}
-              >
-                <SelectTrigger aria-label="Category">
-                  <SelectValue placeholder="Choose a category" />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((category) => (
-                    <SelectItem key={category.id} value={category.id}>
-                      {category.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          {(field) => {
+            // `categories` plus the just-created one, deduped — see the
+            // `justCreatedCategory` state comment above for why this
+            // can't just wait for `categories` itself to catch up.
+            const categoryOptions =
+              justCreatedCategory !== null &&
+              !categories.some((category) => category.id === justCreatedCategory.id)
+                ? [...categories, justCreatedCategory]
+                : categories;
+            return (
+              <div className="flex flex-1 flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className={FIELD_LABEL_CLASS}>Category</span>
+                  {/* The only click path anywhere in the app that
+                   *  creates a category (§10.2 mandates this field;
+                   *  §9.7 lists no category screen — see
+                   *  `create-category-inline.tsx`'s comment for the
+                   *  full scope ruling). Hidden, not disabled, while
+                   *  the inline form is already open. */}
+                  {!isCreatingCategory && (
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingCategory(true)}
+                      className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-dim hover:text-ink"
+                    >
+                      New category
+                    </button>
+                  )}
+                </div>
+                <Select
+                  value={field.state.value}
+                  onValueChange={(value) => field.handleChange(value)}
+                >
+                  <SelectTrigger aria-label="Category">
+                    <SelectValue placeholder="Choose a category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categoryOptions.map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {isCreatingCategory && (
+                  <CreateCategoryInline
+                    onCreated={(created) => {
+                      // Select it, same as picking it from the dropdown
+                      // — the whole point is not making the admin
+                      // re-open the picker to find what they just
+                      // typed. Only `justCreatedCategory` here, NOT
+                      // `form.setFieldValue` too — the `useEffect` above
+                      // writes the field value one commit later, on
+                      // purpose (see its comment and the state comment
+                      // above for why that ordering matters).
+                      setJustCreatedCategory(created);
+                      setIsCreatingCategory(false);
+                    }}
+                    onCancel={() => setIsCreatingCategory(false)}
+                  />
+                )}
+              </div>
+            );
+          }}
         </form.Field>
 
         <form.Field name="difficulty">
