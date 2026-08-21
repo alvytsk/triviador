@@ -12,7 +12,8 @@ migrate service itself.
 import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from tests.db.conftest import DATABASE_URL
 from triviador.cli import _MIGRATE_LOCK_KEY, migrate_head
@@ -52,12 +53,30 @@ async def test_migrate_head_does_not_leak_the_advisory_lock(
     to prevent, self-inflicted. Prove it is released: acquire and release
     it once through `migrate_head` (a no-op upgrade, the schema is already
     at head), then take it again on a fresh connection.
+
+    "Fresh connection" has to mean a genuinely independent PostgreSQL
+    session, not merely a new checkout from `engine`'s pool: session-level
+    advisory locks are reentrant *per session*, and the pool backing the
+    session-scoped `engine` fixture can (and in practice does) hand back
+    the very same physical backend connection for a second checkout within
+    one test process — `pg_backend_pid()` matches across both. Probing
+    through `engine` would then trivially succeed even if `migrate_head`
+    never released the lock at all, because the probe would be running on
+    the same session that (still) holds it. A `NullPool` engine never
+    reuses a pooled connection, so its first checkout is guaranteed to be a
+    distinct backend session.
     """
     await migrate_head(engine, DATABASE_URL)
 
-    async with engine.connect() as conn:
-        got = await conn.scalar(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": _MIGRATE_LOCK_KEY}
-        )
-        assert got is True, "advisory lock was still held after migrate_head returned"
-        await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY})
+    probe_engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
+    try:
+        async with probe_engine.connect() as conn:
+            got = await conn.scalar(
+                text("SELECT pg_try_advisory_lock(:key)"), {"key": _MIGRATE_LOCK_KEY}
+            )
+            assert got is True, "advisory lock was still held after migrate_head returned"
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY}
+            )
+    finally:
+        await probe_engine.dispose()
