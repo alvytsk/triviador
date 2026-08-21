@@ -1,0 +1,75 @@
+# Production overlay. Caddy is the only published port in the entire stack.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: infra/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      garage-init:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      TZ: UTC
+    volumes:
+      - ./data/maps:/data/maps:ro
+    # NOT published. Caddy reaches it over the compose network.
+    expose:
+      - "8000"
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  frontend-build:
+    build:
+      context: .
+      dockerfile: infra/frontend.Dockerfile
+      target: build
+    # Build-only: produces the static output Caddy serves, then exits.
+    restart: "no"
+    # No `command:` — Compose appends command to entrypoint, so a `["true"]`
+    # here would land as $0 inside the `sh -c` script below: meaningless, and
+    # it reads as though `true` were the command being run.
+    volumes:
+      - web:/out
+    # `dist/.vite/` (manifest.json, module-ids.json) is build-tooling output
+    # that `pnpm check:bundle` (frontend/scripts/assert-admin-split.mjs)
+    # reads at CI/build time only — nothing in the running app fetches it.
+    # Caddy serves the whole `/srv` tree, so left in place it would be
+    # publicly readable, and module-ids.json lists every source module
+    # path. Excluded here rather than kept: no runtime consumer needs it,
+    # so there is no reason to publish it.
+    entrypoint: ["sh", "-c", "cp -r /app/dist/. /out/ && rm -rf /out/.vite && echo frontend-build: ok"]
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend-build:
+        condition: service_completed_successfully
+    ports:
+      # The ONLY published port in the stack (§10.11). Bind to the reserved
+      # LAN address instead of 0.0.0.0 where practical, and allow inbound 80
+      # only from the intended subnet.
+      - "0.0.0.0:80:80"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - web:/srv
+      - ./data/maps:/srv/maps:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      TZ: UTC
+
+volumes:
+  web:
+  caddy_data:
+  caddy_config:
