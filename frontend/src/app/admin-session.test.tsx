@@ -631,3 +631,116 @@ describe("the whole admin session, click by click", () => {
     expect(within(adminRow).getByText("Active")).toBeInTheDocument();
   }, 20_000);
 });
+
+describe("the questions list sees its own writes on a same-router revisit", () => {
+  /**
+   * Regression test for the whole-branch review's CRITICAL finding: no
+   * question mutation (create, update, activate/deactivate,
+   * import-confirm) invalidated `adminKeys.questions(...)`, so a list the
+   * admin had already visited kept showing pre-mutation rows for the rest
+   * of the session — `createQueryClient` sets `staleTime: Infinity` with
+   * no window-focus/reconnect refetch (`app/query-client.ts`), so nothing
+   * ever forced a second look.
+   *
+   * WHY THIS NEEDS ITS OWN TEST, NOT A TWEAK TO THE ONE ABOVE: every
+   * post-mutation assertion in `admin-session.test.tsx`'s big scenario
+   * (the "cross-screen check" comments) deliberately uses a FRESH
+   * `renderRoute` call — a fresh `QueryClient` — specifically so the
+   * assertion proves a write reached the BACKEND rather than a warm
+   * client cache. That is the right test for that job. But it is
+   * structurally incapable of catching THIS bug: a fresh `QueryClient` has
+   * no stale entry to serve, so it would render correctly whether or not
+   * `invalidateQueries` was ever called. The exact reasoning that makes
+   * those checks sound against the backend is what made them blind to a
+   * cache that never invalidates — eight per-feature reviews and the
+   * full end-to-end walk above all passed with the bug live. Proving THIS
+   * bug requires the opposite setup: one router, one `QueryClient`, visit
+   * the list once to warm its cache, mutate, and revisit on the SAME
+   * client without remounting anything.
+   */
+  it("shows an edited prompt (and drops the old one) after navigating back on the same router", async () => {
+    const ME_ADMIN = { user_id: "u1", username: "admin", display_name: "Admin", role: "admin" };
+    const CATEGORY = { id: "cat-geo", slug: "geography", name: "Geography" };
+
+    const summary = {
+      id: "q1",
+      kind: "multiple_choice",
+      prompt: "OLD PROMPT",
+      category_id: CATEGORY.id,
+      category_slug: CATEGORY.slug,
+      difficulty: "easy",
+      is_active: true,
+      has_media: false,
+      version: 1,
+      updated_at: "2026-08-21T00:00:00Z",
+    };
+    const detail = {
+      id: "q1",
+      kind: "multiple_choice",
+      prompt: "OLD PROMPT",
+      category_id: CATEGORY.id,
+      category_slug: CATEGORY.slug,
+      difficulty: "easy",
+      is_active: true,
+      media_asset_id: null,
+      choices: [
+        { idx: 0, text: "Vltava", is_correct: true, media_asset_id: null },
+        { idx: 1, text: "Labe", is_correct: false, media_asset_id: null },
+        { idx: 2, text: "Morava", is_correct: false, media_asset_id: null },
+        { idx: 3, text: "Odra", is_correct: false, media_asset_id: null },
+      ],
+      numeric_answer: null,
+      unit: null,
+      version: 1,
+    };
+
+    server.use(
+      http.get("/api/auth/me", () => HttpResponse.json(ME_ADMIN)),
+      http.get("/api/admin/categories", () => HttpResponse.json([CATEGORY])),
+      http.get("/api/admin/questions", () =>
+        HttpResponse.json({ items: [summary], total: 1, limit: 50, offset: 0 }),
+      ),
+      http.get("/api/admin/questions/q1", () => HttpResponse.json(detail)),
+      http.patch("/api/admin/questions/q1", async ({ request }) => {
+        const body = (await request.json()) as { prompt: string };
+        // Mutate in place — the same stateful-backend shape the big
+        // scenario above uses, so a fix that merely made THIS test's own
+        // fixture object identity change (rather than reading the query
+        // cache correctly) couldn't accidentally pass it.
+        detail.prompt = body.prompt;
+        summary.prompt = body.prompt;
+        return HttpResponse.json({ question: detail, duplicate_of: [] });
+      }),
+    );
+
+    // Visit 1: warm this router's QueryClient with the pre-edit list.
+    const session = renderRoute("/admin/questions");
+    expect(await screen.findByText("OLD PROMPT", {}, { timeout: 3000 })).toBeInTheDocument();
+
+    // Into the editor via a real click — same shape as the big scenario's
+    // own row-link check.
+    await userEvent.click(screen.getByRole("link", { name: "OLD PROMPT" }));
+    await waitFor(() => expect(session.router.state.location.pathname).toBe("/admin/questions/q1"));
+    expect(await screen.findByDisplayValue("OLD PROMPT")).toBeInTheDocument();
+
+    const promptField = screen.getByLabelText("Prompt");
+    await userEvent.clear(promptField);
+    await userEvent.type(promptField, "NEW PROMPT");
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    // The round trip actually finished — not just that the click fired.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /save changes/i })).toBeEnabled(),
+    );
+
+    // Back to the list on the SAME router — no `cleanup()`, no fresh
+    // `renderRoute`. This is the one step the bug hid behind: a stale
+    // cache renders exactly as if nothing were wrong.
+    const adminNav = () => screen.getByRole("navigation", { name: "Admin" });
+    await userEvent.click(within(adminNav()).getByRole("link", { name: "Questions" }));
+    await waitFor(() => expect(session.router.state.location.pathname).toBe("/admin/questions"));
+
+    expect(await screen.findByText("NEW PROMPT", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.queryByText("OLD PROMPT")).not.toBeInTheDocument();
+  }, 20_000);
+});

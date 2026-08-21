@@ -109,16 +109,26 @@ export function QuestionForm(props: QuestionFormProps) {
     mutationFn: () => activateQuestion(question?.id ?? ""),
     onSuccess: (updated) => {
       setIsActive(updated.is_active);
-      if (question !== undefined)
+      if (question !== undefined) {
         queryClient.setQueryData(adminKeys.question(question.id), updated);
+        // Was missing before this fix: setQueryData above only ever
+        // reached this SCREEN's own detail cache entry — a list the
+        // admin had already visited (e.g. filtered to "Active only")
+        // kept showing this row under its pre-toggle state for the rest
+        // of the session, `staleTime: Infinity` (`app/query-client.ts`)
+        // meaning that state never self-corrected.
+        queryClient.invalidateQueries({ queryKey: adminKeys.questionsRoot() });
+      }
     },
   });
   const deactivate = useMutation({
     mutationFn: () => deactivateQuestion(question?.id ?? ""),
     onSuccess: (updated) => {
       setIsActive(updated.is_active);
-      if (question !== undefined)
+      if (question !== undefined) {
         queryClient.setQueryData(adminKeys.question(question.id), updated);
+        queryClient.invalidateQueries({ queryKey: adminKeys.questionsRoot() });
+      }
     },
   });
 

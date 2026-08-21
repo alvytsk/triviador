@@ -1,8 +1,8 @@
 import { useForm } from "@tanstack/react-form";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { z } from "zod";
-import { createQuestion, updateQuestion } from "@/entities/admin";
+import { adminKeys, createQuestion, updateQuestion } from "@/entities/admin";
 import { ApiFetchError } from "@/shared/api";
 import {
   type CategoryView,
@@ -125,10 +125,27 @@ export type UseQuestionFormArgs =
  */
 export function useQuestionForm(args: UseQuestionFormArgs) {
   const [duplicateOf, setDuplicateOf] = useState<string[]>([]);
+  const queryClient = useQueryClient();
 
   const mutation = useMutation({
     mutationFn: (body: QuestionWriteRequest) =>
       args.mode === "create" ? createQuestion(body) : updateQuestion(args.question.id, body),
+    // House pattern (`role-control.tsx`, `preset-form.tsx`,
+    // `use-create-category.ts`, ...) — questions were the sole exception
+    // before this fix, and the exception was live: a saved edit never
+    // reached any already-mounted questions list, `staleTime: Infinity`
+    // meant that never self-corrected, and nothing on screen indicated
+    // the row shown was stale. `questionsRoot()` is a prefix of every
+    // filtered/paged list key, so one call invalidates all of them
+    // regardless of which filter or page happens to be mounted.
+    // `setQueryData` on the detail key mirrors what activate/deactivate
+    // already did below in `question-form.tsx` — the freshly-saved
+    // question is already in hand, no reason to wait for a refetch to
+    // show it.
+    onSuccess: (saved) => {
+      queryClient.invalidateQueries({ queryKey: adminKeys.questionsRoot() });
+      queryClient.setQueryData(adminKeys.question(saved.question.id), saved.question);
+    },
   });
 
   const question = args.mode === "edit" ? args.question : undefined;

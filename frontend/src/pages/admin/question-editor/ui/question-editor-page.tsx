@@ -74,10 +74,34 @@ export function QuestionEditorPage() {
         </Banner>
       )}
 
+      {/* `key={questionId}` — not cosmetic. Both branches render the same
+       *  component type at the same tree position, so without a key React
+       *  reconciles rather than remounts on the create -> canonical-id
+       *  navigate `handleSaved` triggers, and `useQuestionForm`'s local
+       *  `duplicateOf` state (already set from the create that just
+       *  happened) would carry straight over into the freshly-"mounted"
+       *  edit view — rendering ITS OWN duplicate banner right alongside
+       *  this page's search-param one, the exact same warning twice. This
+       *  used to be masked by an accidental gap: `question` had not been
+       *  fetched yet at the new id, so `QuestionEditorPage` briefly
+       *  rendered "Loading…" instead of `QuestionForm`, unmounting it for
+       *  free. The cache-invalidation fix's `setQueryData(question(id),
+       *  saved.question)` (`use-question-form.ts`) seeds that query
+       *  before the navigate, closing the gap — so the reset now has to be
+       *  explicit rather than accidental. Also fixes the same staleness
+       *  for the unrelated case of navigating between two existing
+       *  questions' edit URLs directly, which never went through "new" at
+       *  all. */}
       {isNew ? (
-        <QuestionForm mode="create" categories={categories.data ?? []} onSaved={handleSaved} />
+        <QuestionForm
+          key={questionId}
+          mode="create"
+          categories={categories.data ?? []}
+          onSaved={handleSaved}
+        />
       ) : (
         <QuestionForm
+          key={questionId}
           mode="edit"
           question={question.data as QuestionDetail}
           categories={categories.data ?? []}

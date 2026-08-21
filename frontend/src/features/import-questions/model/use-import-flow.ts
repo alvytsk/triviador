@@ -1,6 +1,6 @@
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { confirmImport, dryRunImport, fetchRejectedCsv } from "@/entities/admin";
+import { adminKeys, confirmImport, dryRunImport, fetchRejectedCsv } from "@/entities/admin";
 import { ApiFetchError } from "@/shared/api";
 import type { ImportSummary } from "@/shared/api/generated/admin";
 import { adminErrorMessage } from "@/shared/lib/admin-errors";
@@ -68,7 +68,11 @@ export function useImportFlow(
   onImportIdChange: (importId: string | undefined) => void,
 ): ImportFlow {
   const [summary, setSummary] = useState<ImportSummary | null>(null);
+  const queryClient = useQueryClient();
 
+  // `dryRun` deliberately does NOT invalidate: it is a preview only, and
+  // writes nothing to the bank (`imports.py`'s dry-run route stages the
+  // upload, it does not confirm it) — there is no list state to catch up.
   const dryRun = useMutation({
     mutationFn: (file: File) => dryRunImport(file),
     onSuccess: (result) => {
@@ -86,7 +90,16 @@ export function useImportFlow(
       }
       return confirmImport(activeImportId);
     },
-    onSuccess: (result) => setSummary(result),
+    // Unlike `dryRun`, this one genuinely writes rows to the bank
+    // (`§10.3`) — the house pattern (`role-control.tsx`, `preset-form.tsx`,
+    // ...) applies here too, and was missing before this fix: a questions
+    // list the admin had open in another tab of this same session (or
+    // simply visited before running the import) never learned the import
+    // happened.
+    onSuccess: (result) => {
+      setSummary(result);
+      queryClient.invalidateQueries({ queryKey: adminKeys.questionsRoot() });
+    },
   });
 
   const download = useMutation({

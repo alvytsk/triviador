@@ -31,6 +31,16 @@ export interface Page {
  *  admin, can read it), so a non-admin screen that queries the same
  *  endpoint shares this cache entry rather than colliding with it. */
 export const adminKeys = {
+  /** A true prefix of every `questions(filters, page)` key below — pass this
+   *  to `invalidateQueries` and TanStack Query's default `exact: false`
+   *  matching catches every filter/page combination in one call, rather
+   *  than needing to know (or recompute) which combination is currently
+   *  mounted. Added for the cache-invalidation fix: no question mutation
+   *  (create, update, activate/deactivate, import-confirm) was
+   *  invalidating the list at all before this, so a screen the admin had
+   *  already visited kept showing the pre-mutation rows for the rest of
+   *  the session (`staleTime: Infinity`, `app/query-client.ts`). */
+  questionsRoot: () => ["admin", "questions"] as const,
   questions: (filters: QuestionFilters, page: Page) =>
     ["admin", "questions", filters, page] as const,
   question: (id: string) => ["admin", "question", id] as const,
