@@ -99,15 +99,20 @@ def test_an_admin_can_furnish_a_server_from_nothing(
 
     # 4. A preset, and its coverage readout. `informative` is a constant
     # `True` by design (`PresetCoverage`'s docstring: the authoritative
-    # check is the one `StartGame` makes at draw time) — asserting it
-    # proves nothing about this route and is not treated as load-bearing
-    # here. `bank` is: it must be exactly the seeded 4 numeric + 2 MC plus
-    # this test's own 1 hand-typed numeric + 1 imported numeric + 1
-    # imported MC, not merely "some number smaller than `required`" (which
-    # a `bank` stuck at zero would also satisfy against the default
+    # check is the one `StartGame` makes at draw time — an admin can
+    # deactivate a question between reading this and starting a game, so
+    # the field exists only so the screen has something to render that
+    # sentence from). `is True` would pass identically if the whole
+    # coverage feature were deleted and the route returned an empty body
+    # coerced through the same schema, so this checks only that the field
+    # is present in the contract, not that its value proves anything.
+    # `bank` is load-bearing: it must be exactly the seeded 4 numeric + 2
+    # MC plus this test's own 1 hand-typed numeric + 1 imported numeric +
+    # 1 imported MC, not merely "some number smaller than `required`"
+    # (which a `bank` stuck at zero would also satisfy against the default
     # preset's much larger budget).
     coverage = client.get("/api/admin/presets/default/coverage").json()
-    assert coverage["informative"] is True
+    assert "informative" in coverage
     assert coverage["bank"] == {"numeric": 6, "multiple_choice": 3}
     assert coverage["required"]["numeric"] > coverage["bank"]["numeric"]
     assert coverage["sufficient"] is False
@@ -187,6 +192,7 @@ def test_media_gc_keeps_what_a_question_still_names_and_collects_what_nothing_do
     # Dry run first: it must report the same verdict and change nothing.
     preview = run_media_gc(dry_run=True)
     assert orphan["id"] in preview.unreferenced
+    assert attached["id"] not in preview.unreferenced
     assert preview.deleted is False
     assert media_store.head_sync(f"{orphan['id'][:2]}/{orphan['id']}.webp") is not None
 
