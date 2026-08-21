@@ -350,17 +350,77 @@ git commit -m "feat(admin-ui): the question list, filtered and paged through the
 
 ## Task 4: The question editor
 
-**Files:** `frontend/src/features/edit-question/**`, `frontend/src/pages/admin/question-editor/**`, route pair for `_authed.admin.questions.$id`
-**Spec:** §10.2 — common fields plus kind-specific ones; exactly 4 choices and exactly 1 correct for MC; `correct_value` + optional unit for numeric; media upload inside the editor; duplicates warn and never block.
+**Files:**
+- Create: `frontend/src/app/routes/_authed.admin.questions.$questionId.tsx` + `.lazy.tsx`
+- Create: `frontend/src/features/edit-question/ui/question-form.tsx`, `.../ui/choice-editor.tsx`, `.../ui/media-field.tsx`, `.../model/use-question-form.ts`, `.../index.ts`
+- Create: `frontend/src/pages/admin/question-editor/ui/question-editor-page.tsx`, `.../index.ts`
+- Create: shadcn `dialog.tsx` and `toast.tsx` (or an equivalent inline status region) in `shared/ui/`
+- Test: `frontend/src/features/edit-question/question-form.test.tsx`, `frontend/src/pages/admin/question-editor/question-editor-page.test.tsx`
+- Modify: `frontend/src/app/routes/_authed.admin.questions.tsx` (switch the index redirect from `href` to `to`, now that this route exists — carried from Task 1)
 
-- [ ] **Failing test first**, then build. The assertions that matter:
-  - switching kind swaps the field set without losing the prompt;
-  - a fourth choice cannot be removed and a fifth cannot be added (four is fixed — §10.2: "a configurable count buys nothing and costs variability in the answer grid");
-  - marking a second choice correct un-marks the first;
-  - saving a prompt the bank already has shows the duplicate warning **and** the save succeeds — the response carries `duplicate_of` on a 201/200, never a 409;
-  - a rejected image renders `media_rejected`'s sentence, and the rest of the form survives;
-  - `deactivate`/`activate` flip the state without a full-page reload.
-- [ ] **Gate and commit.**
+**Interfaces:**
+- Consumes: `adminQuestionQueryOptions(id)`, `createQuestion`, `updateQuestion`, `activateQuestion`, `deactivateQuestion`, `uploadMedia`, `adminCategoriesQueryOptions` (Task 2); `adminErrorMessage` (Task 1).
+- Produces: the `/admin/questions/$questionId` route, with `new` as the id for a creation form.
+
+**Spec:** §10.2 — common fields (prompt, category, difficulty, media, `is_active`) plus kind-specific ones; **exactly 4 choices and exactly 1 correct** for multiple choice; `correct_value` plus optional unit for numeric; media upload inside the editor; a duplicate prompt **warns and never blocks**.
+
+- [ ] **Step 1: Write the failing tests**
+
+The assertions that carry the task:
+
+```tsx
+it("keeps the prompt when the kind changes", async () => {
+  // type a prompt, switch multiple_choice -> numeric, the prompt survives.
+  // A form that resets on kind change loses an admin's typing at the exact
+  // moment they realise they picked the wrong kind.
+});
+
+it("fixes the choice count at four", async () => {
+  // no control adds a fifth or removes the fourth. §10.2: "a configurable
+  // count buys nothing and costs variability in the answer grid".
+});
+
+it("moves the correct marker rather than accumulating it", async () => {
+  // marking choice 3 correct un-marks choice 1 — the backend rejects
+  // two-correct with a 422, so the form must make it unreachable.
+});
+
+it("saves a duplicate prompt and warns", async () => {
+  // 201 carrying duplicate_of: [id] -> the save succeeded AND a warning
+  // naming the existing question is shown. Never a blocking error: §10.2
+  // says legitimately similar phrasings exist.
+});
+
+it("keeps the form when an image is rejected", async () => {
+  // 415 media_rejected -> adminErrorMessage's sentence appears and every
+  // other field still holds what was typed. Losing a half-written question
+  // to a bad PNG is the worst small failure this screen can have.
+});
+
+it("flips active state without navigating away", async () => { /* deactivate then activate */ });
+```
+
+- [ ] **Step 2: Run them, watch them fail.**
+
+- [ ] **Step 3: The form**
+
+TanStack Form (already a dependency, used by Plan 6's sign-in and redeem) with the generated `questionWriteRequestSchema` as the validator, so the client's shape rules and the server's are the same rules. Do **not** re-declare the four-choices/one-correct constraint in hand-written validation — derive it from the schema.
+
+- [ ] **Step 4: Media inside the editor**
+
+Per §10.4 there is no separate media browser: the field uploads through `uploadMedia(file)` and stores the returned asset id on the form. A rejected upload sets a field-level error and leaves everything else intact (the test above). Show the returned `url` as a thumbnail so an admin can see what they attached.
+
+- [ ] **Step 5: Creation versus editing**
+
+`/admin/questions/new` renders an empty form and calls `createQuestion`; `/admin/questions/{id}` loads the question and calls `updateQuestion`. On a successful create, navigate to the saved question's id so a refresh does not re-create it.
+
+- [ ] **Step 6: Close Task 1's loose end**
+
+Task 1's `_authed.admin.index.tsx` used `redirect({ href: "/admin/questions" })` because `to` could not type-check before the route existed. Task 3 created it — switch to `to` and confirm `tsc` is happy.
+
+- [ ] **Step 7: Gate and commit**
+
+`pnpm check && pnpm test && pnpm check:bundle && pnpm codegen:check`.
 
 ---
 
