@@ -1,0 +1,24 @@
+# Production Garage. Single node, replication factor 1 — zero redundancy,
+# which is why §10.8's backup is the only copy of any object.
+#
+# No secret appears here. `rpc_secret_file` points at a file rendered from
+# GARAGE_RPC_SECRET before launch, because Garage does NOT interpolate
+# environment variables inside a mounted TOML.
+replication_factor = 1
+metadata_dir       = "/var/lib/garage/meta"
+data_dir           = "/var/lib/garage/data"
+db_engine          = "lmdb"
+rpc_bind_addr      = "[::]:3901"
+rpc_public_addr    = "garage:3901"
+rpc_secret_file    = "/run/secrets/garage_rpc_secret"
+
+[s3_api]
+api_bind_addr = "[::]:3900"
+s3_region     = "garage"
+
+[s3_web]
+bind_addr   = "[::]:3902"
+root_domain = ".web.garage.internal"
+
+[admin]
+api_bind_addr = "[::]:3903"
