@@ -426,16 +426,97 @@ Task 1's `_authed.admin.index.tsx` used `redirect({ href: "/admin/questions" })`
 
 ## Task 5: The two-phase import
 
-**Files:** `frontend/src/features/import-questions/**`, `frontend/src/pages/admin/import/**`, route pair
-**Spec:** §10.3 — dry-run reports per row; CONFIRM is enabled only when `rejected == 0`; the rejected rows download as CSV; confirming binds to that `import_id`.
+**Files:**
+- Create: `frontend/src/app/routes/_authed.admin.questions.import.tsx` + `.lazy.tsx`
+- Create: `frontend/src/features/import-questions/ui/{upload-step,report-table,confirm-bar}.tsx`, `.../model/use-import-flow.ts`, `.../index.ts`
+- Create: `frontend/src/pages/admin/import/ui/import-page.tsx`, `.../index.ts`
+- Modify: `frontend/src/pages/admin/questions/ui/questions-page.tsx` — **the entry point to this screen**
+- Test: `frontend/src/features/import-questions/import-flow.test.tsx`
 
-- [ ] **Failing test first.** The load-bearing assertions:
-  - the confirm button is disabled while `confirmable` is false, and **the screen reads `confirmable` from the response rather than recomputing `rejected_count === 0`** — the server also folds in status and expiry, and a client that re-derives it will eventually derive it differently;
-  - rejections render by line number with their reason;
-  - notices (duplicate prompts, in-file or against the bank) render as warnings that do **not** block confirm — §10.2's rule, and the place it is easiest to get wrong;
-  - the rejected-rows CSV downloads from `GET /api/admin/questions/import/{id}/rejected.csv`;
-  - a second confirm surfaces `import_not_confirmable`'s sentence rather than a raw failure.
-- [ ] **Gate and commit.**
+**Interfaces:**
+- Consumes: `dryRunImport(file)`, `confirmImport(id)`, `fetchRejectedCsv(id)` (Task 2); `adminErrorMessage` (Task 1); `renderRoute` (Task 3's test helper).
+- Produces: the `/admin/questions/import` route and the import wizard.
+
+**Spec:** §10.3 — two phases with no partial writes; the dry-run reports per row; CONFIRM is enabled only when `rejected == 0`; the admin downloads rejected rows as CSV, fixes them, repeats; confirming binds to that `import_id` and `upload_sha256`.
+
+- [ ] **Step 1: The entry point, because otherwise this screen is unreachable**
+
+Task 1 established the admin nav as questions / invites / users / presets — import is **not** a top-level item, because §9.7 groups it as `/admin/questions · /:id · /import`. That means nothing links here yet. Add the link on the questions list page (next to its "add question" affordance, and in the empty-bank state, which Task 3 already points at `/admin/questions/import`). Verify by navigating from the list in a test, not by typing the URL.
+
+- [ ] **Step 2: Write the failing tests**
+
+```tsx
+it("reads `confirmable` from the response rather than recomputing it", async () => {
+  // dry-run responds rejected_count: 0 but confirmable: false (an expired
+  // upload — the server folds status and expiry in too). CONFIRM must be
+  // disabled. A screen that recomputes `rejected_count === 0` shows a live
+  // button on a dead import, and this test is the only thing that catches it.
+});
+
+it("renders rejections by line number with their reason", async () => { /* ... */ });
+
+it("shows notices as warnings that do not block confirm", async () => {
+  // duplicate prompts, in-file or against the bank. §10.2: a digest match
+  // is a warning on save *and on import*. If a notice disabled CONFIRM,
+  // a file with one accidental repeat could never be applied at all.
+});
+
+it("downloads the rejected rows as CSV", async () => { /* asserts the request, and that the response is offered as a file */ });
+
+it("surfaces import_not_confirmable on a second confirm", async () => {
+  // 409 -> adminErrorMessage's sentence, not a raw failure.
+});
+
+it("sends the file as raw bytes with X-Filename", async () => {
+  // guards Task 2's contract from the UI side: a FormData body fails
+  // against the real backend.
+});
+```
+
+- [ ] **Step 3..5: the wizard** — upload step, report table, confirm bar. Keep the phases as one screen with visible state rather than a multi-route wizard: an admin who reloads mid-flow should land somewhere sensible, and the `import_id` is the only durable handle.
+
+- [ ] **Step 6: Gate and commit** — including `pnpm check:bundle`, confirming the eager route file pulled in no admin schema.
+
+---
+
+## Task 6: Invites
+
+**Files:**
+- Create: `frontend/src/app/routes/_authed.admin.invites.tsx` + `.lazy.tsx`
+- Create: `frontend/src/features/manage-invites/ui/{issue-dialog,invite-table}.tsx`, `.../index.ts`
+- Create: `frontend/src/pages/admin/invites/ui/invites-page.tsx`, `.../index.ts`
+- Create: shadcn `dialog.tsx` in `shared/ui/` if Task 4 has not already vendored it
+- Test: `frontend/src/features/manage-invites/manage-invites.test.tsx`
+
+**Interfaces:** consumes `adminInvitesQueryOptions`, `issueInvites`, `revokeInvite` (Task 2).
+
+**Spec:** §10.5 — issue N codes with an expiry, list with status, revoke. Redemption is the public `POST /auth/redeem`.
+
+- [ ] **Step 1: Failing tests**
+
+```tsx
+it("shows issued codes once, and says so", async () => {
+  // The backend stores only a digest; the plaintext exists in exactly one
+  // response. The dialog must present the codes copyably AND state they
+  // will not be shown again — an admin who closes it without copying has
+  // to issue new ones.
+});
+
+it("never asks for a code in the listing", async () => {
+  // the list renders status only. If a code could be re-read from a list
+  // endpoint, hashing it would be decorative.
+});
+
+it("renders all four statuses", async () => { /* pending / used / revoked / expired */ });
+
+it("treats a second revoke as success, not an error", async () => {
+  // the backend answers 200 both times: an admin clicking twice has not
+  // made a mistake, and the second click is indistinguishable from a retry.
+});
+```
+
+- [ ] **Step 2..4: the screen.** The issue dialog takes a count (1..500) and an expiry in hours; the table shows status, expiry, and who redeemed.
+- [ ] **Step 5: Gate and commit.**
 
 ---
 
@@ -453,12 +534,119 @@ Task 1's `_authed.admin.index.tsx` used `redirect({ href: "/admin/questions" })`
 
 ## Task 7: Users
 
-**Files:** `frontend/src/features/manage-users/**`, `frontend/src/pages/admin/users/**`, route pair
-**Spec:** §10.5 — list, deactivate, grant/revoke admin; cannot deactivate self; cannot demote the last admin.
+**Files:**
+- Create: `frontend/src/app/routes/_authed.admin.users.tsx` + `.lazy.tsx`
+- Create: `frontend/src/features/manage-users/ui/{user-table,role-control,deactivate-control}.tsx`, `.../index.ts`
+- Create: `frontend/src/pages/admin/users/ui/users-page.tsx`, `.../index.ts`
+- Test: `frontend/src/features/manage-users/manage-users.test.tsx`
 
-- [ ] Both refusals render their own sentence: `self_target` and `last_admin`. A generic toast here is the failure this task exists to avoid — these are the two moments an admin most needs to be told exactly what happened.
-- [ ] Deactivation is presented as what it is: immediate, and it signs that user out of every session. The copy should say so.
-- [ ] **Gate and commit.**
+**Interfaces:** consumes `adminUsersQueryOptions`, `deactivateUser`, `setUserRole` (Task 2); `adminErrorMessage` (Task 1).
+
+**Spec:** §10.5 — list, deactivate, grant/revoke admin. Constraints: **cannot deactivate self; cannot demote the last admin.** Deactivation kills sessions immediately.
+
+- [ ] **Step 1: Failing tests**
+
+```tsx
+it("renders self_target's sentence when an admin deactivates themselves", async () => {
+  // 409 self_target. A generic "something went wrong" here is the failure
+  // this screen exists to avoid — the admin needs to know it was *their own
+  // row*, and that another administrator has to do it.
+});
+
+it("renders last_admin's sentence when the last admin is demoted", async () => {
+  // 409 last_admin -> "promote someone else first".
+});
+
+it("says deactivation signs the user out everywhere", async () => {
+  // §10.5: deactivation kills sessions immediately and closes their socket.
+  // The confirmation copy must say so — an admin who thinks this is a soft
+  // flag will use it on a live player mid-game.
+});
+
+it("shows the new role after a successful change", async () => { /* optimistic or refetched, but visible */ });
+```
+
+- [ ] **Step 2..4: the screen.** A table of username, display name, role and active state, with a role control and a deactivate control per row. Both refusals surface through `adminErrorMessage`.
+
+- [ ] **Step 5: Gate and commit** — including `pnpm check:bundle`.
+
+---
+
+## Task 8: Presets, and the coverage readout
+
+**Files:**
+- Create: `frontend/src/app/routes/_authed.admin.presets.tsx` + `.lazy.tsx`
+- Create: `frontend/src/features/manage-presets/ui/{preset-list,preset-form,coverage-panel}.tsx`, `.../index.ts`
+- Create: `frontend/src/pages/admin/presets/ui/presets-page.tsx`, `.../index.ts`
+- Test: `frontend/src/features/manage-presets/manage-presets.test.tsx`
+
+**Interfaces:** consumes `adminPresetsQueryOptions`, `adminPresetCoverageQueryOptions`, `createPreset`, `updatePreset`, `deactivatePreset` (Task 2).
+
+**Spec:** §10.6 — CRUD over `GameRules`; validation on save; a coverage readout computed from `required_question_budget`; and the explicit note that editing a preset does not affect running games.
+
+- [ ] **Step 1: Failing tests**
+
+```tsx
+it("shows the server's validation messages rather than its own", async () => {
+  // 422 with validate_rules' text. `validate_rules` is the single definition
+  // of a legal ruleset; a client that restates its bounds is a second copy
+  // that drifts. Assert the server's sentence appears verbatim.
+});
+
+it("renders coverage as need-vs-bank per kind, and says it is informative", async () => {
+  // §10.6: an admin can deactivate a question between reading this and
+  // starting a game, so `StartGame` is the authoritative check. The screen
+  // states that in words — the `informative` field exists so the copy comes
+  // from the contract rather than being invented here.
+});
+
+it("renders default_preset's sentence for both refusals", async () => {
+  // clearing the default, and promoting a retired preset. Both 409
+  // default_preset with different messages from the server.
+});
+
+it("shows a retired preset as retired, and can open it", async () => {
+  // Plan 7A added `get_including_retired` precisely so this screen can
+  // show one. There is deliberately no reactivation route.
+});
+
+it("says editing a preset does not affect running games", async () => {
+  // §10.6, and it is true because games.rules holds a frozen copy (§6.2).
+});
+```
+
+- [ ] **Step 2..4: the screen.** A list with the default marked, a rules form, and the coverage panel.
+- [ ] **Step 5: Gate and commit.**
+
+---
+
+## Task 9: The lobby preset picker
+
+**Files:**
+- Modify: `frontend/src/features/create-game/ui/**` (the panel Plan 6 shipped)
+- Test: alongside the existing create-game tests
+
+Plan 6 shipped a fixed line: `Default rules — presets are configurable from the admin screens.` Plan 7A added `GET /api/presets` (its Decision 1) so this becomes a real picker.
+
+**This is the one 7B task that touches the player surface**, so it is also the one where a careless import would put admin schemas in the player bundle. `GET /api/presets` is a **public** route: its `PresetSummary`/`RulesView` live in the player contract (`generated/public.ts`), not `generated/admin.ts`. Import from the public module. If you find yourself reaching into `entities/admin`, stop — you have the wrong module.
+
+- [ ] **Step 1: Failing tests** — the picker lists active presets, defaults to the one flagged `is_default`, sends its id as `preset_id` (not `null`), and the rules readout reflects the selection. One preset available should read as a sensible non-choice rather than an empty select.
+- [ ] **Step 2..3: the picker.**
+- [ ] **Step 4: Gate and commit** — `pnpm check:bundle` matters more here than anywhere else.
+
+---
+
+## Task 10: One admin session through the UI
+
+**Files:** `frontend/src/app/admin-session.test.tsx`
+
+The counterpart to Plan 6's `full-game.test.tsx` and Plan 7A's `test_admin_session.py`: one test walking the whole admin story through the rendered app against MSW — sign in as an admin, create a category, add a question, run an import, issue an invite, retire a preset — asserting the screens agree with each other (a question added on one screen appears in the list on another).
+
+**This task adds no source file.** If it needs one, an earlier task is incomplete — report that rather than patching around it.
+
+- [ ] **Step 1:** walk the story, navigating between screens the way an operator would (clicking, not by URL), so the test also proves every screen is reachable.
+- [ ] **Step 2: The whole-plan gate** — `pnpm check && pnpm test && pnpm check:bundle && pnpm codegen:check`, plus the backend suite still green and untouched.
+- [ ] **Step 3: Commit.**
 
 ---
 
