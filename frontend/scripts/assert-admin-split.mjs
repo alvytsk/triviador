@@ -46,12 +46,24 @@
 // `pnpm check:bundle` fail check 1 with `/admin/users found in
 // assets/index-*.js, part of the entry graph`, traced to
 // `routeTree.gen.ts`'s new `fullPath: '/admin/users'` entry, not to
-// anything `UsersPage` itself imports. The remaining admin nav href
-// (`/admin/presets`) still works as a marker today because no route is
-// registered at that path yet (Task 8 owns it) — the day that task adds
-// its route file, its own href needs the same exclusion, for the same
-// reason, or `check:bundle` will fail on infrastructure this check was
-// never meant to flag.
+// anything `UsersPage` itself imports. `/admin/presets` — the last of
+// AdminShell's five nav hrefs — is REMOVED as of Task 8, same mechanism:
+// wiring `_authed.admin.presets.tsx` puts `fullPath: '/admin/presets'`
+// into `routeTree.gen.ts`'s route-info map the instant the route is
+// registered, regardless of anything `PresetsPage` itself imports, so
+// leaving it in this list would fail check 1 on infrastructure this
+// check was never meant to flag — exactly as the four before it did.
+// With all five nav hrefs gone, this list's only remaining members are
+// the two schema markers below; Task 8 adds no third. Ruling carried in
+// from Task 6's mutation-test finding: `generated/admin.ts` is retained
+// WHOLE by Rollup once any single export is used (proven empirically —
+// see that task's report — by importing `importSummarySchema` alone into
+// an eager file and observing BOTH `duplicate_of` and `used_by` leak, not
+// just one), so a leak of `presetDetailSchema`/`presetCoverageSchema`
+// content trips the existing two markers exactly as any other admin
+// schema leak would. A third marker drawn from a presets-only field
+// would only ever be redundant with that finding, not additionally
+// protective.
 //
 // `duplicate_of` is Task 2's addition, and it is schema content rather
 // than routing content: it is the one object key in the 27 schemas
@@ -98,7 +110,7 @@
 // constructed at runtime and would not have worked as a marker). Found
 // only in `_authed.admin.invites.lazy-*.js` when this task wired the
 // route (see this task's report for the `pnpm check:bundle` output).
-const ADMIN_ONLY_MARKERS = ["/admin/presets", "duplicate_of", "used_by"];
+const ADMIN_ONLY_MARKERS = ["duplicate_of", "used_by"];
 
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";

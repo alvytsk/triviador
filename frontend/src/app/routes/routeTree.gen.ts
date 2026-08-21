@@ -16,6 +16,7 @@ import { Route as AuthedIndexRouteImport } from './_authed.index'
 import { Route as AuthedAdminRouteImport } from './_authed.admin'
 import { Route as AuthedAdminIndexRouteImport } from './_authed.admin.index'
 import { Route as AuthedAdminInvitesRouteImport } from './_authed.admin.invites'
+import { Route as AuthedAdminPresetsRouteImport } from './_authed.admin.presets'
 import { Route as AuthedAdminUsersRouteImport } from './_authed.admin.users'
 import { Route as AuthedGamesGameIdRouteImport } from './_authed.games.$gameId'
 import { Route as AuthedAdminQuestionsIndexRouteImport } from './_authed.admin.questions.index'
@@ -58,6 +59,13 @@ const AuthedAdminInvitesRoute = AuthedAdminInvitesRouteImport.update({
 } as any).lazy(() =>
   import('./_authed.admin.invites.lazy').then((d) => d.Route),
 )
+const AuthedAdminPresetsRoute = AuthedAdminPresetsRouteImport.update({
+  id: '/presets',
+  path: '/presets',
+  getParentRoute: () => AuthedAdminRoute,
+} as any).lazy(() =>
+  import('./_authed.admin.presets.lazy').then((d) => d.Route),
+)
 const AuthedAdminUsersRoute = AuthedAdminUsersRouteImport.update({
   id: '/users',
   path: '/users',
@@ -99,6 +107,7 @@ export interface FileRoutesByFullPath {
   '/redeem': typeof RedeemRoute
   '/admin': typeof AuthedAdminRouteWithChildren
   '/admin/invites': typeof AuthedAdminInvitesRoute
+  '/admin/presets': typeof AuthedAdminPresetsRoute
   '/admin/users': typeof AuthedAdminUsersRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin/': typeof AuthedAdminIndexRoute
@@ -111,6 +120,7 @@ export interface FileRoutesByTo {
   '/redeem': typeof RedeemRoute
   '/': typeof AuthedIndexRoute
   '/admin/invites': typeof AuthedAdminInvitesRoute
+  '/admin/presets': typeof AuthedAdminPresetsRoute
   '/admin/users': typeof AuthedAdminUsersRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin': typeof AuthedAdminIndexRoute
@@ -126,6 +136,7 @@ export interface FileRoutesById {
   '/_authed/admin': typeof AuthedAdminRouteWithChildren
   '/_authed/': typeof AuthedIndexRoute
   '/_authed/admin/invites': typeof AuthedAdminInvitesRoute
+  '/_authed/admin/presets': typeof AuthedAdminPresetsRoute
   '/_authed/admin/users': typeof AuthedAdminUsersRoute
   '/_authed/games/$gameId': typeof AuthedGamesGameIdRoute
   '/_authed/admin/': typeof AuthedAdminIndexRoute
@@ -141,6 +152,7 @@ export interface FileRouteTypes {
     | '/redeem'
     | '/admin'
     | '/admin/invites'
+    | '/admin/presets'
     | '/admin/users'
     | '/games/$gameId'
     | '/admin/'
@@ -153,6 +165,7 @@ export interface FileRouteTypes {
     | '/redeem'
     | '/'
     | '/admin/invites'
+    | '/admin/presets'
     | '/admin/users'
     | '/games/$gameId'
     | '/admin'
@@ -167,6 +180,7 @@ export interface FileRouteTypes {
     | '/_authed/admin'
     | '/_authed/'
     | '/_authed/admin/invites'
+    | '/_authed/admin/presets'
     | '/_authed/admin/users'
     | '/_authed/games/$gameId'
     | '/_authed/admin/'
@@ -232,6 +246,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminInvitesRouteImport
       parentRoute: typeof AuthedAdminRoute
     }
+    '/_authed/admin/presets': {
+      id: '/_authed/admin/presets'
+      path: '/presets'
+      fullPath: '/admin/presets'
+      preLoaderRoute: typeof AuthedAdminPresetsRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
     '/_authed/admin/users': {
       id: '/_authed/admin/users'
       path: '/users'
@@ -272,6 +293,7 @@ declare module '@tanstack/react-router' {
 
 interface AuthedAdminRouteChildren {
   AuthedAdminInvitesRoute: typeof AuthedAdminInvitesRoute
+  AuthedAdminPresetsRoute: typeof AuthedAdminPresetsRoute
   AuthedAdminUsersRoute: typeof AuthedAdminUsersRoute
   AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
   AuthedAdminQuestionsQuestionIdRoute: typeof AuthedAdminQuestionsQuestionIdRoute
@@ -281,6 +303,7 @@ interface AuthedAdminRouteChildren {
 
 const AuthedAdminRouteChildren: AuthedAdminRouteChildren = {
   AuthedAdminInvitesRoute: AuthedAdminInvitesRoute,
+  AuthedAdminPresetsRoute: AuthedAdminPresetsRoute,
   AuthedAdminUsersRoute: AuthedAdminUsersRoute,
   AuthedAdminIndexRoute: AuthedAdminIndexRoute,
   AuthedAdminQuestionsQuestionIdRoute: AuthedAdminQuestionsQuestionIdRoute,
