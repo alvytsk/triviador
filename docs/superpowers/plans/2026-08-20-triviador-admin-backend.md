@@ -6072,7 +6072,7 @@ git commit -m "feat(admin): media-gc — retirable staging, two-way reference ch
 - Test: `backend/tests/api/test_admin_invites.py`, `backend/tests/db/test_admin_repositories.py` (append)
 
 **Interfaces:**
-- Produces: `services.admin.InviteRecord(invite_id, status, expires_at, created_at, used_by)`, `InviteAdminPort.issue(count, expires_at, created_by) -> tuple[IssuedInvite, ...]`, `.list() -> tuple[InviteRecord, ...]`, `.revoke(invite_id, at) -> bool`; `POST /api/admin/invites`, `GET /api/admin/invites`, `POST /api/admin/invites/{id}/revoke`
+- Produces: `services.admin.InviteRecord(invite_id, status, expires_at, used_by)` — no `created_at`: Spec 1 §7's `invite_codes` schema has none, §10.5 does not ask for one, and it would reach no response, `InviteAdminPort.issue(count, expires_at, created_by) -> tuple[IssuedInvite, ...]`, `.list() -> tuple[InviteRecord, ...]`, `.revoke(invite_id, at) -> bool`; `POST /api/admin/invites`, `GET /api/admin/invites`, `POST /api/admin/invites/{id}/revoke`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6190,7 +6190,6 @@ Append to `backend/src/triviador/db/repositories/auth.py`, inside `InviteReposit
             InviteRecord(
                 invite_id=row.id,
                 status=_invite_status(row, now=now),
-                created_at=row.expires_at,
                 expires_at=row.expires_at,
                 used_by=row.used_by,
             )
