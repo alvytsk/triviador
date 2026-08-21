@@ -15,25 +15,46 @@
 // identifiers. `questionWriteRequestSchema` (Plan 7A's example of an
 // "admin-only identifier") is a plausible-sounding target, but it is also
 // exactly the kind of top-level binding name a production minifier is
-// free to rename — and nothing in the app imports `generated/admin.ts`
-// yet regardless (that lands in Task 2), so no chunk anywhere would
-// contain it today. String *literals* are never renamed by a minifier,
-// and `AdminShell`'s five nav hrefs already are real, permanent, string
+// free to rename. String *literals* are never renamed by a minifier, and
+// `AdminShell`'s five nav hrefs already are real, permanent, string
 // literals that exist for no reason other than "the admin nav points at
 // admin-only screens" — `/admin/questions` itself is excluded because
 // `_authed.admin.index.tsx`'s redirect target is eager route code (only a
 // route's `component` is lazy-split, never its `beforeLoad`) and so
 // legitimately also contains that one substring; the other four do not
-// appear anywhere outside the admin tree. Once Task 2 wires
-// `entities/admin` into a real screen, this list should grow to include a
-// property-key string unique to an admin DTO (property keys are string
-// literals too, and survive minification the same way) — see the plan's
-// Important #1.
+// appear anywhere outside the admin tree.
+//
+// `duplicate_of` is Task 2's addition, and it is schema content rather
+// than routing content: it is the one object key in the 27 schemas
+// `entities/admin` now imports from `generated/admin.ts`
+// (`questionSavedSchema`'s `duplicate_of` field) that appears nowhere
+// else in this codebase — confirmed with
+// `grep -rn '"duplicate_of"' frontend/src` before it was chosen. A Zod
+// `z.object({...})` key is a string literal in the emitted source the same
+// way `AdminShell`'s hrefs are, so it survives minification the same way,
+// and — unlike a bare identifier — it can only appear in a chunk that
+// actually constructs `questionSavedSchema`, not merely one that imports
+// something that happens to share a binding name.
+//
+// As of Task 2, `duplicate_of` is not actually found in either the eager
+// or the lazy set: `entities/admin/` exists and is fully tested, but no
+// screen imports it yet (Tasks 3+ own the question editor that calls
+// `createQuestion`/`updateQuestion`, the only functions that touch
+// `questionSavedSchema`). It is listed now, ahead of that wiring, so the
+// day a screen does import it, this check starts enforcing the split on
+// real schema content immediately rather than needing a second edit here.
+// The four href markers below still make check 2 ("something is in the
+// lazy set") non-vacuous today; Task 2's report documents a manual,
+// temporary-import verification that `duplicate_of` itself behaves
+// correctly (found only in a lazy chunk when wired in; leaks into the
+// eager set and fails check 1 when hoisted into a player-reachable file)
+// without leaving that wiring in the tree.
 const ADMIN_ONLY_MARKERS = [
   "/admin/questions/import",
   "/admin/invites",
   "/admin/users",
   "/admin/presets",
+  "duplicate_of",
 ];
 
 import { readFileSync } from "node:fs";
