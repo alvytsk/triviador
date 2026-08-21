@@ -15,6 +15,11 @@ services:
       TZ: UTC
     volumes:
       - ./data/maps:/data/maps:ro
+      # The SAME host path infra/backup.sh flocks (§10.8) — `triviador
+      # media-gc` runs in this container, and the exclusion only holds if
+      # both sides bind the identical host path. See
+      # backend/src/triviador/media/lock.py.
+      - /var/lock/triviador-media.lock:/var/lock/triviador-media.lock
     # NOT published. Caddy reaches it over the compose network.
     expose:
       - "8000"
@@ -68,6 +73,52 @@ services:
       - caddy_config:/config
     environment:
       TZ: UTC
+
+  backup:
+    # §10.8. Never started by a plain `up -d` — only
+    # `--profile backup run --rm backup`, since a scheduled task invokes
+    # it, not the running stack.
+    profiles: ["backup"]
+    build:
+      context: .
+      dockerfile: infra/backup.Dockerfile
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      TZ: UTC
+      BACKUP_DEST: /backups
+      # `pg_dump`/`pg_restore` read this directly — without it, `pg_dump`
+      # falls back to an interactive password prompt, which has no
+      # terminal to prompt on inside `docker compose run` and fails
+      # instead (verified: "fe_sendauth: no password supplied").
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      # Re-mapped from the TRIVIADOR_-prefixed name in .env, the same
+      # convention infra/garage/init.sh uses — env_file alone would leave
+      # backup.sh's bare $S3_MEDIA_BUCKET unset.
+      S3_MEDIA_BUCKET: ${TRIVIADOR_MEDIA_BUCKET:-triviador-media}
+      # rclone's `garage:` remote, driven entirely by env vars so no
+      # credential ever needs to be baked into infra/backup.Dockerfile or
+      # written to an rclone.conf. Path-style addressing: virtual-host
+      # style needs per-bucket DNS that does not exist inside the compose
+      # network.
+      RCLONE_CONFIG_GARAGE_TYPE: s3
+      RCLONE_CONFIG_GARAGE_PROVIDER: Other
+      RCLONE_CONFIG_GARAGE_ENV_AUTH: "false"
+      RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID: ${TRIVIADOR_S3_ACCESS_KEY_ID:?}
+      RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY: ${TRIVIADOR_S3_SECRET_ACCESS_KEY:?}
+      RCLONE_CONFIG_GARAGE_ENDPOINT: http://garage:3900
+      RCLONE_CONFIG_GARAGE_REGION: garage
+      RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE: "true"
+    volumes:
+      # The SAME host path media-gc binds — see infra/backup.sh and the
+      # backend service's identical mount above.
+      - /var/lock/triviador-media.lock:/var/lock/triviador-media.lock
+      - ${BACKUP_DEST:?set BACKUP_DEST — a Windows disk, external drive or NAS, NEVER inside the WSL vhdx}:/backups
 
 volumes:
   web:

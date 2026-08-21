@@ -15,6 +15,7 @@ is allowed to start.
 import argparse
 import asyncio
 import csv
+import fcntl
 import io
 import random
 import sys
@@ -43,6 +44,7 @@ from triviador.domain.ids import UserId
 from triviador.domain.questions.types import Difficulty, QuestionKind
 from triviador.imports.retire import ImportRetirer
 from triviador.media.gc import MediaCollector
+from triviador.media.lock import MEDIA_LOCK_PATH
 from triviador.runtime.clock import SystemClock
 from triviador.services.identity import PasswordHasher, UserRole, UserStore
 from triviador.storage.s3 import S3ImportStagingStore, S3MediaStore
@@ -263,38 +265,52 @@ async def _seed_questions_command(args: argparse.Namespace) -> int:
 async def _media_gc_command(args: argparse.Namespace) -> int:
     """Rare and destructive, so it is a command and not a screen (§10.4) —
     and it prints what it did, because an operator running this at 2 a.m.
-    needs to be able to tell "nothing to collect" from "did not run"."""
+    needs to be able to tell "nothing to collect" from "did not run".
+
+    Held under `MEDIA_LOCK_PATH` for the whole run — the identical host
+    path `infra/backup.sh` flocks (see `triviador.media.lock`) — so this
+    command's deletions can never interleave with a concurrent backup's
+    `rclone copy`/`rclone check`. Without that exclusion, this command
+    could delete an object a running backup has not copied yet, or delete
+    one between the backup's copy and its verification, turning a healthy
+    backup into a spurious failure.
+    """
     settings = get_settings()
-    async with engine_for(settings.database_url) as engine:
-        sessionmaker = sessionmaker_for(engine)
-        staging = S3ImportStagingStore(
-            endpoint_url=settings.s3_endpoint_url,
-            region=settings.s3_region,
-            access_key_id=settings.s3_access_key_id,
-            secret_access_key=settings.s3_secret_access_key.get_secret_value(),
-            bucket=settings.staging_bucket,
-        )
-        media = S3MediaStore(
-            endpoint_url=settings.s3_endpoint_url,
-            region=settings.s3_region,
-            access_key_id=settings.s3_access_key_id,
-            secret_access_key=settings.s3_secret_access_key.get_secret_value(),
-            bucket=settings.media_bucket,
-        )
-        # Imports first: retiring a staged upload can only ever *reduce*
-        # what the media sweep has to consider, and running the sweep
-        # first would leave every just-expired object for the next run.
-        clock = SystemClock()
-        retired = await ImportRetirer(
-            imports=QuestionImportRepository(sessionmaker),
-            staging=staging,
-            clock=clock,
-        ).run(after_restore=args.after_restore, dry_run=args.dry_run)
-        collected = await MediaCollector(
-            assets=MediaAssetRepository(sessionmaker),
-            store=media,
-            grace=timedelta(minutes=settings.media_gc_grace_minutes),
-        ).run(now=clock.now(), dry_run=args.dry_run)
+    MEDIA_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(MEDIA_LOCK_PATH, "a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        async with engine_for(settings.database_url) as engine:
+            sessionmaker = sessionmaker_for(engine)
+            staging = S3ImportStagingStore(
+                endpoint_url=settings.s3_endpoint_url,
+                region=settings.s3_region,
+                access_key_id=settings.s3_access_key_id,
+                secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+                bucket=settings.staging_bucket,
+            )
+            media = S3MediaStore(
+                endpoint_url=settings.s3_endpoint_url,
+                region=settings.s3_region,
+                access_key_id=settings.s3_access_key_id,
+                secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+                bucket=settings.media_bucket,
+            )
+            # Imports first: retiring a staged upload can only ever *reduce*
+            # what the media sweep has to consider, and running the sweep
+            # first would leave every just-expired object for the next run.
+            clock = SystemClock()
+            retired = await ImportRetirer(
+                imports=QuestionImportRepository(sessionmaker),
+                staging=staging,
+                clock=clock,
+            ).run(after_restore=args.after_restore, dry_run=args.dry_run)
+            collected = await MediaCollector(
+                assets=MediaAssetRepository(sessionmaker),
+                store=media,
+                grace=timedelta(minutes=settings.media_gc_grace_minutes),
+            ).run(now=clock.now(), dry_run=args.dry_run)
+        # Released here, at the end of the `with` block — the flock is
+        # dropped automatically when the lock file descriptor closes.
 
     verb = "would expire" if args.dry_run else "expired"
     print(f"imports {verb} {retired.expired}, staged objects {retired.objects_deleted}")
