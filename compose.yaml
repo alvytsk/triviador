@@ -57,6 +57,13 @@ services:
       S3_STAGING_BUCKET: ${TRIVIADOR_STAGING_BUCKET:-triviador-staging}
     volumes:
       - ./infra/garage/garage.toml:/etc/garage.toml:ro
+      # Read-only, and only ever read: `init.sh` extracts the `garage`
+      # service's node ID from `node_key.pub` (a plain 32-byte file, not
+      # part of the LMDB store) so it can address it over RPC via
+      # `--rpc-host`. It never opens `db.lmdb`, so this shares no write
+      # access with the concurrently-running server — see init.sh for why
+      # that distinction matters.
+      - garage_meta:/var/lib/garage/meta:ro
     secrets:
       - garage_rpc_secret
 
