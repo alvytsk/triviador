@@ -1,8 +1,14 @@
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createMemoryHistory, createRouter, RouterContextProvider } from "@tanstack/react-router";
+import {
+  createMemoryHistory,
+  createRouter,
+  RouterContextProvider,
+  RouterProvider,
+} from "@tanstack/react-router";
 import { type RenderResult, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, vi } from "vitest";
+import { Providers } from "@/app/app-providers";
 import { createEventBus, type EventBus } from "@/app/event-bus";
 import { createQueryClient } from "@/app/query-client";
 import { routeTree } from "@/app/routes/routeTree.gen";
@@ -120,4 +126,45 @@ export function renderWithApp(
 
   const result = render(ui, { wrapper: Wrapper });
   return { ...result, queryClient, socket, client, router, bus };
+}
+
+function createFullRouter(queryClient: QueryClient, initialPath: string) {
+  const history = createMemoryHistory({ initialEntries: [initialPath] });
+  return createRouter({ routeTree, context: { queryClient }, history });
+}
+
+export interface RouteHarness extends RenderResult {
+  queryClient: ReturnType<typeof createQueryClient>;
+  router: ReturnType<typeof createFullRouter>;
+}
+
+/**
+ * For a test that needs *real* URL-driven routing — a route's
+ * `validateSearch`/`loader` actually running, `useSearch()`/`useNavigate()`
+ * resolving against a genuinely matched route, `router.state.location.search`
+ * reflecting what the page wrote — rather than `renderWithApp`'s
+ * arbitrary-`ui` shortcut (`RouterContextProvider` alone never renders the
+ * matched tree, so a route's own `validateSearch`/`loader` never runs
+ * through it).
+ *
+ * Mirrors `admin-guard.test.tsx`'s own harness — the first place this
+ * pattern was needed — through the same real `Providers` tree, rather than
+ * duplicating that setup a second time per page. The module-level
+ * `WebSocket` stub above applies here too, so `SocketWhenSignedIn` (which
+ * `Providers` always mounts) never opens a real connection.
+ */
+export function renderRoute(
+  initialPath: string,
+  options: { seed?: (harness: { queryClient: QueryClient }) => void } = {},
+): RouteHarness {
+  const queryClient = createQueryClient();
+  const router = createFullRouter(queryClient, initialPath);
+  options.seed?.({ queryClient });
+
+  const result = render(
+    <Providers queryClient={queryClient}>
+      <RouterProvider router={router} />
+    </Providers>,
+  );
+  return { ...result, queryClient, router };
 }

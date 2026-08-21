@@ -15,6 +15,7 @@ import { Route as RedeemRouteImport } from './redeem'
 import { Route as AuthedIndexRouteImport } from './_authed.index'
 import { Route as AuthedAdminRouteImport } from './_authed.admin'
 import { Route as AuthedAdminIndexRouteImport } from './_authed.admin.index'
+import { Route as AuthedAdminQuestionsRouteImport } from './_authed.admin.questions'
 import { Route as AuthedGamesGameIdRouteImport } from './_authed.games.$gameId'
 
 const AuthedRoute = AuthedRouteImport.update({
@@ -46,6 +47,13 @@ const AuthedAdminIndexRoute = AuthedAdminIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthedAdminRoute,
 } as any)
+const AuthedAdminQuestionsRoute = AuthedAdminQuestionsRouteImport.update({
+  id: '/questions',
+  path: '/questions',
+  getParentRoute: () => AuthedAdminRoute,
+} as any).lazy(() =>
+  import('./_authed.admin.questions.lazy').then((d) => d.Route),
+)
 const AuthedGamesGameIdRoute = AuthedGamesGameIdRouteImport.update({
   id: '/games/$gameId',
   path: '/games/$gameId',
@@ -57,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
   '/admin': typeof AuthedAdminRouteWithChildren
+  '/admin/questions': typeof AuthedAdminQuestionsRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin/': typeof AuthedAdminIndexRoute
 }
@@ -64,6 +73,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
   '/': typeof AuthedIndexRoute
+  '/admin/questions': typeof AuthedAdminQuestionsRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
   '/admin': typeof AuthedAdminIndexRoute
 }
@@ -74,15 +84,28 @@ export interface FileRoutesById {
   '/redeem': typeof RedeemRoute
   '/_authed/admin': typeof AuthedAdminRouteWithChildren
   '/_authed/': typeof AuthedIndexRoute
+  '/_authed/admin/questions': typeof AuthedAdminQuestionsRoute
   '/_authed/games/$gameId': typeof AuthedGamesGameIdRoute
   '/_authed/admin/': typeof AuthedAdminIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/login' | '/redeem' | '/admin' | '/games/$gameId' | '/admin/'
+    | '/'
+    | '/login'
+    | '/redeem'
+    | '/admin'
+    | '/admin/questions'
+    | '/games/$gameId'
+    | '/admin/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/redeem' | '/' | '/games/$gameId' | '/admin'
+  to:
+    | '/login'
+    | '/redeem'
+    | '/'
+    | '/admin/questions'
+    | '/games/$gameId'
+    | '/admin'
   id:
     | '__root__'
     | '/_authed'
@@ -90,6 +113,7 @@ export interface FileRouteTypes {
     | '/redeem'
     | '/_authed/admin'
     | '/_authed/'
+    | '/_authed/admin/questions'
     | '/_authed/games/$gameId'
     | '/_authed/admin/'
   fileRoutesById: FileRoutesById
@@ -144,6 +168,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAdminIndexRouteImport
       parentRoute: typeof AuthedAdminRoute
     }
+    '/_authed/admin/questions': {
+      id: '/_authed/admin/questions'
+      path: '/questions'
+      fullPath: '/admin/questions'
+      preLoaderRoute: typeof AuthedAdminQuestionsRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
     '/_authed/games/$gameId': {
       id: '/_authed/games/$gameId'
       path: '/games/$gameId'
@@ -155,10 +186,12 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthedAdminRouteChildren {
+  AuthedAdminQuestionsRoute: typeof AuthedAdminQuestionsRoute
   AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
 }
 
 const AuthedAdminRouteChildren: AuthedAdminRouteChildren = {
+  AuthedAdminQuestionsRoute: AuthedAdminQuestionsRoute,
   AuthedAdminIndexRoute: AuthedAdminIndexRoute,
 }
 
