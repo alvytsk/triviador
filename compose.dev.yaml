@@ -1,0 +1,60 @@
+# Development overlay. The single origin here is Vite on :5173, not Caddy.
+# Ports bind 127.0.0.1 — a dev stack is not a LAN service.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: infra/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      garage-init:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      TZ: UTC
+    volumes:
+      - ./backend:/app
+      # Anonymous volume OVER the bind mount: without it the host's
+      # backend/.venv shadows the image's, and every import fails in a way
+      # that reads as a dependency bug.
+      - /app/.venv
+      - ./data/maps:/data/maps:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    # Longer than the database statement timeout (§10.12): a shorter grace
+    # kills the container mid-COMMIT and manufactures the ambiguous-commit
+    # case §5.6 exists to avoid.
+    stop_grace_period: 30s
+    # NOT `fastapi dev`: it auto-discovers a module-level app, and until
+    # Task 2 there was none — `build_app` takes a Settings argument. uvicorn
+    # against the explicit entrypoint is the same reload behaviour without
+    # the discovery guesswork.
+    command: ["uvicorn", "triviador.asgi:app", "--host", "0.0.0.0",
+              "--port", "8000", "--reload", "--reload-dir", "/app/src"]
+
+  frontend:
+    image: node:22-alpine
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      # Same reasoning as .venv above.
+      - /app/node_modules
+      - ./contracts:/contracts:ro
+      # §10.1: svg_url is served as a static asset in both environments and
+      # never through the backend.
+      - ./data/maps:/app/public/maps:ro
+    environment:
+      TZ: UTC
+      # Read by vite.config.ts (Task 7) so the same file works on the host
+      # and in the compose network.
+      VITE_API_TARGET: http://backend:8000
+      VITE_MEDIA_TARGET: http://garage:3902
+      VITE_MEDIA_HOST: triviador-media.web.garage.internal
+    ports:
+      - "127.0.0.1:5173:5173"
+    command: ["sh", "-c", "corepack enable && pnpm install && pnpm dev --host"]
