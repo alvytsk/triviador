@@ -107,8 +107,14 @@ export function CreateGamePanel() {
         </select>
         {selectedPreset !== null && (
           <p className="text-[13px] text-ink-dim">
-            {selectedPreset.rules.player_count} players · {selectedPreset.rules.battle_rounds}{" "}
-            battle rounds
+            {/* A match is two stages, each with its own round count
+             *  (Spec §3.1: Expansion, then Battle) — showing
+             *  battle_rounds alone would report half the game's length.
+             *  The other nine RulesView fields (timeouts, points,
+             *  base_hp, warmup_ms, claims_by_rank) are tuning detail a
+             *  player doesn't need before joining. */}
+            {selectedPreset.rules.player_count} players · {selectedPreset.rules.expansion_rounds}{" "}
+            expansion rounds · {selectedPreset.rules.battle_rounds} battle rounds
           </p>
         )}
         {selectedMap !== null && (

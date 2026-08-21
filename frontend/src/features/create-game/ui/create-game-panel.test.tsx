@@ -36,10 +36,17 @@ const BLITZ_PRESET = {
   id: "blitz",
   name: "Blitz",
   is_default: false,
-  rules: rules({ player_count: 2, battle_rounds: 1 }),
+  rules: rules({ player_count: 2, expansion_rounds: 1, battle_rounds: 1 }),
 };
 
-function withPresets(presets: unknown[] = [DEFAULT_PRESET, BLITZ_PRESET]) {
+// `is_default` preset (Default) deliberately NOT first: the real backend
+// orders `ORDER BY RulePreset.name` (`repos/presets.py`), alphabetically,
+// so with "Blitz" and "Default" it returns Blitz first. A fixture that put
+// Default first would make the "defaults to is_default" test below pass
+// even with the `find(is_default)` fallback deleted from production —
+// array-order coincidentally reaching the same answer. This order is what
+// makes that assertion load-bearing (see the test's own comment).
+function withPresets(presets: unknown[] = [BLITZ_PRESET, DEFAULT_PRESET]) {
   server.use(
     http.get("/api/maps", () => HttpResponse.json([MAP])),
     http.get("/api/presets", () => HttpResponse.json(presets)),
@@ -47,6 +54,10 @@ function withPresets(presets: unknown[] = [DEFAULT_PRESET, BLITZ_PRESET]) {
 }
 
 describe("CreateGamePanel", () => {
+  // Load-bearing on the fixture's declaration order (see `withPresets`'s
+  // comment): with Blitz listed FIRST, only the `find((preset) =>
+  // preset.is_default)` fallback in `create-game-panel.tsx` can produce
+  // "default" here — an array-order fallback would pick Blitz instead.
   it("lists the active presets and defaults to the one flagged is_default", async () => {
     withPresets();
     renderWithApp(<CreateGamePanel />);
@@ -81,10 +92,15 @@ describe("CreateGamePanel", () => {
     const select = (await screen.findByLabelText(/rules/i)) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("default"));
     expect(screen.getByText(/4 players/i)).toBeInTheDocument();
+    // A match is two stages — Expansion, then Battle (Spec §3.1) —
+    // reporting battle_rounds alone is only half the game's length.
+    expect(screen.getByText(/3 expansion rounds/i)).toBeInTheDocument();
 
     await userEvent.selectOptions(select, "blitz");
     expect(await screen.findByText(/2 players/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 expansion rounds/i)).toBeInTheDocument();
     expect(screen.queryByText(/4 players/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/3 expansion rounds/i)).not.toBeInTheDocument();
   });
 
   it("reads as a sensible non-choice, not an empty or a real dropdown, when only one preset exists", async () => {
