@@ -11,3 +11,5 @@ dist/
 !.env.example
 /data/media/
 /infra/garage/rpc_secret
+/e2e/test-results/
+/e2e/playwright-report/

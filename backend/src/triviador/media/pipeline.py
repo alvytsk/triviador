@@ -27,6 +27,33 @@ ALLOWED_FORMATS = frozenset({"PNG", "JPEG", "WEBP", "GIF", "BMP"})
 WEBP_QUALITY = 82
 
 
+def object_key(asset_id: str) -> str:
+    """§10.4's `/data/media/<ab>/<sha>.webp`, as an object key.
+
+    The two-character fan-out is pointless in an object store, which has
+    no directory to slow down — it is kept because the spec names this
+    layout, a filesystem restore of the bucket benefits from it, and
+    changing the key shape later rewrites every stored row.
+
+    One function, not a pattern repeated at every call site: `asset_id` is
+    always `NormalizedImage.sha256` by construction (`media_assets.id` is
+    written from exactly that value in `admin/media.py`), so the write path
+    (`NormalizedImage.storage_key`, below) and every read path that must
+    resolve to the same Garage object afterward — the admin preview URL
+    (`admin/media.py`'s `summary()`), the player-facing one
+    (`api/schemas/games.py`'s `media_url()`), and the prefetch list
+    (`api/projection/snapshot.py`'s `_media_prefetch`) — share this one
+    definition instead of each reconstructing the shape independently,
+    which is exactly how the player-facing one drifted from it: it built a
+    bare `/media/<asset_id>`, with neither the fan-out directory nor the
+    `.webp` extension, and Caddy proxies `/media/*` straight to Garage with
+    no rewriting — so every question with an image 404s in a real browser,
+    caught only once something actually served that URL through Caddy →
+    Garage instead of asserting against the string in isolation.
+    """
+    return f"{asset_id[:2]}/{asset_id}.webp"
+
+
 class MediaRejected(Exception):
     """The upload is not usable, and the reason is safe to show an admin."""
 
@@ -49,14 +76,9 @@ class NormalizedImage:
 
     @property
     def storage_key(self) -> str:
-        """§10.4's `/data/media/<ab>/<sha>.webp`, as an object key.
-
-        The two-character fan-out is pointless in an object store, which
-        has no directory to slow down — it is kept because the spec names
-        this layout, a filesystem restore of the bucket benefits from it,
-        and changing the key shape later rewrites every stored row.
-        """
-        return f"{self.sha256[:2]}/{self.sha256}.webp"
+        """See `object_key` above — this is that function, keyed on the
+        upload's own freshly computed hash."""
+        return object_key(self.sha256)
 
 
 def normalize(raw: bytes, *, max_bytes: int, max_pixels: int, target_px: int) -> NormalizedImage:

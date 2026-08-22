@@ -13,12 +13,19 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from triviador.domain.game.state import AcquisitionKind, Phase, TerritoryKind
 from triviador.domain.questions.types import Difficulty, QuestionKind, QuestionSnapshot
+from triviador.media.pipeline import object_key
 from triviador.services.identity import UserRole
 from triviador.services.ports import GameSummary
 
 
 def media_url(media_base: str, asset_id: str | None) -> str | None:
-    return None if asset_id is None else f"{media_base}/{asset_id}"
+    """`object_key` (`triviador.media.pipeline`) is the single definition
+    of the fan-out `{ab}/{sha}.webp` shape every stored object actually
+    uses — this used to build a bare `{media_base}/{asset_id}` instead,
+    which resolves to no object Garage has ever written, so Caddy's
+    `/media/*` proxy 404s every player-facing question image. See
+    `object_key`'s own docstring for the full story."""
+    return None if asset_id is None else f"{media_base}/{object_key(asset_id)}"
 
 
 class ClientChoice(BaseModel):

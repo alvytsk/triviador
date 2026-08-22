@@ -231,13 +231,91 @@ jobs:
     name: e2e
     runs-on: ubuntu-latest
     needs: [backend, frontend, compose]
-    # Scaffolded, not implemented. Task 13 writes the Playwright scenario
-    # (3 contexts, redeem → create → join → start → FINISHED on exp 1 /
-    # battle 1, with at least one media question) this job is meant to
-    # run against a real `docker compose -f compose.yaml -f
-    # compose.prod.yaml up`. Disabled rather than half-built or faked, so
-    # this task does not ship a workflow that fails on every push for a
-    # scenario that does not exist yet.
-    if: false
     steps:
-      - run: echo "e2e is scaffolded but disabled until Task 13 lands the Playwright scenario"
+      - uses: actions/checkout@v7
+
+      # `infra/deploy.sh` needs a real, non-placeholder `.env` — the
+      # `compose` job's all-CHANGE_ME trick satisfies every `${VAR:?}`
+      # but fails `startup_problems()`'s own placeholder check at boot, so
+      # this deploy would never become ready. Generated fresh every run:
+      # nothing here needs to be reproducible, only internally consistent
+      # — the same Postgres password in both `POSTGRES_PASSWORD` and
+      # `TRIVIADOR_DATABASE_URL`, and Garage's own key-format rules
+      # (`.env.example`'s comment: `GK` + 24 hex, secret = 64 hex).
+      # `TRIVIADOR_ALLOWED_ORIGINS` must be this job's own origin —
+      # e2e/playwright.config.ts's default `baseURL` — because every POST
+      # the scenario makes (redeem, create, join, start, every admin
+      # write the seed does) is checked against it, and the websocket
+      # handshake's `Origin` header is checked the same way.
+      - name: Write .env
+        run: |
+          set -eu
+          pg_password="$(openssl rand -hex 24)"
+          cat > .env <<EOF
+          TRIVIADOR_DATABASE_URL=postgresql+asyncpg://triviador:${pg_password}@db:5432/triviador
+          TRIVIADOR_ALLOWED_ORIGINS=http://localhost
+          TRIVIADOR_ALLOWED_HOSTS=localhost,127.0.0.1
+          TRIVIADOR_COOKIE_SECURE=false
+          TRIVIADOR_SESSION_TTL_DAYS=30
+          TRIVIADOR_MAPS_ROOT=/data/maps
+          TRIVIADOR_MEDIA_PUBLIC_BASE=/media
+          TRIVIADOR_LOG_LEVEL=INFO
+          TRIVIADOR_LOG_FORMAT=json
+          TRIVIADOR_S3_ENDPOINT_URL=http://garage:3900
+          TRIVIADOR_S3_REGION=garage
+          TRIVIADOR_S3_ACCESS_KEY_ID=GK$(openssl rand -hex 12)
+          TRIVIADOR_S3_SECRET_ACCESS_KEY=$(openssl rand -hex 32)
+          TRIVIADOR_MEDIA_BUCKET=triviador-media
+          TRIVIADOR_STAGING_BUCKET=triviador-staging
+          TRIVIADOR_IMPORT_TTL_HOURS=24
+          POSTGRES_PASSWORD=${pg_password}
+          GARAGE_RPC_SECRET=$(openssl rand -hex 32)
+          BACKUP_DEST=/tmp/triviador-e2e-backups
+          EOF
+
+      # The one supported deploy path (§10.11) — not a hand-assembled
+      # `docker compose up`, which can silently skip the `migrate` and
+      # `garage-init` one-shots. Task 10 already proved this script boots
+      # a serving stack; this job is what proves a browser can actually
+      # play a match through it.
+      - name: Deploy the production compose stack
+        run: ./infra/deploy.sh
+
+      - uses: pnpm/setup@v2
+        with:
+          package-json-file: e2e/package.json
+          runtime: node@22
+          cache: true
+          cache-dependency-path: e2e/pnpm-lock.yaml
+          install: false
+
+      - run: pnpm install --frozen-lockfile
+        working-directory: e2e
+
+      # `--with-deps`: this runner has no browser cached (unlike a
+      # developer machine that already has Playwright installed for other
+      # projects), so this also installs the system libraries Chromium
+      # needs.
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: e2e
+
+      # Spec 1 §12.4's one scenario: three independent browser contexts
+      # redeem an invite each, create → join → start a shortened match
+      # (expansion 1 / battle 1), and play it to `FINISHED`, asserting a
+      # real 200 through Caddy → Garage for a media question along the
+      # way — the seam no API-level test in `backend` or `frontend`
+      # reaches.
+      - run: pnpm exec playwright test
+        working-directory: e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: e2e/test-results/
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yaml -f compose.prod.yaml down -v

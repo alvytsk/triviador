@@ -58,12 +58,17 @@ def test_the_revealed_answer_is_a_separate_type_that_does_carry_it() -> None:
 def test_media_is_an_opaque_content_addressed_url() -> None:
     """§9.6: prefetching ~29 of these must leak neither prompt nor answer,
     which is exactly what a content-addressed id gives — and why the URL is
-    built from the asset id alone, never from the question id or its text."""
+    built from the asset id alone, never from the question id or its text.
+
+    The URL itself is the real Garage object key (`object_key`'s fan-out
+    directory plus `.webp`), not the bare asset id — Caddy's `/media/*`
+    proxy forwards straight to Garage with no rewriting, so anything short
+    of the real key 404s."""
     from dataclasses import replace
 
     question = replace(numeric_question(1, answer=42), media_asset_id=MediaAssetId("a3f9c1"))
     projected = project_question(question, media_base="/media")
-    assert projected.media_url == "/media/a3f9c1"
+    assert projected.media_url == "/media/a3/a3f9c1.webp"
 
 
 def test_a_question_without_media_has_no_url() -> None:

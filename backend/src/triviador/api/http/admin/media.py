@@ -17,7 +17,7 @@ from fastapi import APIRouter, Request, Response
 from triviador.api.deps import AdminPrincipal, Deps
 from triviador.api.errors import ApiError, ApiErrorCode
 from triviador.api.schemas.admin.media import MediaAssetSummary
-from triviador.media.pipeline import MediaRejected, NormalizedImage
+from triviador.media.pipeline import MediaRejected, NormalizedImage, object_key
 
 router = APIRouter(tags=["admin"])
 
@@ -37,9 +37,7 @@ async def read_capped(request: Request, max_bytes: int) -> bytes:
     async for chunk in request.stream():
         total += len(chunk)
         if total > max_bytes:
-            raise ApiError(
-                ApiErrorCode.PAYLOAD_TOO_LARGE, 413, f"upload exceeds {max_bytes} bytes"
-            )
+            raise ApiError(ApiErrorCode.PAYLOAD_TOO_LARGE, 413, f"upload exceeds {max_bytes} bytes")
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -68,11 +66,12 @@ async def repair_blob(deps: Deps, image: NormalizedImage) -> None:
         )
 
 
-def summary(image_id: str, *, media_base: str, width: int | None, height: int | None,
-            byte_size: int) -> MediaAssetSummary:
+def summary(
+    image_id: str, *, media_base: str, width: int | None, height: int | None, byte_size: int
+) -> MediaAssetSummary:
     return MediaAssetSummary(
         id=image_id,
-        url=f"{media_base}/{image_id[:2]}/{image_id}.webp",
+        url=f"{media_base}/{object_key(image_id)}",
         width=width,
         height=height,
         byte_size=byte_size,
