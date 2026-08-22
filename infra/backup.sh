@@ -98,7 +98,18 @@ mkdir -p "$DEST/db" "$DEST/media"
 
 # 1. Database first, so media is always a SUPERSET of what this snapshot
 #    references. Verification therefore asserts coverage, not equality.
-pg_dump -Fc -h db -U triviador triviador > "$DEST/db/$TS.dump"
+#
+# Dump to `.partial` and `mv` into place only once `pg_dump` has actually
+# succeeded: `> "$DEST/db/$TS.dump"` opens (creates) the destination file
+# before the command that fills it can fail, so a `pg_dump` that dies
+# partway still leaves a truncated `.dump` behind — one retention (below)
+# keeps and an operator restoring later would pick as "the newest",
+# because nothing about its name or presence says it is broken. `set -eu`
+# stops the script at the failed `pg_dump` before the `mv` ever runs, so
+# a `.partial` left on disk after a failed backup is itself the signal
+# something went wrong, not a file retention would ever treat as a dump.
+pg_dump -Fc -h db -U triviador triviador > "$DEST/db/$TS.dump.partial"
+mv "$DEST/db/$TS.dump.partial" "$DEST/db/$TS.dump"
 
 # 2. copy, NOT sync: a sync maintains one mutable mirror, so a retained
 #    weekly dump can reference an asset a later run deleted. Keys are

@@ -220,8 +220,16 @@ export async function seed(baseURL: string): Promise<Fixture> {
   // suffix to protect — unlike the category/preset/player names below,
   // which have no such escape hatch and collide for real on a second run
   // against the same deployment.
-  const adminUsername = "e2e-admin";
-  const adminPassword = "E2e-Admin-Passw0rd!";
+  //
+  // The password defaults to a fixed, publicly-visible value — fine
+  // against a throwaway CI deployment (torn down at the end of the `e2e`
+  // job), but this module's own docstring says `E2E_BASE_URL` can point at
+  // "a real, persistent deployment," and `admin-create --force` (above)
+  // means this exact username/password combination becomes a real,
+  // reusable admin login on whatever that deployment is. Override both via
+  // env before pointing this seed at anything that is not disposable.
+  const adminUsername = process.env.E2E_ADMIN_USERNAME ?? "e2e-admin";
+  const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? "E2e-Admin-Passw0rd!";
   await bootstrapAdmin(adminUsername, adminPassword, "E2E Admin");
 
   const admin = new AdminClient(baseURL);

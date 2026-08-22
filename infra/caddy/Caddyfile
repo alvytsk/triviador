@@ -1,5 +1,17 @@
 # The single published origin (§10.2). Everything else in the stack is
 # reachable only over the compose network.
+#
+# OPERATIONAL NOTE, not a Caddy fact — a fact about this repo's WSL2 +
+# Docker Desktop setup: after editing this file, `docker compose restart
+# caddy` does NOT pick up the change. `restart` does not re-create the
+# container or its bind mounts, and on this setup the running container
+# keeps whatever content the bind mount resolved to at its original
+# start, not a live view of the edited host file. Plain
+# `infra/deploy.sh` / `$COMPOSE up -d` does not fix this either — a
+# Caddyfile edit changes no service definition, so Compose sees an
+# "unchanged" `caddy` service and, same mechanism as
+# `infra/provision-media-lock.sh`'s whole reason for existing, does not
+# recreate it. `docker compose up -d --force-recreate caddy` does.
 {
 	admin off
 }

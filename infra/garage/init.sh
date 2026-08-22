@@ -8,8 +8,8 @@
 # THE WIRING: this container is not the `garage` service and shares no
 # process with it, so every `garage` CLI invocation here is a genuinely
 # remote admin RPC call, addressed with `--rpc-host <node-id>@<addr>`
-# (verified against dxflrs/garage:v1.1.0 — see task report). Two things
-# were established empirically before choosing this:
+# verified against dxflrs/garage:v1.1.0. Two things were established
+# empirically before choosing this:
 #
 # 1. With `--rpc-host` given, the CLI does NOT need a local node identity
 #    (`node_key`) at all — it authenticates the RPC call with an ephemeral,

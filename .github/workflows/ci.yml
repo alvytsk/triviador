@@ -2,7 +2,6 @@ name: CI
 
 # Spec 1B §10.7's seven gates. Every job below runs the SAME command a
 # developer runs locally — no gate here is reimplemented, only wired up.
-# See task-12-report.md for the local verification of each one.
 
 on:
   push:
@@ -43,14 +42,6 @@ jobs:
 
       - run: uv run ruff check .
 
-      # KNOWN FAILING as of this commit (36 files): the repo had no CI
-      # before this task, and `ruff format` has never been enforced.
-      # Reformatting those files is out of scope for a CI-only task — see
-      # task-12-report.md's concerns. Left enabled rather than dropped:
-      # spec §10.7 names this gate explicitly, and a CI job quietly never
-      # checking format is exactly the "gate that silently never runs"
-      # failure mode this plan has already shipped once (a permanent
-      # no-op guard, per an earlier task's report).
       - run: uv run ruff format --check .
 
       - run: uv run mypy --strict src
@@ -226,6 +217,13 @@ jobs:
 
       - name: prod overlay
         run: docker compose -f compose.yaml -f compose.prod.yaml config >/dev/null
+
+      # infra/backup-prune-dumps.test.sh: never run automatically before
+      # this — needs only alpine, so it costs nothing to wire in here
+      # rather than trusting a retention rule that silently deletes the
+      # wrong dump to a developer's memory of having run it once by hand.
+      - name: backup retention rule
+        run: docker run --rm -v "$PWD/infra:/infra" alpine:3.21 sh /infra/backup-prune-dumps.test.sh
 
   e2e:
     name: e2e
