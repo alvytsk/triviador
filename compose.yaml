@@ -55,6 +55,12 @@ services:
       S3_SECRET_ACCESS_KEY: ${TRIVIADOR_S3_SECRET_ACCESS_KEY:?}
       S3_MEDIA_BUCKET: ${TRIVIADOR_MEDIA_BUCKET:-triviador-media}
       S3_STAGING_BUCKET: ${TRIVIADOR_STAGING_BUCKET:-triviador-staging}
+      # `infra/garage/init.sh`'s `garage layout assign -c` value. Wired
+      # through so the dynamic-`--version` fix that script's `apply` step
+      # relies on (reading the target version out of `layout show` instead
+      # of hardcoding it) is actually reachable through the one supported
+      # deploy path — unset, a capacity change had nowhere to be set from.
+      GARAGE_CAPACITY: ${TRIVIADOR_GARAGE_CAPACITY:-100GB}
     volumes:
       - ./infra/garage/garage.toml:/etc/garage.toml:ro
       # Read-only, and only ever read: `init.sh` extracts the `garage`

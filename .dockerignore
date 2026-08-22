@@ -8,6 +8,14 @@ node_modules
 **/.hypothesis
 frontend/dist
 backups
-.env
+# `.env` alone is root-anchored — it excludes only a top-level `.env`, not
+# `backend/.env`. `infra/backend.Dockerfile` does `COPY backend/ ./`, and
+# every machine that ran the previous plan still has a real `backend/.env`
+# (Task 1 moved `.env.example` out of `backend/`) — proved: planting
+# `backend/.env` and building, `docker run ... cat /app/.env` returned the
+# secret. `**/.env` matches at any depth; `.env.example` does not match
+# this pattern (only a literal `.env`, not a `.env`-prefixed name), so it
+# still ships fine for anyone building an image straight from a checkout.
+**/.env
 .superpowers
 docs

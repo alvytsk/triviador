@@ -11,5 +11,11 @@ dist/
 !.env.example
 /data/media/
 /infra/garage/rpc_secret
+# `infra/backup.sh`'s output when BACKUP_DEST is left pointed at the repo
+# (never do this in production — see .env.example/compose.prod.yaml — but
+# the restore drill and local testing both do it). A pg_dump contains every
+# user and session record; it must never land in an untracked-but-not-
+# ignored directory in a git repo.
+/backups/
 /e2e/test-results/
 /e2e/playwright-report/
