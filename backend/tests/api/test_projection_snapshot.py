@@ -101,7 +101,7 @@ def test_media_prefetch_covers_the_pool_and_is_opaque() -> None:
     )
     state = replace(playing_state(), pool=with_media)
     snapshot = project_snapshot(state, viewer(), media_base=MEDIA)
-    assert set(snapshot.state.media_prefetch) == {"/media/asset0", "/media/asset1"}
+    assert set(snapshot.state.media_prefetch) == {"/media/as/asset0.webp", "/media/as/asset1.webp"}
     for url in snapshot.state.media_prefetch:
         assert "numeric" not in url
 
@@ -129,9 +129,12 @@ def test_media_prefetch_covers_choice_level_media_too() -> None:
     )
     state = replace(playing_state(), pool=with_media)
     snapshot = project_snapshot(state, viewer(), media_base=MEDIA)
-    assert {"/media/choice0", "/media/choice1", "/media/choice2", "/media/choice3"} <= set(
-        snapshot.state.media_prefetch
-    )
+    assert {
+        "/media/ch/choice0.webp",
+        "/media/ch/choice1.webp",
+        "/media/ch/choice2.webp",
+        "/media/ch/choice3.webp",
+    } <= set(snapshot.state.media_prefetch)
 
 
 def test_media_prefetch_is_sorted_not_draw_order() -> None:
@@ -149,7 +152,11 @@ def test_media_prefetch_is_sorted_not_draw_order() -> None:
     )
     state = replace(playing_state(), pool=with_media)
     snapshot = project_snapshot(state, viewer(), media_base=MEDIA)
-    assert snapshot.state.media_prefetch == ("/media/alpha", "/media/mu", "/media/zeta")
+    assert snapshot.state.media_prefetch == (
+        "/media/al/alpha.webp",
+        "/media/mu/mu.webp",
+        "/media/ze/zeta.webp",
+    )
     assert snapshot.state.media_prefetch == tuple(sorted(snapshot.state.media_prefetch))
 
 

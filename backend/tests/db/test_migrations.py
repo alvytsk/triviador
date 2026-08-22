@@ -204,3 +204,31 @@ async def test_0003_repairs_a_row_actually_left_in_the_old_broken_shape(
     preset = await PresetRepository(sessionmaker_for(engine)).get_default()
     assert preset is not None
     assert preset.rules.player_count == 3
+
+    # This test's own setup stopped the schema at 0003 to exercise that
+    # revision in isolation. The module docstring's invariant ("either way
+    # the schema is left at head") depends on every test here finishing at
+    # head, so the run continues past whatever 0003 was head of at the time
+    # this test was written — otherwise a later migration (0004's trigram
+    # index) is silently missing for any test that runs after this one in
+    # the same session.
+    await _run_upgrade_head(DATABASE_URL)
+
+
+async def test_the_prompt_search_index_exists_and_is_a_trigram_index(
+    engine: AsyncEngine, migrated_schema: None
+) -> None:
+    """A plain b-tree on `prompt` would be created without error and used
+    for nothing: `ILIKE '%needle%'` cannot use it. Asserting the *kind* of
+    index is asserting that the search is actually indexed."""
+    async with engine.connect() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT indexdef FROM pg_indexes "
+                    "WHERE tablename = 'questions' AND indexname = 'ix_questions_prompt_trgm'"
+                )
+            )
+        ).scalar_one_or_none()
+    assert row is not None
+    assert "gin" in row.lower() and "gin_trgm_ops" in row.lower()

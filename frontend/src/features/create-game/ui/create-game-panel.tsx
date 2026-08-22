@@ -1,24 +1,29 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { mapsQueryOptions } from "@/entities/game";
+import { mapsQueryOptions, presetsQueryOptions } from "@/entities/game";
 import { ApiFetchError } from "@/shared/api";
 import { Banner, Button } from "@/shared/ui";
 import { useCreateGame } from "../model/use-create-game";
 
 /**
- * The right-hand panel of the lobby: pick a map, see the default rules,
- * start a game.
+ * The right-hand panel of the lobby: pick a map, pick a ruleset, start a
+ * game.
  *
- * There is no preset select. `GET /api/presets` does not exist — the preset
- * repository is read-only and unexposed until Plan 7 — so this panel sends
- * `preset_id: null` and lets the server choose its default, and says so in
- * one line rather than rendering a select with a single hard-coded option,
- * which would imply a choice the player does not actually have.
+ * `GET /api/presets` (Plan 7A Decision 1) is what makes the ruleset a real
+ * choice — it is signed-in-only, not admin-only, and its `PresetSummary`
+ * comes from the player contract (`generated/public.ts`), same as
+ * `MapSummary`. When exactly one preset is active (today's shipped state:
+ * the seeded "Default" preset and nothing else) the select is disabled
+ * rather than hidden or left empty, the same treatment the map picker
+ * already gives a single map — it still tells a player what ruleset they
+ * are about to get, without implying a choice that does not exist.
  */
 export function CreateGamePanel() {
   const maps = useQuery(mapsQueryOptions());
+  const presets = useQuery(presetsQueryOptions());
   const createGame = useCreateGame();
   const [chosenMapId, setChosenMapId] = useState<string | null>(null);
+  const [chosenPresetId, setChosenPresetId] = useState<string | null>(null);
 
   const options = maps.data ?? [];
   // The first map fetched is the default choice — there is exactly one
@@ -26,6 +31,19 @@ export function CreateGamePanel() {
   // can create anything.
   const mapId = chosenMapId ?? options[0]?.map_id ?? null;
   const selectedMap = options.find((map) => map.map_id === mapId) ?? null;
+
+  const presetOptions = presets.data ?? [];
+  // Default to the preset the server flags `is_default`. The backend
+  // enforces "never zero, at most one default" as an invariant (retiring or
+  // un-defaulting the last default is refused with 409 `default_preset`),
+  // so the `find` below should always succeed once any preset has loaded —
+  // the fallback to the first preset is defensive, not an expected path.
+  const presetId =
+    chosenPresetId ??
+    presetOptions.find((preset) => preset.is_default)?.id ??
+    presetOptions[0]?.id ??
+    null;
+  const selectedPreset = presetOptions.find((preset) => preset.id === presetId) ?? null;
 
   return (
     <section className="flex w-80 shrink-0 flex-col gap-5 border border-line bg-panel p-6">
@@ -66,11 +84,39 @@ export function CreateGamePanel() {
         </select>
       </div>
 
-      <div className="flex flex-col gap-1 border-t border-line pt-4">
-        <span className="text-[10px] font-semibold tracking-[0.14em] text-ink-dim">RULES</span>
-        <p className="text-[13px] text-ink-dim">
-          Default rules — presets are configurable from the admin screens.
-        </p>
+      <div className="flex flex-col gap-2 border-t border-line pt-4">
+        <label
+          htmlFor="create-game-preset"
+          className="text-[10px] font-semibold tracking-[0.14em] text-ink-dim"
+        >
+          RULES
+        </label>
+        <select
+          id="create-game-preset"
+          value={presetId ?? ""}
+          onChange={(event) => setChosenPresetId(event.target.value)}
+          disabled={presetOptions.length <= 1}
+          className="border-2 border-line bg-raised px-4 py-3 text-[15px] font-medium text-ink outline-none focus:border-gold disabled:text-ink-faint"
+        >
+          {presetOptions.length === 0 && <option value="">No rulesets available</option>}
+          {presetOptions.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.name}
+            </option>
+          ))}
+        </select>
+        {selectedPreset !== null && (
+          <p className="text-[13px] text-ink-dim">
+            {/* A match is two stages, each with its own round count
+             *  (Spec §3.1: Expansion, then Battle) — showing
+             *  battle_rounds alone would report half the game's length.
+             *  The other nine RulesView fields (timeouts, points,
+             *  base_hp, warmup_ms, claims_by_rank) are tuning detail a
+             *  player doesn't need before joining. */}
+            {selectedPreset.rules.player_count} players · {selectedPreset.rules.expansion_rounds}{" "}
+            expansion rounds · {selectedPreset.rules.battle_rounds} battle rounds
+          </p>
+        )}
         {selectedMap !== null && (
           <p className="text-[13px] text-ink-dim">{selectedMap.region_count} regions to claim.</p>
         )}
@@ -78,10 +124,10 @@ export function CreateGamePanel() {
 
       <Button
         onClick={() => {
-          if (mapId === null) return;
-          createGame.mutate({ map_id: mapId, preset_id: null });
+          if (mapId === null || presetId === null) return;
+          createGame.mutate({ map_id: mapId, preset_id: presetId });
         }}
-        disabled={mapId === null || createGame.isPending}
+        disabled={mapId === null || presetId === null || createGame.isPending}
       >
         {createGame.isPending ? "Creating…" : "Create game"}
       </Button>

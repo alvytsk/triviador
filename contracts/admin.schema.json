@@ -1,0 +1,928 @@
+{
+  "$defs": {
+    "CategoryView": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "slug": {
+          "title": "Slug",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "slug",
+        "name"
+      ],
+      "title": "CategoryView",
+      "type": "object"
+    },
+    "ChoiceView": {
+      "additionalProperties": false,
+      "properties": {
+        "idx": {
+          "title": "Idx",
+          "type": "integer"
+        },
+        "is_correct": {
+          "title": "Is Correct",
+          "type": "boolean"
+        },
+        "media_asset_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Media Asset Id"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "idx",
+        "text",
+        "is_correct",
+        "media_asset_id"
+      ],
+      "title": "ChoiceView",
+      "type": "object"
+    },
+    "ChoiceWrite": {
+      "additionalProperties": false,
+      "properties": {
+        "is_correct": {
+          "title": "Is Correct",
+          "type": "boolean"
+        },
+        "text": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "is_correct"
+      ],
+      "title": "ChoiceWrite",
+      "type": "object"
+    },
+    "CreateCategoryRequest": {
+      "additionalProperties": false,
+      "description": "The slug pattern is the same shape the seed CSV's `category_slug`\ncolumn uses, so a category created here can be referenced by a later\nimport without transformation.",
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "slug": {
+          "maxLength": 48,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "title": "Slug",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slug",
+        "name"
+      ],
+      "title": "CreateCategoryRequest",
+      "type": "object"
+    },
+    "Difficulty": {
+      "enum": [
+        "easy",
+        "medium",
+        "hard"
+      ],
+      "title": "Difficulty",
+      "type": "string"
+    },
+    "ImportNotice": {
+      "additionalProperties": false,
+      "description": "\u00a710.2's warning channel: duplicate prompts, inside this upload or\nalready in the bank. Distinct from `ImportRejection` in the contract\nas well as in the code, so 7B cannot render one as the other.",
+      "properties": {
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "line",
+        "reason"
+      ],
+      "title": "ImportNotice",
+      "type": "object"
+    },
+    "ImportRejection": {
+      "additionalProperties": false,
+      "properties": {
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "line",
+        "reason"
+      ],
+      "title": "ImportRejection",
+      "type": "object"
+    },
+    "ImportStatus": {
+      "description": "\u00a79.3's four states, closed here because this plan implements the\nmachine that walks them. Plan 3 left the column unconstrained on\npurpose \u2014 the spec named these in prose only \u2014 and `imports/retire.py`\nis now the single writer.",
+      "enum": [
+        "validated",
+        "confirmed",
+        "expired",
+        "cleaned"
+      ],
+      "title": "ImportStatus",
+      "type": "string"
+    },
+    "ImportSummary": {
+      "additionalProperties": false,
+      "description": "`confirmable` is computed by the server, not inferred by the client\nfrom `rejected_count == 0`. The rule is \u00a710.3's, it also depends on\nstatus and expiry, and a client that re-derives it will eventually\nderive it differently.",
+      "properties": {
+        "confirmable": {
+          "title": "Confirmable",
+          "type": "boolean"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "filename": {
+          "title": "Filename",
+          "type": "string"
+        },
+        "import_id": {
+          "title": "Import Id",
+          "type": "string"
+        },
+        "notices": {
+          "items": {
+            "$ref": "#/$defs/ImportNotice"
+          },
+          "title": "Notices",
+          "type": "array"
+        },
+        "rejected_count": {
+          "title": "Rejected Count",
+          "type": "integer"
+        },
+        "rejections": {
+          "items": {
+            "$ref": "#/$defs/ImportRejection"
+          },
+          "title": "Rejections",
+          "type": "array"
+        },
+        "row_count": {
+          "title": "Row Count",
+          "type": "integer"
+        },
+        "staged_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Staged Key"
+        },
+        "status": {
+          "$ref": "#/$defs/ImportStatus"
+        },
+        "upload_sha256": {
+          "title": "Upload Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "import_id",
+        "upload_sha256",
+        "filename",
+        "staged_key",
+        "row_count",
+        "rejected_count",
+        "rejections",
+        "notices",
+        "status",
+        "confirmable",
+        "expires_at"
+      ],
+      "title": "ImportSummary",
+      "type": "object"
+    },
+    "InviteView": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "used",
+            "revoked",
+            "expired"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "used_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Used By"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "expires_at",
+        "used_by"
+      ],
+      "title": "InviteView",
+      "type": "object"
+    },
+    "IssueInvitesRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "maximum": 500,
+          "minimum": 1,
+          "title": "Count",
+          "type": "integer"
+        },
+        "expires_in_hours": {
+          "default": 168,
+          "maximum": 8760,
+          "minimum": 1,
+          "title": "Expires In Hours",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count"
+      ],
+      "title": "IssueInvitesRequest",
+      "type": "object"
+    },
+    "IssuedInvite": {
+      "additionalProperties": false,
+      "description": "Carries `code`. This model appears in exactly one response and\nnever in a listing \u2014 see `InviteView`.",
+      "properties": {
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "code",
+        "expires_at"
+      ],
+      "title": "IssuedInvite",
+      "type": "object"
+    },
+    "MediaAssetSummary": {
+      "additionalProperties": false,
+      "description": "What the editor needs to show a thumbnail and store a reference.\n\n`url` is built by the server from `media_public_base`, exactly as the\nprojection does for in-game question media (\u00a78.7) \u2014 the client never\nconcatenates a base with a key, so the two can never disagree.",
+      "properties": {
+        "byte_size": {
+          "title": "Byte Size",
+          "type": "integer"
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Height"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Width"
+        }
+      },
+      "required": [
+        "id",
+        "url",
+        "width",
+        "height",
+        "byte_size"
+      ],
+      "title": "MediaAssetSummary",
+      "type": "object"
+    },
+    "PresetCoverage": {
+      "additionalProperties": false,
+      "description": "\u00a710.6's readout, and its honesty in a field.\n\n`informative` is `True` and always will be: between reading this and\nstarting a game an admin can deactivate a question, so the\nauthoritative check is the one `StartGame` makes in the transaction\nthat draws the pool. The field exists so the screen has something to\nrender that sentence from rather than inventing it.",
+      "properties": {
+        "bank": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Bank",
+          "type": "object"
+        },
+        "informative": {
+          "default": true,
+          "title": "Informative",
+          "type": "boolean"
+        },
+        "required": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Required",
+          "type": "object"
+        },
+        "sufficient": {
+          "title": "Sufficient",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "required",
+        "bank",
+        "sufficient"
+      ],
+      "title": "PresetCoverage",
+      "type": "object"
+    },
+    "PresetDetail": {
+      "additionalProperties": false,
+      "description": "`PresetSummary` plus `is_active`: the admin screen shows retired\npresets (Spec 1B \u00a76.1's soft delete) where the public listing must\nnot.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "is_active": {
+          "title": "Is Active",
+          "type": "boolean"
+        },
+        "is_default": {
+          "title": "Is Default",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "rules": {
+          "$ref": "#/$defs/RulesView"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "is_default",
+        "is_active",
+        "rules"
+      ],
+      "title": "PresetDetail",
+      "type": "object"
+    },
+    "PresetWriteRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "is_default": {
+          "title": "Is Default",
+          "type": "boolean"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "rules": {
+          "$ref": "#/$defs/RulesView"
+        }
+      },
+      "required": [
+        "name",
+        "is_default",
+        "rules"
+      ],
+      "title": "PresetWriteRequest",
+      "type": "object"
+    },
+    "QuestionDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "category_id": {
+          "title": "Category Id",
+          "type": "string"
+        },
+        "category_slug": {
+          "title": "Category Slug",
+          "type": "string"
+        },
+        "choices": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ChoiceView"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Choices"
+        },
+        "difficulty": {
+          "$ref": "#/$defs/Difficulty"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "is_active": {
+          "title": "Is Active",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/QuestionKind"
+        },
+        "media_asset_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Media Asset Id"
+        },
+        "numeric_answer": {
+          "anyOf": [
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Numeric Answer"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Unit"
+        },
+        "version": {
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "prompt",
+        "category_id",
+        "category_slug",
+        "difficulty",
+        "is_active",
+        "version",
+        "media_asset_id",
+        "choices",
+        "numeric_answer",
+        "unit"
+      ],
+      "title": "QuestionDetail",
+      "type": "object"
+    },
+    "QuestionKind": {
+      "enum": [
+        "multiple_choice",
+        "numeric"
+      ],
+      "title": "QuestionKind",
+      "type": "string"
+    },
+    "QuestionPageView": {
+      "additionalProperties": false,
+      "description": "`total` is the unpaged count, so the client can render \"page 3 of\n17\" without a second request \u2014 the one thing offset pagination is\nactually good at.",
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/QuestionSummary"
+          },
+          "title": "Items",
+          "type": "array"
+        },
+        "limit": {
+          "title": "Limit",
+          "type": "integer"
+        },
+        "offset": {
+          "title": "Offset",
+          "type": "integer"
+        },
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "items",
+        "total",
+        "limit",
+        "offset"
+      ],
+      "title": "QuestionPageView",
+      "type": "object"
+    },
+    "QuestionSaved": {
+      "additionalProperties": false,
+      "description": "The saved question, plus \u00a710.2's duplicate *warning*.\n\nOne response rather than a 409 and a retry: the admin has already\nwritten the question, and the only useful thing to do with the\nsimilarity is show it beside what they saved.",
+      "properties": {
+        "duplicate_of": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Duplicate Of",
+          "type": "array"
+        },
+        "question": {
+          "$ref": "#/$defs/QuestionDetail"
+        }
+      },
+      "required": [
+        "question",
+        "duplicate_of"
+      ],
+      "title": "QuestionSaved",
+      "type": "object"
+    },
+    "QuestionSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "category_id": {
+          "title": "Category Id",
+          "type": "string"
+        },
+        "category_slug": {
+          "title": "Category Slug",
+          "type": "string"
+        },
+        "difficulty": {
+          "$ref": "#/$defs/Difficulty"
+        },
+        "has_media": {
+          "title": "Has Media",
+          "type": "boolean"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "is_active": {
+          "title": "Is Active",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/QuestionKind"
+        },
+        "prompt": {
+          "title": "Prompt",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        },
+        "version": {
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "prompt",
+        "category_id",
+        "category_slug",
+        "difficulty",
+        "is_active",
+        "has_media",
+        "version",
+        "updated_at"
+      ],
+      "title": "QuestionSummary",
+      "type": "object"
+    },
+    "QuestionWriteRequest": {
+      "additionalProperties": false,
+      "description": "Both kinds in one body, validated as a whole.\n\nA discriminated union of two request models would be tidier on paper\nand worse here: the editor is one form whose fields appear and\ndisappear, and a client posting `{kind: \"numeric\", choices: []}`\ndeserves the field-level error this shape gives it rather than \"no\nvariant matched\".",
+      "properties": {
+        "category_id": {
+          "title": "Category Id",
+          "type": "string"
+        },
+        "choices": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ChoiceWrite"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Choices"
+        },
+        "difficulty": {
+          "$ref": "#/$defs/Difficulty"
+        },
+        "kind": {
+          "$ref": "#/$defs/QuestionKind"
+        },
+        "media_asset_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Media Asset Id"
+        },
+        "numeric_answer": {
+          "anyOf": [
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Numeric Answer"
+        },
+        "prompt": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 16,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "kind",
+        "prompt",
+        "category_id",
+        "difficulty"
+      ],
+      "title": "QuestionWriteRequest",
+      "type": "object"
+    },
+    "RenameCategoryRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "RenameCategoryRequest",
+      "type": "object"
+    },
+    "RulesView": {
+      "additionalProperties": false,
+      "description": "`GameRules`, field for field. Written out rather than generated\nfrom the dataclass so the contract is reviewable in the diff \u2014 this\nmodel is what the lobby's rules readout renders.",
+      "properties": {
+        "answer_timeout_ms": {
+          "title": "Answer Timeout Ms",
+          "type": "integer"
+        },
+        "base_hp": {
+          "title": "Base Hp",
+          "type": "integer"
+        },
+        "battle_rounds": {
+          "title": "Battle Rounds",
+          "type": "integer"
+        },
+        "claims_by_rank": {
+          "items": {
+            "type": "integer"
+          },
+          "title": "Claims By Rank",
+          "type": "array"
+        },
+        "expansion_rounds": {
+          "title": "Expansion Rounds",
+          "type": "integer"
+        },
+        "pick_timeout_ms": {
+          "title": "Pick Timeout Ms",
+          "type": "integer"
+        },
+        "player_count": {
+          "title": "Player Count",
+          "type": "integer"
+        },
+        "pts_base": {
+          "title": "Pts Base",
+          "type": "integer"
+        },
+        "pts_conquered": {
+          "title": "Pts Conquered",
+          "type": "integer"
+        },
+        "pts_defense": {
+          "title": "Pts Defense",
+          "type": "integer"
+        },
+        "pts_territory": {
+          "title": "Pts Territory",
+          "type": "integer"
+        },
+        "warmup_ms": {
+          "title": "Warmup Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "player_count",
+        "expansion_rounds",
+        "battle_rounds",
+        "base_hp",
+        "answer_timeout_ms",
+        "pick_timeout_ms",
+        "warmup_ms",
+        "claims_by_rank",
+        "pts_base",
+        "pts_territory",
+        "pts_conquered",
+        "pts_defense"
+      ],
+      "title": "RulesView",
+      "type": "object"
+    },
+    "SetRoleRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "$ref": "#/$defs/UserRole"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "title": "SetRoleRequest",
+      "type": "object"
+    },
+    "UserRole": {
+      "enum": [
+        "player",
+        "admin"
+      ],
+      "title": "UserRole",
+      "type": "string"
+    },
+    "UserView": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "title": "Display Name",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "is_active": {
+          "title": "Is Active",
+          "type": "boolean"
+        },
+        "role": {
+          "$ref": "#/$defs/UserRole"
+        },
+        "username": {
+          "title": "Username",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "username",
+        "display_name",
+        "role",
+        "is_active"
+      ],
+      "title": "UserView",
+      "type": "object"
+    }
+  },
+  "title": "TriviadorAdmin"
+}

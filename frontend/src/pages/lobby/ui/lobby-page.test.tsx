@@ -22,6 +22,32 @@ function withLobby(games: unknown[] = [GAME]) {
   server.use(
     http.get("/api/games", () => HttpResponse.json(games)),
     http.get("/api/maps", () => HttpResponse.json([{ map_id: "czechia", region_count: 14 }])),
+    // `CreateGamePanel` always renders alongside the lobby list, so every
+    // test here needs `/api/presets` handled — MSW's `onUnhandledRequest:
+    // "error"` fails loudly otherwise.
+    http.get("/api/presets", () =>
+      HttpResponse.json([
+        {
+          id: "default",
+          name: "Default",
+          is_default: true,
+          rules: {
+            player_count: 4,
+            expansion_rounds: 3,
+            battle_rounds: 2,
+            base_hp: 100,
+            answer_timeout_ms: 15000,
+            pick_timeout_ms: 10000,
+            warmup_ms: 5000,
+            claims_by_rank: [3, 2, 1],
+            pts_base: 10,
+            pts_territory: 5,
+            pts_conquered: 20,
+            pts_defense: 15,
+          },
+        },
+      ]),
+    ),
   );
 }
 

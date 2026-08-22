@@ -125,14 +125,29 @@ class BodyLimitMiddleware:
     media upload, which is the one genuinely large body in the system,
     needs a streaming route of its own and must exclude itself from this
     middleware rather than raise the cap for everybody.
+
+    An exempt path is not unbounded — it is bounded by its own route,
+    which reads the stream itself and stops at its own cap
+    (`media_max_bytes`, `import_max_bytes`). The exemption exists because
+    buffering a 32 MiB import here would hold it twice and refuse it at
+    1 MiB; it is a list of exact paths (`http/admin.UPLOAD_PATHS`), never
+    a prefix, so widening it is a deliberate edit.
     """
 
-    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+    def __init__(self, app: ASGIApp, *, max_bytes: int, exempt_paths: tuple[str, ...] = ()) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.exempt_paths = exempt_paths
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Equality, not `startswith`: a prefix match would extend the
+        # exemption to every path that merely begins with an exempt one,
+        # and the exemption is the security-relevant half of this class.
+        if scope["path"] in self.exempt_paths:
             await self.app(scope, receive, send)
             return
 

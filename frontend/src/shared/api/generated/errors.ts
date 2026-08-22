@@ -3,7 +3,7 @@
 // after changing any contract.
 import { z } from "zod";
 
-export const apiErrorCodeSchema = z.enum(["credentials_invalid", "database_unavailable", "forbidden", "game_recovering", "game_unrecoverable", "internal_error", "invite_invalid", "map_unknown", "method_not_allowed", "no_default_preset", "not_found", "payload_too_large", "preset_unknown", "server_busy", "server_restarting", "unauthenticated", "username_taken", "validation_failed"]);
+export const apiErrorCodeSchema = z.enum(["credentials_invalid", "database_unavailable", "default_preset", "forbidden", "game_recovering", "game_unrecoverable", "import_not_confirmable", "internal_error", "invite_invalid", "last_admin", "map_unknown", "media_rejected", "method_not_allowed", "no_default_preset", "not_found", "payload_too_large", "preset_unknown", "self_target", "server_busy", "server_restarting", "slug_taken", "unauthenticated", "username_taken", "validation_failed"]);
 export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;
 
 export const rejectCodeSchema = z.enum(["already_answered", "already_joined", "answer_kind_mismatch", "game_full", "not_a_participant", "not_adjacent", "not_enough_players", "not_your_turn", "own_territory", "question_pool_insufficient", "region_not_free", "unknown_region", "wrong_turn_state"]);

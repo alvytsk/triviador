@@ -54,7 +54,13 @@ class ApiErrorCode(StrEnum):
     USERNAME_TAKEN = "username_taken"
     MAP_UNKNOWN = "map_unknown"
     PRESET_UNKNOWN = "preset_unknown"
+    MEDIA_REJECTED = "media_rejected"
+    SLUG_TAKEN = "slug_taken"
+    IMPORT_NOT_CONFIRMABLE = "import_not_confirmable"
+    LAST_ADMIN = "last_admin"
+    SELF_TARGET = "self_target"
     NO_DEFAULT_PRESET = "no_default_preset"
+    DEFAULT_PRESET = "default_preset"
     SERVER_BUSY = "server_busy"
     SERVER_RESTARTING = "server_restarting"
     GAME_RECOVERING = "game_recovering"
@@ -86,6 +92,7 @@ _STATUS_CODES: dict[int, ApiErrorCode] = {
     404: ApiErrorCode.NOT_FOUND,
     405: ApiErrorCode.METHOD_NOT_ALLOWED,
     413: ApiErrorCode.PAYLOAD_TOO_LARGE,
+    415: ApiErrorCode.MEDIA_REJECTED,
 }
 
 _TEMPORARY: dict[type[Exception], ApiErrorCode] = {

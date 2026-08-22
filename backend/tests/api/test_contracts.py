@@ -1,4 +1,4 @@
-"""§7's export. Four documents, each with a job.
+"""§7's export. Five documents, each with a job.
 
 `rest.schema.json` is separate from `openapi.json` because
 `json-schema-to-zod` cannot consume an OpenAPI document's
@@ -25,8 +25,14 @@ def contracts(tmp_path: Path) -> dict[str, JsonDocument]:
     return {p.name: json.loads(p.read_text()) for p in tmp_path.glob("*.json")}
 
 
-def test_all_four_documents_are_written(contracts: dict[str, JsonDocument]) -> None:
-    assert set(contracts) == {"openapi.json", "rest.schema.json", "ws.schema.json", "errors.json"}
+def test_all_five_documents_are_written(contracts: dict[str, JsonDocument]) -> None:
+    assert set(contracts) == {
+        "openapi.json",
+        "rest.schema.json",
+        "ws.schema.json",
+        "admin.schema.json",
+        "errors.json",
+    }
 
 
 def test_the_rest_schema_resolves_its_refs_locally(contracts: dict[str, JsonDocument]) -> None:
@@ -106,3 +112,70 @@ def _refs(node: object) -> list[str]:
     if isinstance(node, list):
         return [r for v in node for r in _refs(v)]
     return []
+
+
+def test_admin_schema_carries_every_admin_dto() -> None:
+    """A DTO absent from `ADMIN_MODELS` is a DTO the frontend types by
+    hand, which is the drift §7 exists to prevent.
+
+    The expected set is derived by walking every module under
+    `schemas/admin/` for `BaseModel` subclasses *defined* there (not
+    merely imported into it — `presets.py` imports `RulesView` from the
+    public `schemas/presets.py`, which must not count), so adding a model
+    under `schemas/admin/` and forgetting `ADMIN_MODELS` fails here. The
+    previous version of this test asserted a hardcoded 12-name subset `<=`
+    `ADMIN_MODELS` — a check that could never fail no matter what
+    `ADMIN_MODELS` dropped, and in fact left 8 of the module's 20 real
+    models unguarded.
+    """
+    import importlib
+    import pkgutil
+
+    from pydantic import BaseModel
+
+    from triviador.api import contracts
+    from triviador.api.schemas import admin as admin_schemas
+
+    defined: set[str] = set()
+    prefix = f"{admin_schemas.__name__}."
+    for module_info in pkgutil.iter_modules(admin_schemas.__path__, prefix):
+        module = importlib.import_module(module_info.name)
+        for attr_name, obj in vars(module).items():
+            if (
+                isinstance(obj, type)
+                and issubclass(obj, BaseModel)
+                and obj.__module__ == module.__name__
+            ):
+                defined.add(attr_name)
+
+    # Reached only nested inside another admin DTO — `ChoiceView` inside
+    # `QuestionDetail.choices`, `ChoiceWrite` inside
+    # `QuestionWriteRequest.choices` — never exported as a top-level admin
+    # request/response in their own right. `ADMIN_MODELS` deliberately
+    # omits both; naming that here keeps the exclusion explicit rather
+    # than falling back to the subset check this test replaces.
+    nested_only = {"ChoiceView", "ChoiceWrite"}
+
+    exported = {model.__name__ for model in contracts.ADMIN_MODELS}
+    assert defined - nested_only == exported
+
+
+def test_the_admin_document_resolves_its_refs_locally() -> None:
+    from triviador.api.contracts import admin_schema
+
+    document = json.dumps(admin_schema())
+    assert "#/components/schemas/" not in document
+    assert '"$ref": "#/$defs/' in document
+
+
+def test_every_new_error_code_is_exported() -> None:
+    from triviador.api.contracts import errors_schema
+
+    assert {
+        "media_rejected",
+        "import_not_confirmable",
+        "slug_taken",
+        "default_preset",
+        "last_admin",
+        "self_target",
+    } <= set(errors_schema()["api_error_code"])

@@ -21,22 +21,35 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from dataclasses import replace as _replace
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 import pytest
 import pytest_asyncio
 import structlog
+from fastapi import FastAPI
+from fastapi.routing import APIRoute
 
 from tests.api.fakes import (
+    FakeCategories,
     FakeClock,
     FakeDatabase,
     FakeGameCatalog,
+    FakeGarageProbe,
     FakeHasher,
+    FakeImports,
     FakeInvites,
+    FakeMediaAssets,
+    FakeMediaStore,
     FakePresets,
+    FakeQuestionAdmin,
     FakeSessions,
+    FakeStagingStore,
+    FakeUserAdmin,
     FakeUsers,
+    RecordingHub,
 )
 from tests.conftest import lobby_state
 from tests.runtime.conftest import StubExecutor, _created_managers, _NoGameQueries, a_manager
@@ -47,17 +60,18 @@ from tests.runtime.test_commit import FakeUnitOfWork
 from triviador.api.app import create_app
 from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.ws.broadcaster import WsBroadcaster
-from triviador.api.ws.hub import Hub
 from triviador.config import Settings
 from triviador.db.security import token_digest
 from triviador.domain.game.rules import GameRules
 from triviador.domain.game.state import GameState
 from triviador.domain.ids import GameId, MapId, PlayerId, SessionId, UserId
 from triviador.maps.registry import MapRegistry
+from triviador.media.pipeline import ImageNormalizer
 from triviador.runtime.errors import PermanentReplayFailure
 from triviador.runtime.manager import Live
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.runtime import GameRuntime
+from triviador.services.admin import QuestionDetailRecord
 from triviador.services.identity import UserRole
 from triviador.services.ports import GameSummary
 
@@ -156,6 +170,62 @@ def replace_deps(deps: AppDependencies, **overrides: object) -> AppDependencies:
     return _replace(deps, **overrides)  # type: ignore[arg-type]
 
 
+class MountedRoute(NamedTuple):
+    """One route as the app actually serves it.
+
+    Three fields because FastAPI 0.141 splits what used to be one object:
+    `route` is the raw `APIRoute`, `path` is where it is *reachable* (the
+    raw `route.path` carries only its own router's prefix), and `guards`
+    are the dependencies its ancestors impose (a router-level
+    `dependencies=[...]` never reaches the route's own `dependant`).
+    """
+
+    path: str
+    route: APIRoute
+    guards: frozenset[object]
+
+
+def api_routes(app: FastAPI) -> tuple[MountedRoute, ...]:
+    """Every route the app can serve, with its real path and its inherited guards.
+
+    Three facts about FastAPI 0.141's lazy `include_router`, each verified
+    against this project's own app rather than assumed, and each one a
+    silent-pass bug if you get it wrong:
+
+    1. `app.routes` holds `_IncludedRouter` wrappers, not `APIRoute`s. The
+       obvious `isinstance(r, APIRoute)` filter over it returns **nothing**,
+       so any "no bad routes found" assertion built on it passes forever.
+    2. A route's own `path` carries only the prefix of the router it was
+       defined on. Mounting a `/questions` router inside a `/api/admin`
+       router leaves the raw path at `/questions`; the missing half lives on
+       `include_context.prefix`.
+    3. A router-level `dependencies=[Depends(current_admin)]` — the entire
+       mechanism of the admin guard — is **not** merged into the route's
+       `dependant`. It lives on `include_context.dependencies`, which is why
+       `guards` is collected separately here.
+
+    Reading three private attributes is the price of the check being real.
+    `test_the_walk_reaches_real_routes` is the tripwire: if a FastAPI
+    upgrade renames any of them, it fails loudly rather than letting the
+    gates pass quietly.
+    """
+    found: list[MountedRoute] = []
+    stack: list[tuple[object, str, frozenset[object]]] = [(app.router, "", frozenset())]
+    while stack:
+        router, base, guards = stack.pop()
+        for route in getattr(router, "routes", ()):
+            if isinstance(route, APIRoute):
+                found.append(MountedRoute(base + route.path, route, guards))
+            included = getattr(route, "original_router", None)
+            if included is None:
+                continue
+            context = getattr(route, "include_context", None)
+            prefix = getattr(context, "prefix", "") or ""
+            inherited = tuple(getattr(context, "dependencies", ()) or ())
+            stack.append((included, base + prefix, guards | {d.dependency for d in inherited}))
+    return tuple(found)
+
+
 @pytest_asyncio.fixture
 async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDependencies:
     """One signed-in user, `u1`, whose cookie value is the literal `"tok"`,
@@ -177,7 +247,7 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         token_hash=token_digest("tok"),
         expires_at=clock.now() + timedelta(days=30),
     )
-    hub = Hub()
+    hub = RecordingHub()
     games = FakeGameCatalog()
     runtime_clock = RuntimeFakeClock(T0)
     # A `GameManager` whose `_load` path (Task 18's `/api/games` routes) can
@@ -228,6 +298,31 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         created_at=T0,
     )
     manager._entries[resident.game_id] = Live(resident)
+    media_assets = FakeMediaAssets()
+    questions_admin = FakeQuestionAdmin(
+        {
+            "q1": QuestionDetailRecord(
+                question_id="q1",
+                kind="numeric",
+                prompt="How many players does a default game seat?",
+                category_id="cat-1",
+                category_slug="general",
+                difficulty="easy",
+                is_active=True,
+                version=1,
+                media_asset_id=None,
+                choices=None,
+                numeric_answer=Decimal("3"),
+                unit=None,
+            )
+        }
+    )
+    categories = FakeCategories()
+    # One instance for both ports — `deps.invites` (the public redeem path)
+    # and `deps.invites_admin` (this task) — mirroring the real
+    # `InviteRepository`, which also satisfies both.
+    invites = FakeInvites(users)
+    presets = FakePresets()
     return AppDependencies(
         settings=settings,
         clock=clock,
@@ -235,15 +330,37 @@ async def deps(settings: Settings, users: FakeUsers, map_root: Path) -> AppDepen
         dummy_password_hash=hasher.hash("nobody"),
         users=users,
         sessions=sessions,
-        invites=FakeInvites(users),
+        invites=invites,
+        invites_admin=invites,
+        users_admin=FakeUserAdmin(users, sessions),
         database=FakeDatabase(),
+        garage=FakeGarageProbe(),
         hub=hub,
         broadcaster=WsBroadcaster(hub, media_base=settings.media_public_base),
         manager=manager,
-        readiness=Readiness(migrations_current=True, recovery_complete=True),
+        readiness=Readiness(migrations_current=True, recovery_complete=True, garage_ready=True),
         games=games,
         maps=MapRegistry(root=map_root),
-        presets=FakePresets(),
+        presets=presets,
+        presets_admin=presets,
+        media_store=FakeMediaStore(clock),
+        media_assets=media_assets,
+        questions_admin=questions_admin,
+        categories=categories,
+        normalizer=ImageNormalizer(
+            max_bytes=settings.media_max_bytes,
+            max_pixels=settings.media_max_pixels,
+            target_px=settings.media_target_px,
+        ),
+        # The same `categories`/`questions_admin`/`media_assets` instances,
+        # not fresh ones: `apply_if_confirmable` writes straight into them
+        # (see `FakeImports`'s docstring), and a test asserting on
+        # `deps.questions_admin.records` after a confirm has to be looking
+        # at the store the import actually wrote to.
+        imports=FakeImports(
+            categories=categories, questions_admin=questions_admin, media_assets=media_assets
+        ),
+        staging_store=FakeStagingStore(),
     )
 
 
@@ -276,6 +393,7 @@ async def _second_client(
     *,
     user_id: str,
     token: str,
+    role: UserRole = UserRole.PLAYER,
 ) -> AsyncIterator[httpx.AsyncClient]:
     """A second `httpx.AsyncClient` over the same `deps` (and so the same
     app, manager and hub) carrying a *different* user's session cookie —
@@ -285,7 +403,7 @@ async def _second_client(
         username=user_id,
         password_hash=deps.hasher.hash("correct horse"),
         display_name=user_id.upper(),
-        role=UserRole.PLAYER,
+        role=role,
     )
     await deps.sessions.create(
         session_id=SessionId(f"s-{user_id}"),
@@ -316,4 +434,34 @@ async def stranger_client(
 ) -> AsyncIterator[httpx.AsyncClient]:
     """A third signed-in user, `u3`, who never joins anything."""
     async for c in _second_client(deps, settings, user_id="u3", token="tok3"):
+        yield c
+
+
+async def _seed_admin(deps: AppDependencies) -> None:
+    """`admin` / `"tok-admin"`. Separate from `_second_client` because the
+    guard tests need the user without needing a client."""
+    await deps.users.create(
+        user_id=UserId("admin"),
+        username="admin",
+        password_hash=deps.hasher.hash("correct horse"),
+        display_name="Admin",
+        role=UserRole.ADMIN,
+    )
+    await deps.sessions.create(
+        session_id=SessionId("s-admin"),
+        user_id=UserId("admin"),
+        token_hash=token_digest("tok-admin"),
+        expires_at=deps.clock.now() + timedelta(days=30),
+    )
+
+
+@pytest_asyncio.fixture
+async def admin_client(
+    deps: AppDependencies, settings: Settings
+) -> AsyncIterator[httpx.AsyncClient]:
+    """`client`, signed in as an admin. Every `/api/admin` test starts here
+    and takes away whatever it is testing."""
+    async for c in _second_client(
+        deps, settings, user_id="admin", token="tok-admin", role=UserRole.ADMIN
+    ):
         yield c

@@ -8,6 +8,7 @@ and on someone else's machine.
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from triviador.config import PLACEHOLDER, Settings, startup_problems
 
@@ -18,6 +19,8 @@ def settings(**overrides: object) -> Settings:
         "allowed_origins": ("http://box.lan",),
         "cookie_secure": False,
         "maps_root": Path("/data/maps"),
+        "s3_access_key_id": "GK111111111111111111111111",
+        "s3_secret_access_key": SecretStr("2" * 64),
     }
     return Settings(**{**base, **overrides})  # type: ignore[arg-type]
 
@@ -112,3 +115,19 @@ def test_an_origin_that_is_not_a_bare_scheme_and_host_is_refused(origin: str) ->
     trailing slash. An entry with either can never match, so the mismatch
     must surface at startup rather than as a 403 nobody can explain."""
     assert startup_problems(settings(allowed_origins=(origin,))) != ()
+
+
+def test_empty_s3_credentials_are_refused() -> None:
+    """Task 2: an unconfigured object store fails loudly at startup rather
+    than as a `ClientError` the first time an admin uploads media."""
+    problems = startup_problems(settings(s3_access_key_id="", s3_secret_access_key=SecretStr("")))
+    assert any("S3_ACCESS_KEY_ID" in p for p in problems)
+
+
+def test_a_secret_str_holding_the_placeholder_is_caught() -> None:
+    """The regression `model_dump`'s `SecretStr` branch exists for: without
+    unwrapping it, every `SecretStr` renders as `**********` and a
+    `CHANGE_ME` left in `s3_secret_access_key` would sail through the
+    placeholder scan undetected."""
+    problems = startup_problems(settings(s3_secret_access_key=SecretStr(PLACEHOLDER)))
+    assert any("s3_secret_access_key" in p for p in problems)

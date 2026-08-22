@@ -1,0 +1,126 @@
+# Production overlay. Caddy is the only published port in the entire stack.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: infra/backend.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      garage-init:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      TZ: UTC
+    volumes:
+      - ./data/maps:/data/maps:ro
+      # The SAME host path infra/backup.sh flocks (§10.8) — `triviador
+      # media-gc` runs in this container, and the exclusion only holds if
+      # both sides bind the identical host path. See
+      # backend/src/triviador/media/lock.py.
+      - /var/lock/triviador-media.lock:/var/lock/triviador-media.lock
+    # NOT published. Caddy reaches it over the compose network.
+    expose:
+      - "8000"
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready').status==200 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  frontend-build:
+    build:
+      context: .
+      dockerfile: infra/frontend.Dockerfile
+      target: build
+    # Build-only: produces the static output Caddy serves, then exits.
+    restart: "no"
+    # No `command:` — Compose appends command to entrypoint, so a `["true"]`
+    # here would land as $0 inside the `sh -c` script below: meaningless, and
+    # it reads as though `true` were the command being run.
+    volumes:
+      - web:/out
+    # `dist/.vite/` (manifest.json, module-ids.json) is build-tooling output
+    # that `pnpm check:bundle` (frontend/scripts/assert-admin-split.mjs)
+    # reads at CI/build time only — nothing in the running app fetches it.
+    # Caddy serves the whole `/srv` tree, so left in place it would be
+    # publicly readable, and module-ids.json lists every source module
+    # path. Excluded here rather than kept: no runtime consumer needs it,
+    # so there is no reason to publish it.
+    entrypoint: ["sh", "-c", "cp -r /app/dist/. /out/ && rm -rf /out/.vite && echo frontend-build: ok"]
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend-build:
+        condition: service_completed_successfully
+    ports:
+      # The ONLY published port in the stack (§10.11). Bind to the reserved
+      # LAN address instead of 0.0.0.0 where practical, and allow inbound 80
+      # only from the intended subnet.
+      - "0.0.0.0:80:80"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - web:/srv
+      - ./data/maps:/srv/maps:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      TZ: UTC
+
+  backup:
+    # §10.8. Never started by a plain `up -d` — only
+    # `--profile backup run --rm backup`, since a scheduled task invokes
+    # it, not the running stack.
+    profiles: ["backup"]
+    build:
+      context: .
+      dockerfile: infra/backup.Dockerfile
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+      garage:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      TZ: UTC
+      BACKUP_DEST: /backups
+      # `pg_dump`/`pg_restore` read this directly — without it, `pg_dump`
+      # falls back to an interactive password prompt, which has no
+      # terminal to prompt on inside `docker compose run` and fails
+      # instead (verified: "fe_sendauth: no password supplied").
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      # Re-mapped from the TRIVIADOR_-prefixed name in .env, the same
+      # convention infra/garage/init.sh uses — env_file alone would leave
+      # backup.sh's bare $S3_MEDIA_BUCKET unset.
+      S3_MEDIA_BUCKET: ${TRIVIADOR_MEDIA_BUCKET:-triviador-media}
+      # rclone's `garage:` remote, driven entirely by env vars so no
+      # credential ever needs to be baked into infra/backup.Dockerfile or
+      # written to an rclone.conf. Path-style addressing: virtual-host
+      # style needs per-bucket DNS that does not exist inside the compose
+      # network.
+      RCLONE_CONFIG_GARAGE_TYPE: s3
+      RCLONE_CONFIG_GARAGE_PROVIDER: Other
+      RCLONE_CONFIG_GARAGE_ENV_AUTH: "false"
+      RCLONE_CONFIG_GARAGE_ACCESS_KEY_ID: ${TRIVIADOR_S3_ACCESS_KEY_ID:?}
+      RCLONE_CONFIG_GARAGE_SECRET_ACCESS_KEY: ${TRIVIADOR_S3_SECRET_ACCESS_KEY:?}
+      RCLONE_CONFIG_GARAGE_ENDPOINT: http://garage:3900
+      RCLONE_CONFIG_GARAGE_REGION: garage
+      RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE: "true"
+    volumes:
+      # The SAME host path media-gc binds — see infra/backup.sh and the
+      # backend service's identical mount above.
+      - /var/lock/triviador-media.lock:/var/lock/triviador-media.lock
+      - ${BACKUP_DEST:?set BACKUP_DEST — a Windows disk, external drive or NAS, NEVER inside the WSL vhdx}:/backups
+
+volumes:
+  web:
+  caddy_data:
+  caddy_config:

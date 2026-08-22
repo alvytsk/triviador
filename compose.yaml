@@ -1,0 +1,99 @@
+# The base stack: storage and the two one-shot bootstrap jobs. Nothing here
+# is published — §10.11 publishes only Caddy, and only in the prod overlay.
+name: triviador
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: triviador
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: triviador
+      # Containers run UTC: absolute deadlines are persisted, so a timezone
+      # difference between host and container is a correctness bug.
+      TZ: UTC
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U triviador -d triviador"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  garage:
+    image: dxflrs/garage:v1.1.0
+    restart: unless-stopped
+    environment:
+      TZ: UTC
+    volumes:
+      - ./infra/garage/garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    secrets:
+      - garage_rpc_secret
+    healthcheck:
+      # The image has no shell, so this is an exec-form probe of the binary.
+      test: ["CMD", "/garage", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  garage-init:
+    build:
+      context: .
+      dockerfile: infra/garage.Dockerfile
+    # One-shot. Never restart: a failed assertion must stay failed and stop
+    # the deploy, not loop.
+    restart: "no"
+    depends_on:
+      garage:
+        condition: service_healthy
+    environment:
+      TZ: UTC
+      S3_ACCESS_KEY_ID: ${TRIVIADOR_S3_ACCESS_KEY_ID:?}
+      S3_SECRET_ACCESS_KEY: ${TRIVIADOR_S3_SECRET_ACCESS_KEY:?}
+      S3_MEDIA_BUCKET: ${TRIVIADOR_MEDIA_BUCKET:-triviador-media}
+      S3_STAGING_BUCKET: ${TRIVIADOR_STAGING_BUCKET:-triviador-staging}
+      # `infra/garage/init.sh`'s `garage layout assign -c` value. Wired
+      # through so the dynamic-`--version` fix that script's `apply` step
+      # relies on (reading the target version out of `layout show` instead
+      # of hardcoding it) is actually reachable through the one supported
+      # deploy path — unset, a capacity change had nowhere to be set from.
+      GARAGE_CAPACITY: ${TRIVIADOR_GARAGE_CAPACITY:-100GB}
+    volumes:
+      - ./infra/garage/garage.toml:/etc/garage.toml:ro
+      # Read-only, and only ever read: `init.sh` extracts the `garage`
+      # service's node ID from `node_key.pub` (a plain 32-byte file, not
+      # part of the LMDB store) so it can address it over RPC via
+      # `--rpc-host`. It never opens `db.lmdb`, so this shares no write
+      # access with the concurrently-running server — see init.sh for why
+      # that distinction matters.
+      - garage_meta:/var/lib/garage/meta:ro
+    secrets:
+      - garage_rpc_secret
+
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/backend.Dockerfile
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      TZ: UTC
+    # Under an advisory lock: ADR-002 already guarantees one application
+    # process, so this exists only to stop a stray manual `alembic` from
+    # racing a deploy.
+    command: ["triviador", "migrate"]
+
+volumes:
+  pgdata:
+  garage_meta:
+  garage_data:
+
+secrets:
+  garage_rpc_secret:
+    file: ./infra/garage/rpc_secret

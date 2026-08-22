@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PLACEHOLDER = "CHANGE_ME"
@@ -72,6 +72,29 @@ class Settings(BaseSettings):
     # `Connection`, a sender task and a presence entry behind forever.
     ws_idle_timeout_s: float = 30.0
 
+    # --- Object storage (Spec 1B §9.1, §10.3) -----------------------------
+    s3_endpoint_url: str = "http://garage:3900"
+    s3_region: str = "garage"
+    s3_access_key_id: str = ""
+    s3_secret_access_key: SecretStr = SecretStr("")
+    media_bucket: str = "triviador-media"
+    staging_bucket: str = "triviador-staging"
+
+    # --- Media and import limits (Spec 1 §10.3, §10.4) --------------------
+    # 5 MB and 4000 px are §10.4's stated validation bounds; 1280 px is its
+    # re-encode target. `import_max_bytes` has no spec value: 32 MiB is
+    # ~200 photographs at 150 KB, which is §10.3's stated bulk-import size.
+    media_max_bytes: int = 5_242_880
+    media_max_pixels: int = 4000
+    media_target_px: int = 1280
+    import_max_bytes: int = 33_554_432
+    import_ttl_hours: int = 24
+    # `media-gc` leaves an object younger than this alone: with no
+    # database row it is indistinguishable from an upload whose row has
+    # not committed yet (Decision 9), and §10.3's failed-transaction
+    # orphans are never urgent.
+    media_gc_grace_minutes: int = 60
+
     @field_validator("allowed_origins", "allowed_hosts", mode="before")
     @classmethod
     def _split_csv(cls, value: object) -> object:
@@ -122,8 +145,14 @@ def startup_problems(settings: Settings) -> tuple[str, ...]:
             f"to use {wanted}://; these do not: {wrong}"
         )
 
+    if not settings.s3_access_key_id or not settings.s3_secret_access_key.get_secret_value():
+        problems.append(
+            "S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY are empty: no media could be stored or read"
+        )
+
     for name, value in settings.model_dump().items():
-        if isinstance(value, str) and PLACEHOLDER in value:
+        text = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if isinstance(text, str) and PLACEHOLDER in text:
             problems.append(f"{name} still holds its .env.example placeholder")
 
     return tuple(problems)

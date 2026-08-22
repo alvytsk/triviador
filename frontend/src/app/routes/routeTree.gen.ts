@@ -13,7 +13,15 @@ import { Route as AuthedRouteImport } from './_authed'
 import { Route as LoginRouteImport } from './login'
 import { Route as RedeemRouteImport } from './redeem'
 import { Route as AuthedIndexRouteImport } from './_authed.index'
+import { Route as AuthedAdminRouteImport } from './_authed.admin'
+import { Route as AuthedAdminIndexRouteImport } from './_authed.admin.index'
+import { Route as AuthedAdminInvitesRouteImport } from './_authed.admin.invites'
+import { Route as AuthedAdminPresetsRouteImport } from './_authed.admin.presets'
+import { Route as AuthedAdminUsersRouteImport } from './_authed.admin.users'
 import { Route as AuthedGamesGameIdRouteImport } from './_authed.games.$gameId'
+import { Route as AuthedAdminQuestionsIndexRouteImport } from './_authed.admin.questions.index'
+import { Route as AuthedAdminQuestionsQuestionIdRouteImport } from './_authed.admin.questions.$questionId'
+import { Route as AuthedAdminQuestionsImportRouteImport } from './_authed.admin.questions.import'
 
 const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
@@ -34,44 +42,151 @@ const AuthedIndexRoute = AuthedIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAdminRoute = AuthedAdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => AuthedRoute,
+} as any).lazy(() => import('./_authed.admin.lazy').then((d) => d.Route))
+const AuthedAdminIndexRoute = AuthedAdminIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AuthedAdminRoute,
+} as any)
+const AuthedAdminInvitesRoute = AuthedAdminInvitesRouteImport.update({
+  id: '/invites',
+  path: '/invites',
+  getParentRoute: () => AuthedAdminRoute,
+} as any).lazy(() =>
+  import('./_authed.admin.invites.lazy').then((d) => d.Route),
+)
+const AuthedAdminPresetsRoute = AuthedAdminPresetsRouteImport.update({
+  id: '/presets',
+  path: '/presets',
+  getParentRoute: () => AuthedAdminRoute,
+} as any).lazy(() =>
+  import('./_authed.admin.presets.lazy').then((d) => d.Route),
+)
+const AuthedAdminUsersRoute = AuthedAdminUsersRouteImport.update({
+  id: '/users',
+  path: '/users',
+  getParentRoute: () => AuthedAdminRoute,
+} as any).lazy(() => import('./_authed.admin.users.lazy').then((d) => d.Route))
 const AuthedGamesGameIdRoute = AuthedGamesGameIdRouteImport.update({
   id: '/games/$gameId',
   path: '/games/$gameId',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedAdminQuestionsIndexRoute =
+  AuthedAdminQuestionsIndexRouteImport.update({
+    id: '/questions/',
+    path: '/questions/',
+    getParentRoute: () => AuthedAdminRoute,
+  } as any).lazy(() =>
+    import('./_authed.admin.questions.index.lazy').then((d) => d.Route),
+  )
+const AuthedAdminQuestionsQuestionIdRoute =
+  AuthedAdminQuestionsQuestionIdRouteImport.update({
+    id: '/questions/$questionId',
+    path: '/questions/$questionId',
+    getParentRoute: () => AuthedAdminRoute,
+  } as any).lazy(() =>
+    import('./_authed.admin.questions.$questionId.lazy').then((d) => d.Route),
+  )
+const AuthedAdminQuestionsImportRoute =
+  AuthedAdminQuestionsImportRouteImport.update({
+    id: '/questions/import',
+    path: '/questions/import',
+    getParentRoute: () => AuthedAdminRoute,
+  } as any).lazy(() =>
+    import('./_authed.admin.questions.import.lazy').then((d) => d.Route),
+  )
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthedIndexRoute
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
+  '/admin': typeof AuthedAdminRouteWithChildren
+  '/admin/invites': typeof AuthedAdminInvitesRoute
+  '/admin/presets': typeof AuthedAdminPresetsRoute
+  '/admin/users': typeof AuthedAdminUsersRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
+  '/admin/': typeof AuthedAdminIndexRoute
+  '/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/admin/questions/import': typeof AuthedAdminQuestionsImportRoute
+  '/admin/questions/': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
   '/': typeof AuthedIndexRoute
+  '/admin/invites': typeof AuthedAdminInvitesRoute
+  '/admin/presets': typeof AuthedAdminPresetsRoute
+  '/admin/users': typeof AuthedAdminUsersRoute
   '/games/$gameId': typeof AuthedGamesGameIdRoute
+  '/admin': typeof AuthedAdminIndexRoute
+  '/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/admin/questions/import': typeof AuthedAdminQuestionsImportRoute
+  '/admin/questions': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
   '/redeem': typeof RedeemRoute
+  '/_authed/admin': typeof AuthedAdminRouteWithChildren
   '/_authed/': typeof AuthedIndexRoute
+  '/_authed/admin/invites': typeof AuthedAdminInvitesRoute
+  '/_authed/admin/presets': typeof AuthedAdminPresetsRoute
+  '/_authed/admin/users': typeof AuthedAdminUsersRoute
   '/_authed/games/$gameId': typeof AuthedGamesGameIdRoute
+  '/_authed/admin/': typeof AuthedAdminIndexRoute
+  '/_authed/admin/questions/$questionId': typeof AuthedAdminQuestionsQuestionIdRoute
+  '/_authed/admin/questions/import': typeof AuthedAdminQuestionsImportRoute
+  '/_authed/admin/questions/': typeof AuthedAdminQuestionsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login' | '/redeem' | '/games/$gameId'
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/redeem'
+    | '/admin'
+    | '/admin/invites'
+    | '/admin/presets'
+    | '/admin/users'
+    | '/games/$gameId'
+    | '/admin/'
+    | '/admin/questions/$questionId'
+    | '/admin/questions/import'
+    | '/admin/questions/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/redeem' | '/' | '/games/$gameId'
+  to:
+    | '/login'
+    | '/redeem'
+    | '/'
+    | '/admin/invites'
+    | '/admin/presets'
+    | '/admin/users'
+    | '/games/$gameId'
+    | '/admin'
+    | '/admin/questions/$questionId'
+    | '/admin/questions/import'
+    | '/admin/questions'
   id:
     | '__root__'
     | '/_authed'
     | '/login'
     | '/redeem'
+    | '/_authed/admin'
     | '/_authed/'
+    | '/_authed/admin/invites'
+    | '/_authed/admin/presets'
+    | '/_authed/admin/users'
     | '/_authed/games/$gameId'
+    | '/_authed/admin/'
+    | '/_authed/admin/questions/$questionId'
+    | '/_authed/admin/questions/import'
+    | '/_authed/admin/questions/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -110,6 +225,41 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedIndexRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/admin': {
+      id: '/_authed/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AuthedAdminRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/admin/': {
+      id: '/_authed/admin/'
+      path: '/'
+      fullPath: '/admin/'
+      preLoaderRoute: typeof AuthedAdminIndexRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
+    '/_authed/admin/invites': {
+      id: '/_authed/admin/invites'
+      path: '/invites'
+      fullPath: '/admin/invites'
+      preLoaderRoute: typeof AuthedAdminInvitesRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
+    '/_authed/admin/presets': {
+      id: '/_authed/admin/presets'
+      path: '/presets'
+      fullPath: '/admin/presets'
+      preLoaderRoute: typeof AuthedAdminPresetsRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
+    '/_authed/admin/users': {
+      id: '/_authed/admin/users'
+      path: '/users'
+      fullPath: '/admin/users'
+      preLoaderRoute: typeof AuthedAdminUsersRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
     '/_authed/games/$gameId': {
       id: '/_authed/games/$gameId'
       path: '/games/$gameId'
@@ -117,15 +267,62 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedGamesGameIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/admin/questions/': {
+      id: '/_authed/admin/questions/'
+      path: '/questions'
+      fullPath: '/admin/questions/'
+      preLoaderRoute: typeof AuthedAdminQuestionsIndexRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
+    '/_authed/admin/questions/$questionId': {
+      id: '/_authed/admin/questions/$questionId'
+      path: '/questions/$questionId'
+      fullPath: '/admin/questions/$questionId'
+      preLoaderRoute: typeof AuthedAdminQuestionsQuestionIdRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
+    '/_authed/admin/questions/import': {
+      id: '/_authed/admin/questions/import'
+      path: '/questions/import'
+      fullPath: '/admin/questions/import'
+      preLoaderRoute: typeof AuthedAdminQuestionsImportRouteImport
+      parentRoute: typeof AuthedAdminRoute
+    }
   }
 }
 
+interface AuthedAdminRouteChildren {
+  AuthedAdminInvitesRoute: typeof AuthedAdminInvitesRoute
+  AuthedAdminPresetsRoute: typeof AuthedAdminPresetsRoute
+  AuthedAdminUsersRoute: typeof AuthedAdminUsersRoute
+  AuthedAdminIndexRoute: typeof AuthedAdminIndexRoute
+  AuthedAdminQuestionsQuestionIdRoute: typeof AuthedAdminQuestionsQuestionIdRoute
+  AuthedAdminQuestionsImportRoute: typeof AuthedAdminQuestionsImportRoute
+  AuthedAdminQuestionsIndexRoute: typeof AuthedAdminQuestionsIndexRoute
+}
+
+const AuthedAdminRouteChildren: AuthedAdminRouteChildren = {
+  AuthedAdminInvitesRoute: AuthedAdminInvitesRoute,
+  AuthedAdminPresetsRoute: AuthedAdminPresetsRoute,
+  AuthedAdminUsersRoute: AuthedAdminUsersRoute,
+  AuthedAdminIndexRoute: AuthedAdminIndexRoute,
+  AuthedAdminQuestionsQuestionIdRoute: AuthedAdminQuestionsQuestionIdRoute,
+  AuthedAdminQuestionsImportRoute: AuthedAdminQuestionsImportRoute,
+  AuthedAdminQuestionsIndexRoute: AuthedAdminQuestionsIndexRoute,
+}
+
+const AuthedAdminRouteWithChildren = AuthedAdminRoute._addFileChildren(
+  AuthedAdminRouteChildren,
+)
+
 interface AuthedRouteChildren {
+  AuthedAdminRoute: typeof AuthedAdminRouteWithChildren
   AuthedIndexRoute: typeof AuthedIndexRoute
   AuthedGamesGameIdRoute: typeof AuthedGamesGameIdRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedAdminRoute: AuthedAdminRouteWithChildren,
   AuthedIndexRoute: AuthedIndexRoute,
   AuthedGamesGameIdRoute: AuthedGamesGameIdRoute,
 }

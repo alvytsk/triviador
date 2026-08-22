@@ -21,18 +21,37 @@ from triviador.api.errors import ApiError, ApiErrorCode
 from triviador.api.schemas.ws import LobbyGame, LobbyMessage
 from triviador.config import Settings
 from triviador.db.security import token_digest
+from triviador.services.admin import (
+    CategoryPort,
+    ImportPort,
+    InviteAdminPort,
+    MediaAssetPort,
+    PresetAdminPort,
+    QuestionAdminPort,
+    UserAdminPort,
+)
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     InviteStore,
     PasswordHasher,
     SessionStore,
+    UserRole,
     UserStore,
 )
-from triviador.services.ports import Clock, DatabaseProbe, GameCatalogPort, MapProvider, PresetPort
+from triviador.services.ports import (
+    Clock,
+    DatabaseProbe,
+    GameCatalogPort,
+    GarageProbe,
+    MapProvider,
+    PresetPort,
+)
+from triviador.services.storage import ImportStagingStore, MediaStore
 
 if TYPE_CHECKING:
     from triviador.api.ws.broadcaster import WsBroadcaster
     from triviador.api.ws.hub import Hub
+    from triviador.media.pipeline import ImageNormalizer
     from triviador.runtime.manager import GameManager
 
 
@@ -63,14 +82,37 @@ class Readiness:
 
     §10.6: readiness reports the *result* of the startup assertions rather
     than re-running them on every poll — that is true of the migration
-    check and of recovery, both of which are settled by the time the
-    process serves. It is **not** true of the database, which can go away
+    check, of recovery, and of `garage_ready`, all three settled by the
+    time the process serves. `garage_ready` in particular must stay this
+    way rather than follow `database`'s lead: a probe on every poll turns
+    a transient Garage blip into a backend that removes itself from
+    rotation, and `caddy` gates on `service_healthy`, so that takes the
+    whole site down over a hiccup Garage would otherwise have recovered
+    from on its own. It is **not** true of the database, which can go away
     while the process keeps running; that one is probed per request through
     `AppDependencies.database` (see `DatabaseProbe`).
+
+    `garage_ready` has one asymmetric exception to "recorded once", added
+    at `api/http/health.py`'s `ready()`: a latch that is *already True* is
+    never re-probed (same reasoning as above — a healthy process must not
+    be taken out of rotation by a hiccup), but a latch that is *False* is
+    re-probed exactly once per poll, because `False` can be a pure
+    startup-time accident rather than a real, ongoing outage. `restart:
+    unless-stopped` restarts `backend` and `garage` independently after a
+    host reboot (`depends_on` is enforced by `up`, not by the daemon), so
+    `backend` can win that race, run `deps.garage.ready()` before
+    `garage-init` has ever executed, and latch `False` for the rest of the
+    process's life — nothing else clears it, and re-running
+    `infra/deploy.sh` does not either (the same no-recreate-an-unchanged-
+    service mechanism `provision-media-lock.sh`'s docstring describes). A
+    latched failure heals on the first poll after Garage becomes reachable;
+    a latched success is never taken back down by a blip. Both halves are
+    load-bearing and neither one is a substitute for the other.
     """
 
     migrations_current: bool = False
     recovery_complete: bool = False
+    garage_ready: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,7 +127,10 @@ class AppDependencies:
     users: UserStore
     sessions: SessionStore
     invites: InviteStore
+    invites_admin: InviteAdminPort
+    users_admin: UserAdminPort
     database: DatabaseProbe
+    garage: GarageProbe
     hub: "Hub"
     broadcaster: "WsBroadcaster"
     manager: "GameManager"
@@ -93,6 +138,14 @@ class AppDependencies:
     games: GameCatalogPort
     maps: MapProvider
     presets: PresetPort
+    presets_admin: PresetAdminPort
+    media_store: MediaStore
+    media_assets: MediaAssetPort
+    questions_admin: QuestionAdminPort
+    categories: CategoryPort
+    normalizer: "ImageNormalizer"
+    imports: ImportPort
+    staging_store: ImportStagingStore
 
     async def lobby_message(
         self, kind: Literal["lobby.snapshot", "lobby.update"]
@@ -129,6 +182,7 @@ class AppDependencies:
 
         from triviador.api.ws.broadcaster import WsBroadcaster
         from triviador.api.ws.hub import Hub
+        from triviador.media.pipeline import ImageNormalizer
         from triviador.runtime.manager import GameManager
         from triviador.runtime.materialiser import Materialiser
 
@@ -154,7 +208,10 @@ class AppDependencies:
             users=unusable,
             sessions=unusable,
             invites=unusable,
+            invites_admin=unusable,
+            users_admin=unusable,
             database=unusable,
+            garage=unusable,
             hub=hub,
             broadcaster=broadcaster,
             manager=manager,
@@ -162,6 +219,14 @@ class AppDependencies:
             games=unusable,
             maps=unusable,
             presets=unusable,
+            presets_admin=unusable,
+            media_store=unusable,
+            media_assets=unusable,
+            questions_admin=unusable,
+            categories=unusable,
+            normalizer=ImageNormalizer(max_bytes=1, max_pixels=1, target_px=1),
+            imports=unusable,
+            staging_store=unusable,
         )
 
 
@@ -192,3 +257,20 @@ async def current_principal(
 
 Principal = Annotated[AuthenticatedPrincipal, Depends(current_principal)]
 Deps = Annotated[AppDependencies, Depends(deps_of)]
+
+
+async def current_admin(principal: Principal) -> AuthenticatedPrincipal:
+    """403, not 404.
+
+    Spec 1B §9 makes `/admin/*` a lazily-loaded, role-guarded tree — the
+    client already knows the routes exist, because it decides whether to
+    load them from `Me.role`. Hiding them behind a 404 for a player would
+    buy nothing and would make a genuine typo indistinguishable from a
+    permission problem in the one place an operator debugs by curl.
+    """
+    if principal.role is not UserRole.ADMIN:
+        raise ApiError(ApiErrorCode.FORBIDDEN, 403, "administrator access required")
+    return principal
+
+
+AdminPrincipal = Annotated[AuthenticatedPrincipal, Depends(current_admin)]

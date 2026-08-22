@@ -19,6 +19,7 @@ from triviador.api.schemas.games import (
 from triviador.domain.game.rules import GameRules
 from triviador.domain.game.state import GameState
 from triviador.domain.questions.types import QuestionPool
+from triviador.media.pipeline import object_key
 
 
 def _rules(rules: GameRules) -> ClientRules:
@@ -57,7 +58,7 @@ def _media_prefetch(pool: QuestionPool, media_base: str) -> tuple[str, ...]:
         for c in (q.choices or ())
         if c.media_asset_id is not None
     }
-    return tuple(f"{media_base}/{a}" for a in sorted(assets))
+    return tuple(f"{media_base}/{object_key(a)}" for a in sorted(assets))
 
 
 def project_snapshot(state: GameState, viewer: ViewerContext, *, media_base: str) -> GameSnapshot:

@@ -6,7 +6,7 @@ import { z } from "zod";
 export const acquisitionKindSchema = z.enum(["claimed","conquest","base"]);
 export type AcquisitionKind = z.infer<typeof acquisitionKindSchema>;
 
-export const apiErrorCodeSchema = z.enum(["validation_failed","unauthenticated","forbidden","not_found","method_not_allowed","payload_too_large","credentials_invalid","invite_invalid","username_taken","map_unknown","preset_unknown","no_default_preset","server_busy","server_restarting","game_recovering","game_unrecoverable","database_unavailable","internal_error"]).describe("Every value here and every value in `RejectCode` share one namespace.\nThe four `RuntimeCode` values are repeated verbatim rather than\nimported, so this enum is the single closed list codegen exports; a\ntest asserts the two sets agree.");
+export const apiErrorCodeSchema = z.enum(["validation_failed","unauthenticated","forbidden","not_found","method_not_allowed","payload_too_large","credentials_invalid","invite_invalid","username_taken","map_unknown","preset_unknown","media_rejected","slug_taken","import_not_confirmable","last_admin","self_target","no_default_preset","default_preset","server_busy","server_restarting","game_recovering","game_unrecoverable","database_unavailable","internal_error"]).describe("Every value here and every value in `RejectCode` share one namespace.\nThe four `RuntimeCode` values are repeated verbatim rather than\nimported, so this enum is the single closed list codegen exports; a\ntest asserts the two sets agree.");
 export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;
 
 export const clientChoiceSchema = z.object({ "idx": z.number().int(), "media_url": z.union([z.string(), z.null()]).default(null), "text": z.string() }).strict().describe("No `is_correct`. §12.3 rejects byte-scanning as the test for this,\nbecause the correct answer's *text* is legitimate content — so the\nguarantee has to be that the flag has nowhere to live.");
@@ -48,6 +48,9 @@ export type RedeemRequest = z.infer<typeof redeemRequestSchema>;
 export const rejectCodeSchema = z.enum(["not_a_participant","wrong_turn_state","not_your_turn","already_answered","already_joined","game_full","not_enough_players","question_pool_insufficient","unknown_region","region_not_free","own_territory","not_adjacent","answer_kind_mismatch"]);
 export type RejectCode = z.infer<typeof rejectCodeSchema>;
 
+export const rulesViewSchema = z.object({ "answer_timeout_ms": z.number().int(), "base_hp": z.number().int(), "battle_rounds": z.number().int(), "claims_by_rank": z.array(z.number().int()), "expansion_rounds": z.number().int(), "pick_timeout_ms": z.number().int(), "player_count": z.number().int(), "pts_base": z.number().int(), "pts_conquered": z.number().int(), "pts_defense": z.number().int(), "pts_territory": z.number().int(), "warmup_ms": z.number().int() }).strict().describe("`GameRules`, field for field. Written out rather than generated\nfrom the dataclass so the contract is reviewable in the diff — this\nmodel is what the lobby's rules readout renders.");
+export type RulesView = z.infer<typeof rulesViewSchema>;
+
 export const submittedValueSchema = z.object({ "idx": z.union([z.number().int(), z.null()]).default(null), "kind": z.enum(["choice","numeric"]), "value": z.union([z.string(), z.null()]).default(null) }).strict().describe("A player's own answer, echoed back to its author only.\n\n`value` is a string even for a numeric answer: JSON has one number type\nand it is a float, so `Decimal(\"0.1\")` round-trips through it wrong.\nEvery numeric value on this API is a decimal string for that reason.");
 export type SubmittedValue = z.infer<typeof submittedValueSchema>;
 
@@ -80,6 +83,9 @@ export type Me = z.infer<typeof meSchema>;
 
 export const pickingTurnSchema = z.object({ "current_picker": z.string(), "deadline_at": z.string().datetime({ offset: true }), "deadline_id": z.number().int(), "grants_remaining": z.record(z.number().int()), "kind": z.literal("expansion_picking").default("expansion_picking"), "pick_order": z.array(z.string()), "your_options": yourOptionsSchema.default({"attack":[],"pick":[]}) }).strict();
 export type PickingTurn = z.infer<typeof pickingTurnSchema>;
+
+export const presetSummarySchema = z.object({ "id": z.string(), "is_default": z.boolean(), "name": z.string(), "rules": rulesViewSchema }).strict();
+export type PresetSummary = z.infer<typeof presetSummarySchema>;
 
 export const targetSelectTurnSchema = z.object({ "attacker_id": z.string(), "deadline_at": z.string().datetime({ offset: true }), "deadline_id": z.number().int(), "kind": z.literal("battle_target_select").default("battle_target_select"), "your_options": yourOptionsSchema.default({"attack":[],"pick":[]}) }).strict();
 export type TargetSelectTurn = z.infer<typeof targetSelectTurnSchema>;

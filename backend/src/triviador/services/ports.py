@@ -224,11 +224,14 @@ class PresetRecord:
 
 
 class PresetPort(Protocol):
-    """Read-only. Preset CRUD is Plan 7; `POST /api/games` only needs to
-    resolve one id, or the default, into a frozen `GameRules`."""
+    """Read-only. Preset CRUD lives in `services.admin.PresetAdminPort`
+    (Plan 7A Task 12); `POST /api/games` only needs to resolve one id, or
+    the default, into a frozen `GameRules`, and `GET /api/presets` (the one
+    public preset route, Plan 7A Decision 1) needs every active one."""
 
     async def get(self, preset_id: str) -> PresetRecord | None: ...
     async def get_default(self) -> PresetRecord | None: ...
+    async def list_active(self) -> tuple[PresetRecord, ...]: ...
 
 
 class DatabaseProbe(Protocol):
@@ -242,6 +245,24 @@ class DatabaseProbe(Protocol):
     """
 
     async def ping(self) -> bool: ...
+
+
+class GarageProbe(Protocol):
+    """The opposite contract from `DatabaseProbe`, deliberately.
+
+    Called once from the startup sequence, and then again from
+    `/api/health/ready` on every poll for as long as `garage_ready` stays
+    `False` — never while it is `True` — see `api.deps.Readiness.
+    garage_ready`'s docstring for why readiness reports a recorded result
+    instead of an unconditional fresh call on every poll, and for the
+    asymmetry that makes a startup-time loss still recoverable. `ready()`
+    itself mirrors `infra/garage/init.sh`'s own guard: both buckets must
+    exist, and the staging bucket must not be website-enabled (a
+    website-enabled staging bucket publishes raw import uploads, answer
+    keys included).
+    """
+
+    async def ready(self) -> bool: ...
 
 
 class MapProvider(Protocol):

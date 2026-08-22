@@ -1,34 +1,53 @@
 """`uv run triviador <command>`.
 
-Three commands. `export-contracts` needs no database at all;
+Five commands. `export-contracts` needs no database at all;
 `admin-create` needs one, and is the bootstrap Spec 1 §10.1 specifies —
 with its three outcomes spelled out so it is safe in a deployment script;
 `seed-questions` needs one too, and installs the question bank Spec 1 §14.3
-requires before `StartGame` can succeed.
+requires before `StartGame` can succeed; `media-gc` needs a database and
+both buckets, and is §9.3's expiry machine plus §10.4's asset sweep — rare
+and destructive, so it is a command an operator runs, not a screen;
+`migrate` needs one too, and is §10.1's `migrate` step — the dedicated,
+non-restarting compose job that runs `alembic upgrade head` before `backend`
+is allowed to start.
 """
 
 import argparse
 import asyncio
 import csv
+import fcntl
 import io
 import random
 import sys
 import uuid
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from pathlib import Path
+
+from alembic import command as alembic_command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from triviador.api.contracts import export_contracts
 from triviador.config import get_settings
 from triviador.db.engine import engine_for, sessionmaker_for
 from triviador.db.repositories.auth import UserRepository
+from triviador.db.repositories.imports import QuestionImportRepository
+from triviador.db.repositories.media import MediaAssetRepository
 from triviador.db.repositories.presets import PresetRepository
 from triviador.db.repositories.questions import QuestionSeeder, SeedQuestion, prompt_digest
 from triviador.db.security import Argon2Hasher
 from triviador.domain.game.rules import required_question_budget
 from triviador.domain.ids import UserId
 from triviador.domain.questions.types import Difficulty, QuestionKind
+from triviador.imports.retire import ImportRetirer
+from triviador.media.gc import MediaCollector
+from triviador.media.lock import MEDIA_LOCK_PATH
+from triviador.runtime.clock import SystemClock
 from triviador.services.identity import PasswordHasher, UserRole, UserStore
+from triviador.storage.s3 import S3ImportStagingStore, S3MediaStore
 
 
 class AdminCreateOutcome(StrEnum):
@@ -243,6 +262,131 @@ async def _seed_questions_command(args: argparse.Namespace) -> int:
     return 1 if short else 0
 
 
+async def _media_gc_command(args: argparse.Namespace) -> int:
+    """Rare and destructive, so it is a command and not a screen (§10.4) —
+    and it prints what it did, because an operator running this at 2 a.m.
+    needs to be able to tell "nothing to collect" from "did not run".
+
+    Held under `MEDIA_LOCK_PATH` for the whole run — the identical host
+    path `infra/backup.sh` flocks (see `triviador.media.lock`) — so this
+    command's deletions can never interleave with a concurrent backup's
+    `rclone copy`/`rclone check`. Without that exclusion, this command
+    could delete an object a running backup has not copied yet, or delete
+    one between the backup's copy and its verification, turning a healthy
+    backup into a spurious failure.
+    """
+    settings = get_settings()
+    MEDIA_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(MEDIA_LOCK_PATH, "a") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        async with engine_for(settings.database_url) as engine:
+            sessionmaker = sessionmaker_for(engine)
+            staging = S3ImportStagingStore(
+                endpoint_url=settings.s3_endpoint_url,
+                region=settings.s3_region,
+                access_key_id=settings.s3_access_key_id,
+                secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+                bucket=settings.staging_bucket,
+            )
+            media = S3MediaStore(
+                endpoint_url=settings.s3_endpoint_url,
+                region=settings.s3_region,
+                access_key_id=settings.s3_access_key_id,
+                secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+                bucket=settings.media_bucket,
+            )
+            # Imports first: retiring a staged upload can only ever *reduce*
+            # what the media sweep has to consider, and running the sweep
+            # first would leave every just-expired object for the next run.
+            clock = SystemClock()
+            retired = await ImportRetirer(
+                imports=QuestionImportRepository(sessionmaker),
+                staging=staging,
+                clock=clock,
+            ).run(after_restore=args.after_restore, dry_run=args.dry_run)
+            collected = await MediaCollector(
+                assets=MediaAssetRepository(sessionmaker),
+                store=media,
+                grace=timedelta(minutes=settings.media_gc_grace_minutes),
+            ).run(now=clock.now(), dry_run=args.dry_run)
+        # Released here, at the end of the `with` block — the flock is
+        # dropped automatically when the lock file descriptor closes.
+
+    verb = "would expire" if args.dry_run else "expired"
+    print(f"imports {verb} {retired.expired}, staged objects {retired.objects_deleted}")
+    print(
+        f"unreferenced assets {len(collected.unreferenced)}, "
+        f"orphan objects {len(collected.orphan_objects)} "
+        f"({collected.skipped_young} too recent to touch)"
+    )
+    if args.dry_run:
+        print("dry run: nothing was deleted")
+    return 0
+
+
+# Arbitrary constant, scoped to this one lock: PostgreSQL advisory locks
+# share a single 64-bit keyspace per database, and this is the only user of
+# it. ADR-002 already guarantees exactly one running application process,
+# so this lock is not protecting against concurrent replicas — there are
+# none — it exists only to stop a human running `alembic upgrade` by hand
+# from racing this command during a deploy.
+_MIGRATE_LOCK_KEY = 7_198_402_331
+
+
+def _alembic_ini() -> Path:
+    """`alembic.ini` lives at the backend project root, not inside the
+    installed package, so finding it via `Path(__file__)` breaks the moment
+    the package is installed non-editable — exactly what
+    `infra/backend.Dockerfile`'s `uv sync --no-editable` does, at which
+    point `__file__` resolves somewhere under `site-packages`, nowhere near
+    it.
+
+    Both the container (`WORKDIR /app`) and every documented local
+    invocation (`cd backend && uv run triviador ...`) instead run with the
+    backend project root as the working directory, so that is what this
+    resolves against.
+    """
+    path = Path.cwd() / "alembic.ini"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} not found: `triviador migrate` must be run with the backend "
+            "project root (where alembic.ini lives) as the working directory"
+        )
+    return path
+
+
+async def migrate_head(engine: AsyncEngine, database_url: str) -> None:
+    """Run `alembic upgrade head` while holding a session-scoped PostgreSQL
+    advisory lock, so a second, concurrent invocation blocks instead of
+    racing this one (see `_MIGRATE_LOCK_KEY` for why that guard exists).
+
+    The lock is acquired and released on the same connection throughout —
+    `pg_advisory_lock` is tied to the backend session that took it, so
+    letting the connection be returned to a pool between the lock and the
+    unlock would silently drop it.
+    """
+    config = Config(str(_alembic_ini()))
+    config.set_main_option("sqlalchemy.url", database_url)
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATE_LOCK_KEY})
+        try:
+            # `command.upgrade` drives its own `asyncio.run(...)` inside
+            # `env.py`, which cannot be invoked from within a running event
+            # loop — so it runs on its own thread, same as the test suite's
+            # `_run_upgrade_head`.
+            await asyncio.to_thread(alembic_command.upgrade, config, "head")
+        finally:
+            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY})
+
+
+async def _migrate_command(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    async with engine_for(settings.database_url) as engine:
+        await migrate_head(engine, settings.database_url)
+    print("migrated to head")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="triviador")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -268,12 +412,29 @@ def main(argv: list[str] | None = None) -> int:
     seed = commands.add_parser("seed-questions")
     seed.add_argument("--csv", type=Path, required=True)
 
+    gc = commands.add_parser("media-gc")
+    gc.add_argument("--dry-run", action="store_true")
+    gc.add_argument(
+        "--after-restore",
+        action="store_true",
+        help=(
+            "expire every unconfirmed import regardless of its expiry: staging "
+            "is not backed up (§10.9), so after a restore their uploads are gone"
+        ),
+    )
+
+    commands.add_parser("migrate")
+
     args = parser.parse_args(argv)
     if args.command == "export-contracts":
         export_contracts(args.out)
         return 0
     if args.command == "seed-questions":
         return asyncio.run(_seed_questions_command(args))
+    if args.command == "media-gc":
+        return asyncio.run(_media_gc_command(args))
+    if args.command == "migrate":
+        return asyncio.run(_migrate_command(args))
     return asyncio.run(_admin_create_command(args))
 
 

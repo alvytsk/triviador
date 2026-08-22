@@ -12,7 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from triviador.db.models.auth import InviteCode, Session, User
+from triviador.db.security import new_token, token_digest
 from triviador.domain.ids import SessionId, UserId
+from triviador.services.admin import InviteRecord, InviteStatus, SetRoleOutcome
 from triviador.services.identity import (
     AuthenticatedPrincipal,
     RedeemOutcome,
@@ -76,6 +78,86 @@ class UserRepository:
                 .where(User.role == str(UserRole.ADMIN), User.is_active)
             )
             return result.scalar_one()
+
+
+class UserAdminRepository:
+    """Implements `services.admin.UserAdminPort`.
+
+    Separate from `UserRepository`, which is the identity path every
+    request touches: the admin surface's methods take locks and are
+    allowed to be slow, and mixing them would put a `FOR UPDATE` over the
+    whole admin set one autocomplete away from the login path.
+    """
+
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        self._sessionmaker = sessionmaker
+
+    async def list(self) -> tuple[UserRecord, ...]:
+        async with self._sessionmaker() as db:
+            rows = (await db.execute(select(User).order_by(User.username))).scalars().all()
+        return tuple(_to_record(row) for row in rows)
+
+    async def get(self, user_id: UserId) -> UserRecord | None:
+        async with self._sessionmaker() as db:
+            user = await db.get(User, user_id)
+        return None if user is None else _to_record(user)
+
+    async def deactivate(self, user_id: UserId, *, at: datetime) -> tuple[SessionId, ...] | None:
+        """One transaction: flip the flag and revoke every session, then
+        hand the caller the ids so it can close their sockets **after the
+        commit** — the same "committed before published" discipline §11.2
+        applies to game events.
+        """
+        async with self._sessionmaker() as db, db.begin():
+            user = await db.get(User, user_id, with_for_update=True)
+            if user is None:
+                return None
+            user.is_active = False
+            revoked = await db.execute(
+                update(Session)
+                .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+                .values(revoked_at=at)
+                .returning(Session.id)
+            )
+            return tuple(SessionId(i) for i in revoked.scalars().all())
+
+    async def set_role(
+        self, user_id: UserId, *, role: UserRole, at: datetime
+    ) -> tuple[SetRoleOutcome, tuple[SessionId, ...]]:
+        async with self._sessionmaker() as db, db.begin():
+            # Lock every active admin row *first*, in one statement. Two
+            # concurrent demotions then serialise here rather than both
+            # reading a count of two and both writing.
+            admins = (
+                (
+                    await db.execute(
+                        select(User.id)
+                        .where(User.role == str(UserRole.ADMIN), User.is_active)
+                        .order_by(User.id)
+                        .with_for_update()
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            user = await db.get(User, user_id)
+            if user is None:
+                return SetRoleOutcome.NOT_FOUND, ()
+            if role is UserRole.PLAYER and user.role == str(UserRole.ADMIN) and len(admins) <= 1:
+                return SetRoleOutcome.LAST_ADMIN, ()
+            if user.role == str(role):
+                return SetRoleOutcome.OK, ()
+            user.role = str(role)
+            # A live socket carries the principal it authenticated with
+            # (§6.5), so a role change has to end the sessions that hold
+            # the old one. The user signs in again and gets the new role.
+            revoked = await db.execute(
+                update(Session)
+                .where(Session.user_id == user_id, Session.revoked_at.is_(None))
+                .values(revoked_at=at)
+                .returning(Session.id)
+            )
+            return SetRoleOutcome.OK, tuple(SessionId(i) for i in revoked.scalars().all())
 
 
 class SessionRepository:
@@ -225,3 +307,69 @@ class InviteRepository:
                 # rolled back, so the invite is untouched and claimable.
                 return RedeemOutcome.USERNAME_TAKEN
         return RedeemOutcome.OK
+
+    async def issue(
+        self, *, count: int, expires_at: datetime, created_by: UserId
+    ) -> tuple[tuple[str, str], ...]:
+        """`(invite_id, code)` pairs — the only moment the plaintext exists.
+
+        Generated with `new_token()`, the same 32-byte `secrets` source as
+        a session token, and stored as `token_digest(code)`: an invite that
+        can be read back out of the database is a credential sitting in a
+        backup.
+        """
+        issued: list[tuple[str, str]] = []
+        async with self._sessionmaker() as db, db.begin():
+            for _ in range(count):
+                code = new_token()
+                invite = InviteCode(
+                    code_hash=token_digest(code),
+                    created_by=created_by,
+                    expires_at=expires_at,
+                )
+                db.add(invite)
+                await db.flush()
+                issued.append((invite.id, code))
+        return tuple(issued)
+
+    async def list_all(self, *, now: datetime) -> tuple[InviteRecord, ...]:
+        """Status is derived, never stored: `used_by`, `revoked_at` and
+        `expires_at` already say everything, and a fourth column would be
+        a copy of them that can disagree."""
+        async with self._sessionmaker() as db:
+            rows = (
+                (await db.execute(select(InviteCode).order_by(InviteCode.expires_at.desc())))
+                .scalars()
+                .all()
+            )
+        return tuple(
+            InviteRecord(
+                invite_id=row.id,
+                status=_invite_status(row, now=now),
+                expires_at=row.expires_at,
+                used_by=row.used_by,
+            )
+            for row in rows
+        )
+
+    async def revoke(self, invite_id: str, *, at: datetime) -> bool:
+        """`True` means "this invite exists", not "this call revoked it" —
+        a second revoke of an already-revoked row still returns `True` and
+        leaves `revoked_at` at its first value, which is what makes the
+        admin route's "revoking twice is not an error" idempotent all the
+        way down."""
+        async with self._sessionmaker() as db, db.begin():
+            row = await db.get(InviteCode, invite_id)
+            if row is None:
+                return False
+            if row.revoked_at is None:
+                row.revoked_at = at
+            return True
+
+
+def _invite_status(row: InviteCode, *, now: datetime) -> InviteStatus:
+    if row.used_by is not None:
+        return "used"
+    if row.revoked_at is not None:
+        return "revoked"
+    return "expired" if row.expires_at <= now else "pending"

@@ -307,3 +307,30 @@ def test_projection_stays_a_pure_function_of_state_and_viewer() -> None:
         if _is_forbidden(module, forbidden)
     ]
     assert violations == [], violations
+
+
+STORAGE = SRC / "triviador" / "storage"
+MEDIA = SRC / "triviador" / "media"
+IMPORTS = SRC / "triviador" / "imports"
+
+
+@pytest.mark.parametrize("package", [STORAGE, MEDIA, IMPORTS])
+def test_the_adapter_packages_do_not_import_the_layers_above_them(package: Path) -> None:
+    """`storage/`, `media/` and `imports/` sit where `maps/` sits: concrete
+    adapters, below `api/` and beside `db/`. Naming `api` would let the
+    composition root's shape leak into a pixel encoder; naming `db` would
+    put a session inside one, which is how a 200-image import ends up
+    holding a transaction open for the length of a CPU-bound encode.
+
+    `media/gc.py` is the one place that legitimately reads the event store,
+    and it does so through a repository handed to it — never by importing
+    `db` itself. That is why `db` is on this list rather than excused.
+    """
+    forbidden = ("triviador.api", "triviador.runtime", "triviador.db", "fastapi", "starlette")
+    violations = [
+        f"{path.relative_to(SRC)}: {module}"
+        for path in sorted(package.rglob("*.py"))
+        for module in sorted(_imported_modules(path))
+        if _is_forbidden(module, forbidden)
+    ]
+    assert violations == [], violations

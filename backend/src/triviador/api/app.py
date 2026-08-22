@@ -13,7 +13,6 @@ import secrets
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -23,26 +22,39 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from triviador.api.deps import AppDependencies, Readiness
 from triviador.api.errors import install_error_handlers
-from triviador.api.http import auth, games, health, maps
+from triviador.api.http import admin, auth, games, health, maps
+from triviador.api.http import presets as public_presets
 from triviador.api.logging import RequestContextMiddleware, configure_logging
 from triviador.api.middleware import BodyLimitMiddleware, HostMiddleware, OriginMiddleware
 from triviador.api.ws import endpoint
 from triviador.api.ws.broadcaster import WsBroadcaster
 from triviador.api.ws.hub import Hub
+from triviador.cli import _alembic_ini
 from triviador.config import Settings, startup_problems
 from triviador.db.engine import EnginePing, create_engine, sessionmaker_for
-from triviador.db.repositories.auth import InviteRepository, SessionRepository, UserRepository
+from triviador.db.repositories.auth import (
+    InviteRepository,
+    SessionRepository,
+    UserAdminRepository,
+    UserRepository,
+)
+from triviador.db.repositories.categories import CategoryRepository
 from triviador.db.repositories.games import GameRepository
+from triviador.db.repositories.imports import QuestionImportRepository
+from triviador.db.repositories.media import MediaAssetRepository
 from triviador.db.repositories.presets import PresetRepository
+from triviador.db.repositories.question_admin import QuestionAdminRepository
 from triviador.db.security import Argon2Hasher
 from triviador.db.unit_of_work import UnitOfWork
 from triviador.maps.registry import MapRegistry
+from triviador.media.pipeline import ImageNormalizer
 from triviador.runtime.clock import SystemClock
 from triviador.runtime.loader import GameLoader
 from triviador.runtime.manager import GameManager
 from triviador.runtime.materialiser import Materialiser
 from triviador.runtime.reaper import Reaper
 from triviador.runtime.watchdog import Watchdog
+from triviador.storage.s3 import S3GarageProbe, S3ImportStagingStore, S3MediaStore
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +78,21 @@ def create_app(
     # so an oversized body is refused without being read whatever its
     # origin.
     app.add_middleware(OriginMiddleware, allowed_origins=deps.settings.allowed_origins)
-    app.add_middleware(BodyLimitMiddleware, max_bytes=deps.settings.max_body_bytes)
+    app.add_middleware(
+        BodyLimitMiddleware,
+        max_bytes=deps.settings.max_body_bytes,
+        exempt_paths=admin.UPLOAD_PATHS,
+    )
     app.add_middleware(HostMiddleware, allowed_hosts=deps.settings.allowed_hosts)
     app.add_middleware(RequestContextMiddleware)
     app.include_router(auth.router)
     app.include_router(maps.router)
     app.include_router(games.router)
+    # Public and admin-only, side by side but never the same router:
+    # `/api/presets` (Plan 7A Decision 1) is signed-in-only, while every
+    # other preset route lives under `admin.router`'s `current_admin` guard.
+    app.include_router(public_presets.router)
+    app.include_router(admin.router)
     app.include_router(health.router)
     app.include_router(endpoint.router)
     install_error_handlers(app)
@@ -106,6 +127,28 @@ def build_dependencies(settings: Settings) -> BuiltApp:
     uow = UnitOfWork(sessions)
     games = GameRepository(sessions)
     rng = random.Random()
+    media_store = S3MediaStore(
+        endpoint_url=settings.s3_endpoint_url,
+        region=settings.s3_region,
+        access_key_id=settings.s3_access_key_id,
+        secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        bucket=settings.media_bucket,
+    )
+    staging_store = S3ImportStagingStore(
+        endpoint_url=settings.s3_endpoint_url,
+        region=settings.s3_region,
+        access_key_id=settings.s3_access_key_id,
+        secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        bucket=settings.staging_bucket,
+    )
+    garage = S3GarageProbe(
+        endpoint_url=settings.s3_endpoint_url,
+        region=settings.s3_region,
+        access_key_id=settings.s3_access_key_id,
+        secret_access_key=settings.s3_secret_access_key.get_secret_value(),
+        media_bucket=settings.media_bucket,
+        staging_bucket=settings.staging_bucket,
+    )
 
     manager = GameManager(
         loader=GameLoader(uow=uow, maps=maps_registry),
@@ -122,6 +165,14 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         backoff_max_s=settings.recovery_backoff_max_s,
     )
     hasher = Argon2Hasher()
+    # One instance satisfies both `InviteStore` (the public redeem path) and
+    # `InviteAdminPort` (this task's issue/list/revoke) — the same pattern
+    # `games` already uses for `GameCatalogPort`/`GameQueriesPort`.
+    invites = InviteRepository(sessions)
+    # Likewise one instance for `PresetPort` (the public read) and
+    # `PresetAdminPort` (this task's CRUD) — see `PresetAdminRecord`'s
+    # docstring for why one repository method can satisfy both.
+    presets = PresetRepository(sessions)
     deps = AppDependencies(
         settings=settings,
         clock=clock,
@@ -131,15 +182,30 @@ def build_dependencies(settings: Settings) -> BuiltApp:
         dummy_password_hash=hasher.hash(secrets.token_urlsafe(32)),
         users=UserRepository(sessions),
         sessions=SessionRepository(sessions),
-        invites=InviteRepository(sessions),
+        invites=invites,
+        invites_admin=invites,
+        users_admin=UserAdminRepository(sessions),
         database=EnginePing(engine),
+        garage=garage,
         hub=hub,
         broadcaster=broadcaster,
         manager=manager,
         readiness=Readiness(),
         games=games,
         maps=maps_registry,
-        presets=PresetRepository(sessions),
+        presets=presets,
+        presets_admin=presets,
+        media_store=media_store,
+        media_assets=MediaAssetRepository(sessions),
+        questions_admin=QuestionAdminRepository(sessions),
+        categories=CategoryRepository(sessions),
+        normalizer=ImageNormalizer(
+            max_bytes=settings.media_max_bytes,
+            max_pixels=settings.media_max_pixels,
+            target_px=settings.media_target_px,
+        ),
+        imports=QuestionImportRepository(sessions),
+        staging_store=staging_store,
     )
     return BuiltApp(
         deps=deps,
@@ -194,6 +260,20 @@ def _lifespan(built: BuiltApp) -> Callable[[FastAPI], AbstractAsyncContextManage
         if not readiness.migrations_current:
             raise RuntimeError(f"database is at revision {current!r}, expected head")
 
+        # §10.6's fourth check, recorded once here rather than raised on
+        # failure: unlike a stale schema (actively dangerous to run
+        # against), a Garage that `infra/garage/init.sh` never reached is
+        # safe to boot next to — it just means media and imports do not
+        # work yet. `garage_ready` staying `False` keeps `/api/health/ready`
+        # at 503, which is what takes this process out of `caddy`'s
+        # rotation (`service_healthy`) without crash-looping the container.
+        readiness.garage_ready = await deps.garage.ready()
+        if not readiness.garage_ready:
+            logger.error(
+                "startup Garage assertion failed: a bucket is missing, or the "
+                "staging bucket is website-enabled"
+            )
+
         unloadable = await deps.manager.recover_active_games()
         if unloadable:
             logger.error(
@@ -231,7 +311,19 @@ def _lifespan(built: BuiltApp) -> Callable[[FastAPI], AbstractAsyncContextManage
 def _head_revision() -> str | None:
     """Alembic's own idea of "head", read from its script directory rather
     than hardcoded — the migration files are the one place this can go
-    stale without anyone editing this function."""
-    backend_root = Path(__file__).resolve().parents[3]
-    config = Config(str(backend_root / "alembic.ini"))
+    stale without anyone editing this function.
+
+    Locating `alembic.ini` via `Path(__file__)` breaks the moment the
+    package is installed non-editable — exactly what
+    `infra/backend.Dockerfile`'s `uv sync --no-editable` does, at which
+    point `__file__` resolves under `site-packages`, nowhere near
+    `alembic.ini`, and this raised at every container startup. Reuse
+    `triviador.cli`'s `_alembic_ini()`, which resolves against
+    `Path.cwd()` instead (both the container's `WORKDIR /app` and every
+    documented `cd backend && …` invocation run with the backend project
+    root as the working directory) — the same fix `migrate_head` needed
+    for the identical bug, kept in one place so the two don't drift back
+    to different strategies for the same file.
+    """
+    config = Config(str(_alembic_ini()))
     return ScriptDirectory.from_config(config).get_current_head()

@@ -15,10 +15,12 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -72,6 +74,21 @@ class Question(Base):
     __table_args__ = (
         CheckConstraint("kind IN ('multiple_choice', 'numeric')", name="kind_valid"),
         CheckConstraint("difficulty IN ('easy', 'medium', 'hard')", name="difficulty_valid"),
+        # Declared here so `alembic check` (models vs. migrations) stays
+        # meaningful — migration 0004 is what actually creates this index
+        # (via `pg_trgm`'s `gin_trgm_ops`, which `Index(...)` alone cannot
+        # express as DDL), but leaving it undeclared here would make
+        # `compare_metadata` see a real index the models don't know about
+        # and want to drop it on every future autogenerate. The operator
+        # class goes in `postgresql_ops`, not inline in the expression —
+        # inline, Alembic can't parse it back out of the reflected index
+        # and warns that it "cannot proceed" comparing the two.
+        Index(
+            "ix_questions_prompt_trgm",
+            func.lower(text("prompt")),
+            postgresql_using="gin",
+            postgresql_ops={"lower": "gin_trgm_ops"},
+        ),
     )
 
 
