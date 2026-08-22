@@ -64,6 +64,17 @@ describe("the dev proxy", () => {
     vi.unstubAllEnvs();
   });
 
+  it("strips the /media prefix, the same way Caddy's handle_path does in production", () => {
+    // The bug this test exists to prevent: Caddy's production `/media/*`
+    // handler strips the matched prefix before proxying
+    // (`strip_path_prefix`); this dev proxy entry did not, so an upstream
+    // received `/media/ab/abcdef.webp` verbatim and every question image
+    // 404d in development.
+    const media = proxy()["/media"] as { rewrite?: (path: string) => string };
+    if (!media.rewrite) throw new Error("no rewrite on the /media proxy entry");
+    expect(media.rewrite("/media/ab/x.webp")).toBe("/ab/x.webp");
+  });
+
   it("leaves the browser's Origin intact for /api and /ws", () => {
     // §6.4 checks Origin exactly; rewriting it would make development pass
     // a check production performs differently.

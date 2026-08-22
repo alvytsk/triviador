@@ -250,13 +250,16 @@ class DatabaseProbe(Protocol):
 class GarageProbe(Protocol):
     """The opposite contract from `DatabaseProbe`, deliberately.
 
-    Called exactly once, from the startup sequence — see `api.deps.
-    Readiness.garage_ready`'s docstring for why readiness reports that
-    recorded result instead of calling `ready()` again on every poll.
-    `ready()` itself mirrors `infra/garage/init.sh`'s own guard: both
-    buckets must exist, and the staging bucket must not be website-enabled
-    (a website-enabled staging bucket publishes raw import uploads,
-    answer keys included).
+    Called once from the startup sequence, and then again from
+    `/api/health/ready` on every poll for as long as `garage_ready` stays
+    `False` — never while it is `True` — see `api.deps.Readiness.
+    garage_ready`'s docstring for why readiness reports a recorded result
+    instead of an unconditional fresh call on every poll, and for the
+    asymmetry that makes a startup-time loss still recoverable. `ready()`
+    itself mirrors `infra/garage/init.sh`'s own guard: both buckets must
+    exist, and the staging bucket must not be website-enabled (a
+    website-enabled staging bucket publishes raw import uploads, answer
+    keys included).
     """
 
     async def ready(self) -> bool: ...

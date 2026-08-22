@@ -150,6 +150,14 @@ export default defineConfig({
         target: MEDIA_TARGET,
         changeOrigin: false,
         headers: { Host: MEDIA_HOST },
+        // Caddy's production `/media/*` handler is `handle_path`, which
+        // strips the matched prefix before proxying (`caddy adapt` shows
+        // `"handler":"rewrite","strip_path_prefix":"/media"`). This proxy
+        // entry has no such default — proved by pointing it at an echo
+        // upstream and observing `path=/media/ab/abcdef.webp` arrive
+        // unstripped — so every question image 404s in development
+        // without this rewrite, the exact bug Task 7 exists to fix.
+        rewrite: (path) => path.replace(/^\/media/, ""),
       },
     },
   },

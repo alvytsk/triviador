@@ -92,10 +92,13 @@ class FakeGarageProbe:
     """`GarageProbe`. `calls` exists for the opposite reason `FakeDatabase.
     pings` does: `database` is correctly probed by `ready()` on every
     request (`test_readiness_reports_a_database_that_went_away_after_
-    startup` pins that), while `garage_ready` is recorded once at startup
-    and only *read* by `ready()` — `test_readiness_does_not_probe_garage_
-    per_poll` asserts `calls` stays at zero across a poll, which is only
-    true if `ready()` never reaches for this collaborator at all."""
+    startup` pins that), while `garage_ready` is remembered once it is
+    `True` and only *read* by `ready()` from then on —
+    `test_readiness_does_not_probe_garage_per_poll` asserts `calls` stays
+    unchanged across a poll while latched `True`. The asymmetric other
+    half — a latch that is `False` gets re-probed every poll until it
+    heals — is `test_readiness_reprobes_garage_when_latched_false_and_
+    heals`, in the same file."""
 
     def __init__(self, ready: bool = True) -> None:
         self.ready_result = ready

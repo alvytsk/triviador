@@ -77,8 +77,15 @@ async def test_readiness_reports_garage_initialisation(
 ) -> None:
     """§10.6's fourth condition. The backend verifies at startup that its
     buckets exist and that the staging bucket is not website-enabled; a
-    deploy where garage-init silently did not run must not report ready."""
+    deploy where garage-init silently did not run must not report ready.
+
+    A `False` latch is re-probed (see `test_readiness_reprobes_garage_
+    when_latched_false_and_heals`), so the underlying probe must genuinely
+    still fail here — this is the case where garage-init really never ran,
+    not the transient-startup-race case that is supposed to heal."""
     deps.readiness.garage_ready = False
+    assert isinstance(deps.garage, FakeGarageProbe)
+    deps.garage.ready_result = False
 
     response = await client.get("/api/health/ready")
 
@@ -100,6 +107,39 @@ async def test_readiness_does_not_probe_garage_per_poll(
 
     assert response.status_code == 200
     assert deps.garage.calls == before
+
+
+async def test_readiness_reprobes_garage_when_latched_false_and_heals(
+    client: httpx.AsyncClient, deps: AppDependencies
+) -> None:
+    """The asymmetric other half of `test_readiness_does_not_probe_garage_
+    per_poll`: a `False` latch is exactly the transient-at-startup case
+    (`backend` winning the reboot race against `garage-init`) and must heal
+    on its own, without a manual `restart backend`. A `True` latch must
+    never be reprobed — proven by the sibling test above; this one proves
+    `False` is reprobed every poll until Garage answers `True`, and that
+    once it does, the latch is set and polling stops touching the probe
+    again."""
+    deps.readiness.garage_ready = False
+    assert isinstance(deps.garage, FakeGarageProbe)
+    deps.garage.ready_result = False
+    deps.garage.calls = 0
+
+    first = await client.get("/api/health/ready")
+    assert first.status_code == 503
+    assert first.json()["garage_ready"] is False
+    assert deps.garage.calls == 1
+
+    deps.garage.ready_result = True
+    second = await client.get("/api/health/ready")
+    assert second.status_code == 200
+    assert second.json()["garage_ready"] is True
+    assert deps.garage.calls == 2
+    assert deps.readiness.garage_ready is True
+
+    third = await client.get("/api/health/ready")
+    assert third.status_code == 200
+    assert deps.garage.calls == 2  # healed: no longer reprobed
 
 
 async def test_readiness_reports_a_database_that_went_away_after_startup(

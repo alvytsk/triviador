@@ -5,7 +5,7 @@ The trap this suite exists to catch: Garage v1.1.0's `get_bucket_website`
 does **not** behave like real AWS S3. AWS raises `NoSuchWebsiteConfiguration`
 for a bucket with no website config; Garage answers with an ordinary 200/204
 and an *empty* body instead (confirmed against the running `garage-test`
-container — see task report). A probe written against the AWS-shaped
+container). A probe written against the AWS-shaped
 contract — "not configured" means "it raised" — would report `ready() is
 True` unconditionally against Garage, website-enabled staging bucket or
 not: exactly the kind of guard that cannot fire this plan has shipped

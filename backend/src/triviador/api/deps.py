@@ -91,6 +91,23 @@ class Readiness:
     from on its own. It is **not** true of the database, which can go away
     while the process keeps running; that one is probed per request through
     `AppDependencies.database` (see `DatabaseProbe`).
+
+    `garage_ready` has one asymmetric exception to "recorded once", added
+    at `api/http/health.py`'s `ready()`: a latch that is *already True* is
+    never re-probed (same reasoning as above — a healthy process must not
+    be taken out of rotation by a hiccup), but a latch that is *False* is
+    re-probed exactly once per poll, because `False` can be a pure
+    startup-time accident rather than a real, ongoing outage. `restart:
+    unless-stopped` restarts `backend` and `garage` independently after a
+    host reboot (`depends_on` is enforced by `up`, not by the daemon), so
+    `backend` can win that race, run `deps.garage.ready()` before
+    `garage-init` has ever executed, and latch `False` for the rest of the
+    process's life — nothing else clears it, and re-running
+    `infra/deploy.sh` does not either (the same no-recreate-an-unchanged-
+    service mechanism `provision-media-lock.sh`'s docstring describes). A
+    latched failure heals on the first poll after Garage becomes reachable;
+    a latched success is never taken back down by a blip. Both halves are
+    load-bearing and neither one is a substitute for the other.
     """
 
     migrations_current: bool = False
