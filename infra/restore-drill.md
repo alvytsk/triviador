@@ -38,12 +38,23 @@ MEDIA=backups/media                     # the append-only media backup
 
 ```sh
 ./infra/render-secrets.sh
+./infra/provision-media-lock.sh
 $COMPOSE build
 $COMPOSE up -d db garage
 ```
 
 Wait for both healthy (`$COMPOSE ps`) before continuing — the same precondition
 `infra/deploy.sh` waits on.
+
+`provision-media-lock.sh` matters here specifically: a "disposable host or a second
+checkout" (this drill's own precondition, above) is exactly the freshly-booted case
+where `/var/lock/triviador-media.lock` does not exist yet — `/var/lock` is tmpfs, so it
+never survives a reboot. Skip this and Step 6 below (`triviador media-gc
+--after-restore`) is the step that walks straight into it: Docker auto-vivifies the
+missing bind-mount source as a root-owned directory, and `media-gc` fails with
+`IsADirectoryError` instead of expiring anything. See
+`infra/provision-media-lock.sh` for the full mechanism, including the backend/backup
+uid mismatch it also has to avoid re-introducing.
 
 ### 2. Run garage-init
 
