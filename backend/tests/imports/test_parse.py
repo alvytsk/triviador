@@ -37,7 +37,10 @@ def test_a_plain_csv_parses_both_kinds() -> None:
     assert parsed.rejections == ()
     assert [r.kind for r in parsed.rows] == ["multiple_choice", "numeric"]
     assert parsed.rows[0].choices == (
-        ("Vltava", True), ("Elbe", False), ("Morava", False), ("Ohře", False)
+        ("Vltava", True),
+        ("Elbe", False),
+        ("Morava", False),
+        ("Ohře", False),
     )
     assert parsed.rows[1].numeric_answer == Decimal("1989")
 
@@ -102,8 +105,10 @@ def test_a_wrong_header_is_a_whole_upload_rejection() -> None:
 
 
 def test_a_zip_carries_its_media() -> None:
-    parsed = parse_upload(zip_bytes(csv_bytes(MC.replace(",,,", ",,,river.png")),
-                                    {"river.png": b"PNGDATA"}), filename="bank.zip")
+    parsed = parse_upload(
+        zip_bytes(csv_bytes(MC.replace(",,,", ",,,river.png")), {"river.png": b"PNGDATA"}),
+        filename="bank.zip",
+    )
     assert parsed.rows[0].media_file == "river.png"
     assert parsed.media["river.png"] == b"PNGDATA"
 

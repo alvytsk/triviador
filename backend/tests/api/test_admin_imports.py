@@ -74,19 +74,23 @@ async def test_nothing_is_written_to_the_bank(
     assert isinstance(deps.media_store, FakeMediaStore)
     assert isinstance(deps.categories, FakeCategories)
     before = len(deps.questions_admin.records), len(deps.media_store.objects)
-    await dry_run(admin_client, zip_bytes(csv_bytes(MC.replace(",,,", ",,,river.png")),
-                                          {"river.png": png(32, 32)}), "bank.zip")
+    await dry_run(
+        admin_client,
+        zip_bytes(csv_bytes(MC.replace(",,,", ",,,river.png")), {"river.png": png(32, 32)}),
+        "bank.zip",
+    )
     assert (len(deps.questions_admin.records), len(deps.media_store.objects)) == before
     assert deps.categories.records == {}
 
 
 async def test_a_rejected_row_makes_the_upload_unconfirmable(
-    admin_client: httpx.AsyncClient
+    admin_client: httpx.AsyncClient,
 ) -> None:
     """§10.3: CONFIRM is enabled only when `rejected == 0`. The server says
     so on the report rather than leaving the rule to the client."""
-    response = await dry_run(admin_client, csv_bytes(MC, "numeric,No answer,history,easy,,,,,,,,"),
-                             "b.csv")
+    response = await dry_run(
+        admin_client, csv_bytes(MC, "numeric,No answer,history,easy,,,,,,,,"), "b.csv"
+    )
     body = response.json()
     assert (body["row_count"], body["rejected_count"]) == (1, 1)
     assert body["confirmable"] is False
@@ -227,7 +231,7 @@ def test_confirmable_is_false_once_the_upload_expires() -> None:
 
 
 async def test_a_duplicate_prompt_is_a_notice_and_the_upload_stays_confirmable(
-    admin_client: httpx.AsyncClient
+    admin_client: httpx.AsyncClient,
 ) -> None:
     """§10.2's rule, in the place it is easiest to get wrong: a repeated
     prompt inside one file, and a prompt the bank already holds, are both

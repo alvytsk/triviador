@@ -376,9 +376,7 @@ async def migrate_head(engine: AsyncEngine, database_url: str) -> None:
             # `_run_upgrade_head`.
             await asyncio.to_thread(alembic_command.upgrade, config, "head")
         finally:
-            await conn.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY}
-            )
+            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY})
 
 
 async def _migrate_command(args: argparse.Namespace) -> int:

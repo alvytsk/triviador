@@ -133,9 +133,7 @@ async def deactivate_preset(preset_id: str, deps: Deps, principal: AdminPrincipa
 
 
 @router.get("/{preset_id}/coverage")
-async def preset_coverage(
-    preset_id: str, deps: Deps, principal: AdminPrincipal
-) -> PresetCoverage:
+async def preset_coverage(preset_id: str, deps: Deps, principal: AdminPrincipal) -> PresetCoverage:
     record = await deps.presets_admin.get_including_retired(preset_id)
     if record is None:
         raise ApiError(ApiErrorCode.NOT_FOUND, 404, "no such preset")

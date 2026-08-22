@@ -228,9 +228,7 @@ class QuestionImportRepository:
                 prompt=row.prompt,
                 category_id=categories[row.category_slug],
                 difficulty=row.difficulty,
-                media_asset_id=(
-                    images[row.media_file].asset_id if row.media_file else None
-                ),
+                media_asset_id=(images[row.media_file].asset_id if row.media_file else None),
                 choices=row.choices,
                 numeric_answer=row.numeric_answer,
                 unit=row.unit,

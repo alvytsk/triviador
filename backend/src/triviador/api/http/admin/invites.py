@@ -37,8 +37,7 @@ async def issue_invites(
         count=body.count, expires_at=expires_at, created_by=principal.user_id
     )
     return [
-        IssuedInvite(id=invite_id, code=code, expires_at=expires_at)
-        for invite_id, code in issued
+        IssuedInvite(id=invite_id, code=code, expires_at=expires_at) for invite_id, code in issued
     ]
 
 

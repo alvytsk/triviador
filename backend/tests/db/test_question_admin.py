@@ -124,7 +124,10 @@ async def test_editing_a_choice_bumps_the_parent_version(
     assert after is not None
     assert after.version == before.version + 1
     assert [(c.text, c.is_correct) for c in after.choices or ()] == [
-        ("A", False), ("B", False), ("C", True), ("D", False)
+        ("A", False),
+        ("B", False),
+        ("C", True),
+        ("D", False),
     ]
 
 

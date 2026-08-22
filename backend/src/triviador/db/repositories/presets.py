@@ -86,10 +86,14 @@ class PresetRepository:
         retirement means here."""
         async with self._sessionmaker() as session:
             rows = (
-                await session.execute(
-                    select(RulePreset).where(RulePreset.is_active).order_by(RulePreset.name)
+                (
+                    await session.execute(
+                        select(RulePreset).where(RulePreset.is_active).order_by(RulePreset.name)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         return tuple(PresetRecord(r.id, r.name, _to_rules(r.rules)) for r in rows)
 
     async def list_all(self) -> tuple[PresetAdminRecord, ...]:
@@ -98,8 +102,10 @@ class PresetRepository:
         what this screen does."""
         async with self._sessionmaker() as session:
             rows = (
-                await session.execute(select(RulePreset).order_by(RulePreset.name))
-            ).scalars().all()
+                (await session.execute(select(RulePreset).order_by(RulePreset.name)))
+                .scalars()
+                .all()
+            )
         return tuple(
             PresetAdminRecord(r.id, r.name, _to_rules(r.rules), r.is_default, r.is_active)
             for r in rows

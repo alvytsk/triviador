@@ -23,8 +23,12 @@ async def _echo_size(request: Request) -> JSONResponse:
 
 
 def _app(exempt: tuple[str, ...]) -> Starlette:
-    app = Starlette(routes=[Route("/open", _echo_size, methods=["POST"]),
-                            Route("/capped", _echo_size, methods=["POST"])])
+    app = Starlette(
+        routes=[
+            Route("/open", _echo_size, methods=["POST"]),
+            Route("/capped", _echo_size, methods=["POST"]),
+        ]
+    )
     app.add_middleware(BodyLimitMiddleware, max_bytes=16, exempt_paths=exempt)
     return app
 

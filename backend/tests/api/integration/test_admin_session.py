@@ -44,9 +44,12 @@ def test_an_admin_can_furnish_a_server_from_nothing(
     client, _settings = admin_session
 
     # 1. A category, because an import references one by slug.
-    assert client.post(
-        "/api/admin/categories", json={"slug": "geography", "name": "Geography"}
-    ).status_code == 201
+    assert (
+        client.post(
+            "/api/admin/categories", json={"slug": "geography", "name": "Geography"}
+        ).status_code
+        == 201
+    )
 
     # 2. A question typed by hand, with an image uploaded first.
     uploaded = client.post(
@@ -145,8 +148,12 @@ def test_an_admin_can_furnish_a_server_from_nothing(
         newcomer.headers["Origin"] = "http://testserver"
         redeemed = newcomer.post(
             "/api/auth/redeem",
-            json={"code": code, "username": "newcomer", "password": "correct horse",
-                  "display_name": "Newcomer"},
+            json={
+                "code": code,
+                "username": "newcomer",
+                "password": "correct horse",
+                "display_name": "Newcomer",
+            },
         )
         assert redeemed.status_code == 201
         assert newcomer.get("/api/auth/me").status_code == 200
@@ -161,9 +168,10 @@ def test_an_admin_can_furnish_a_server_from_nothing(
     # 6. The admin cannot remove themselves.
     me = client.get("/api/auth/me").json()
     assert client.post(f"/api/admin/users/{me['user_id']}/deactivate").status_code == 409
-    assert client.post(
-        f"/api/admin/users/{me['user_id']}/role", json={"role": "player"}
-    ).status_code == 409
+    assert (
+        client.post(f"/api/admin/users/{me['user_id']}/role", json={"role": "player"}).status_code
+        == 409
+    )
 
 
 def test_a_stale_media_asset_id_is_404_not_a_database_outage(
@@ -180,9 +188,7 @@ def test_a_stale_media_asset_id_is_404_not_a_database_outage(
     """
     client, settings = admin_session
 
-    misc = client.post(
-        "/api/admin/categories", json={"slug": "misc", "name": "Misc"}
-    ).json()
+    misc = client.post("/api/admin/categories", json={"slug": "misc", "name": "Misc"}).json()
     asset = client.post(
         "/api/admin/media", content=png(40, 40), headers={"Content-Type": "image/png"}
     ).json()
@@ -245,14 +251,19 @@ def test_media_gc_keeps_what_a_question_still_names_and_collects_what_nothing_do
         "/api/admin/media", content=png(121, 61), headers={"Content-Type": "image/png"}
     ).json()
     client.post("/api/admin/categories", json={"slug": "misc", "name": "Misc"})
-    misc = next(
-        c["id"] for c in client.get("/api/admin/categories").json() if c["slug"] == "misc"
-    )
+    misc = next(c["id"] for c in client.get("/api/admin/categories").json() if c["slug"] == "misc")
     client.post(
         "/api/admin/questions",
-        json={"kind": "numeric", "prompt": "Kept?", "category_id": misc, "difficulty": "easy",
-              "media_asset_id": attached["id"], "choices": None, "numeric_answer": "1",
-              "unit": None},
+        json={
+            "kind": "numeric",
+            "prompt": "Kept?",
+            "category_id": misc,
+            "difficulty": "easy",
+            "media_asset_id": attached["id"],
+            "choices": None,
+            "numeric_answer": "1",
+            "unit": None,
+        },
     )
 
     # Dry run first: it must report the same verdict and change nothing.

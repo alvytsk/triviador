@@ -222,9 +222,7 @@ def api_routes(app: FastAPI) -> tuple[MountedRoute, ...]:
             context = getattr(route, "include_context", None)
             prefix = getattr(context, "prefix", "") or ""
             inherited = tuple(getattr(context, "dependencies", ()) or ())
-            stack.append(
-                (included, base + prefix, guards | {d.dependency for d in inherited})
-            )
+            stack.append((included, base + prefix, guards | {d.dependency for d in inherited}))
     return tuple(found)
 
 

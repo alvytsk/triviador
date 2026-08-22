@@ -172,6 +172,10 @@ def test_every_new_error_code_is_exported() -> None:
     from triviador.api.contracts import errors_schema
 
     assert {
-        "media_rejected", "import_not_confirmable", "slug_taken",
-        "default_preset", "last_admin", "self_target",
+        "media_rejected",
+        "import_not_confirmable",
+        "slug_taken",
+        "default_preset",
+        "last_admin",
+        "self_target",
     } <= set(errors_schema()["api_error_code"])

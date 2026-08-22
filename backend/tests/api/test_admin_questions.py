@@ -91,9 +91,7 @@ async def test_three_choices_is_a_validation_error(admin_client: httpx.AsyncClie
 async def test_two_correct_choices_is_a_validation_error(admin_client: httpx.AsyncClient) -> None:
     choices = [dict(c) for c in MC_BODY["choices"]]
     choices[1]["is_correct"] = True
-    response = await admin_client.post(
-        "/api/admin/questions", json={**MC_BODY, "choices": choices}
-    )
+    response = await admin_client.post("/api/admin/questions", json={**MC_BODY, "choices": choices})
     assert response.status_code == 422
 
 
@@ -162,9 +160,7 @@ async def test_patching_with_a_stale_category_or_media_asset_id_is_404_not_503(
     created = (await admin_client.post("/api/admin/questions", json=MC_BODY)).json()["question"]
 
     deps.questions_admin.missing_category_ids = frozenset({MC_BODY["category_id"]})
-    by_category = await admin_client.patch(
-        f"/api/admin/questions/{created['id']}", json=MC_BODY
-    )
+    by_category = await admin_client.patch(f"/api/admin/questions/{created['id']}", json=MC_BODY)
     assert by_category.status_code == 404
     assert by_category.json()["code"] == "not_found"
 

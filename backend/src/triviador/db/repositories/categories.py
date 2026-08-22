@@ -24,11 +24,7 @@ class CategoryRepository:
 
     async def list(self) -> tuple[CategoryRecord, ...]:
         async with self._sessionmaker() as session:
-            rows = (
-                (await session.execute(select(Category).order_by(Category.slug)))
-                .scalars()
-                .all()
-            )
+            rows = (await session.execute(select(Category).order_by(Category.slug))).scalars().all()
         return tuple(CategoryRecord(r.id, r.slug, r.name) for r in rows)
 
     async def create(self, *, slug: str, name: str) -> CategoryRecord:

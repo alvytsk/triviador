@@ -139,20 +139,23 @@ async def test_two_confirms_introducing_the_same_new_category_do_not_race(
 
     async with sessions() as session:
         categories = (
-            await session.execute(sql("SELECT id FROM categories WHERE slug = 'sports'"))
-        ).scalars().all()
+            (await session.execute(sql("SELECT id FROM categories WHERE slug = 'sports'")))
+            .scalars()
+            .all()
+        )
         category_ids = (
-            await session.execute(
-                sql(
-                    "SELECT DISTINCT category_id FROM questions "
-                    "WHERE prompt IN (:p1, :p2)"
-                ),
-                {
-                    "p1": "How many players does a game seat?",
-                    "p2": "How many rounds does expansion run?",
-                },
+            (
+                await session.execute(
+                    sql("SELECT DISTINCT category_id FROM questions WHERE prompt IN (:p1, :p2)"),
+                    {
+                        "p1": "How many players does a game seat?",
+                        "p2": "How many rounds does expansion run?",
+                    },
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     # Exactly one "sports" row was ever created, and both questions —
     # written from two different transactions — ended up pointing at it.
     assert len(categories) == 1
@@ -250,8 +253,10 @@ async def test_two_admins_promoting_different_presets_do_not_leak_a_503(
 
     async with sessions() as session:
         defaults = (
-            await session.execute(sql("SELECT id FROM rule_presets WHERE is_default = true"))
-        ).scalars().all()
+            (await session.execute(sql("SELECT id FROM rule_presets WHERE is_default = true")))
+            .scalars()
+            .all()
+        )
     # Exactly one default survives, and it is whichever of the two
     # promotions actually won — never the original seeded "default" row,
     # and never both.
@@ -339,9 +344,7 @@ async def test_confirm_writes_every_kind_of_row_in_one_transaction(
             )
         }
         status = (
-            await session.execute(
-                sql("SELECT status FROM question_imports WHERE id = 'imp-write'")
-            )
+            await session.execute(sql("SELECT status FROM question_imports WHERE id = 'imp-write'"))
         ).scalar_one()
         answer = (
             await session.execute(sql("SELECT correct_value FROM question_numeric"))
@@ -430,9 +433,12 @@ async def test_count_expirable_and_mark_expired_only_touch_validated_rows_past_t
         report={"rejections": [], "notices": []},
         expires_at=now + timedelta(hours=1),
     )
-    assert await repository.apply_if_confirmable(
-        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
-    ) is True
+    assert (
+        await repository.apply_if_confirmable(
+            "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+        )
+        is True
+    )
 
     assert await repository.count_expirable(now, all_unconfirmed=False) == 1
     assert await repository.mark_expired(now, all_unconfirmed=False) == 1
@@ -498,9 +504,12 @@ async def test_expirable_staged_count_sees_what_a_real_run_would_delete_before_i
         report={"rejections": [], "notices": []},
         expires_at=now + timedelta(hours=1),
     )
-    assert await repository.apply_if_confirmable(
-        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
-    ) is True
+    assert (
+        await repository.apply_if_confirmable(
+            "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+        )
+        is True
+    )
 
     # imp-past + imp-expired-already + imp-confirmed; imp-future excluded.
     assert await repository.expirable_staged_count(now, all_unconfirmed=False) == 3
@@ -535,9 +544,12 @@ async def test_retirable_staged_returns_expired_and_confirmed_rows_with_a_staged
         report={"rejections": [], "notices": []},
         expires_at=now + timedelta(hours=1),
     )
-    assert await repository.apply_if_confirmable(
-        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
-    ) is True
+    assert (
+        await repository.apply_if_confirmable(
+            "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+        )
+        is True
+    )
     assert await repository.mark_expired(now, all_unconfirmed=False) == 1
     await repository.mark_cleaned("imp-expired")
     cleaned = await repository.get("imp-expired")
@@ -568,9 +580,12 @@ async def test_mark_cleaned_only_flips_expired_to_cleaned_and_always_clears_stag
         report={"rejections": [], "notices": []},
         expires_at=now + timedelta(hours=1),
     )
-    assert await repository.apply_if_confirmable(
-        "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
-    ) is True
+    assert (
+        await repository.apply_if_confirmable(
+            "imp-confirmed", rows=(), images={}, uploaded_by="admin-1", now=now
+        )
+        is True
+    )
 
     await repository.mark_cleaned("imp-expired")
     await repository.mark_cleaned("imp-confirmed")

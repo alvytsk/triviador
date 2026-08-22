@@ -183,9 +183,7 @@ async def rejected_csv(import_id: str, deps: Deps, principal: AdminPrincipal) ->
 
 
 @router.post("/{import_id}/confirm")
-async def confirm_import(
-    import_id: str, deps: Deps, principal: AdminPrincipal
-) -> ImportSummary:
+async def confirm_import(import_id: str, deps: Deps, principal: AdminPrincipal) -> ImportSummary:
     """§9.3's order, and the reason each step is where it is.
 
         read staged object          — the upload, not what the client sent now

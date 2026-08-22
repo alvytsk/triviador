@@ -132,9 +132,7 @@ async def test_a_retired_presets_detail_and_coverage_are_still_reachable(
     `/admin/presets/{id}`) that 404s on exactly those rows would make that
     field unreachable except through the list response."""
     created = (await admin_client.post("/api/admin/presets", json=QUICK)).json()
-    assert (
-        await admin_client.delete(f"/api/admin/presets/{created['id']}")
-    ).status_code == 204
+    assert (await admin_client.delete(f"/api/admin/presets/{created['id']}")).status_code == 204
 
     detail = await admin_client.get(f"/api/admin/presets/{created['id']}")
     assert detail.status_code == 200

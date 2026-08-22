@@ -189,9 +189,7 @@ class MediaAssetNotFound(Exception):
 
 
 class QuestionAdminPort(Protocol):
-    async def list(
-        self, filters: QuestionFilters, *, limit: int, offset: int
-    ) -> QuestionPage: ...
+    async def list(self, filters: QuestionFilters, *, limit: int, offset: int) -> QuestionPage: ...
     async def get(self, question_id: str) -> QuestionDetailRecord | None: ...
     async def create(self, write: QuestionWrite) -> QuestionDetailRecord:
         """No `created_by`. Spec 1 §7's schema gives `media_assets` a
@@ -201,6 +199,7 @@ class QuestionAdminPort(Protocol):
         in here would be a parameter the row has nowhere to put.
         """
         ...
+
     async def update(
         self, question_id: str, write: QuestionWrite
     ) -> QuestionDetailRecord | None: ...

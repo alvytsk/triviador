@@ -150,9 +150,7 @@ async def create_question(
         record = await deps.questions_admin.create(_write(body))
     except (CategoryNotFound, MediaAssetNotFound) as exc:
         raise _not_found(exc) from exc
-    duplicates = await deps.questions_admin.duplicates_of(
-        body.prompt, excluding=record.question_id
-    )
+    duplicates = await deps.questions_admin.duplicates_of(body.prompt, excluding=record.question_id)
     return QuestionSaved(question=detail(record), duplicate_of=list(duplicates))
 
 

@@ -129,21 +129,21 @@ class UserAdminRepository:
             # concurrent demotions then serialise here rather than both
             # reading a count of two and both writing.
             admins = (
-                await db.execute(
-                    select(User.id)
-                    .where(User.role == str(UserRole.ADMIN), User.is_active)
-                    .order_by(User.id)
-                    .with_for_update()
+                (
+                    await db.execute(
+                        select(User.id)
+                        .where(User.role == str(UserRole.ADMIN), User.is_active)
+                        .order_by(User.id)
+                        .with_for_update()
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             user = await db.get(User, user_id)
             if user is None:
                 return SetRoleOutcome.NOT_FOUND, ()
-            if (
-                role is UserRole.PLAYER
-                and user.role == str(UserRole.ADMIN)
-                and len(admins) <= 1
-            ):
+            if role is UserRole.PLAYER and user.role == str(UserRole.ADMIN) and len(admins) <= 1:
                 return SetRoleOutcome.LAST_ADMIN, ()
             if user.role == str(role):
                 return SetRoleOutcome.OK, ()
@@ -338,8 +338,10 @@ class InviteRepository:
         a copy of them that can disagree."""
         async with self._sessionmaker() as db:
             rows = (
-                await db.execute(select(InviteCode).order_by(InviteCode.expires_at.desc()))
-            ).scalars().all()
+                (await db.execute(select(InviteCode).order_by(InviteCode.expires_at.desc())))
+                .scalars()
+                .all()
+            )
         return tuple(
             InviteRecord(
                 invite_id=row.id,

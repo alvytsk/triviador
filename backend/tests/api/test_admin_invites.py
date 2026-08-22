@@ -26,27 +26,37 @@ async def test_issuing_returns_the_codes_exactly_once(admin_client: httpx.AsyncC
     assert {item["status"] for item in listed.json()} == {"pending"}
 
 
-async def test_an_issued_code_can_be_redeemed(admin_client: httpx.AsyncClient,
-                                              client: httpx.AsyncClient) -> None:
+async def test_an_issued_code_can_be_redeemed(
+    admin_client: httpx.AsyncClient, client: httpx.AsyncClient
+) -> None:
     """The end-to-end fact this route exists for: `POST /api/auth/redeem`
     is public and takes exactly what was printed here."""
     code = (await admin_client.post("/api/admin/invites", json={"count": 1})).json()[0]["code"]
     redeemed = await client.post(
         "/api/auth/redeem",
-        json={"code": code, "username": "newcomer", "password": "correct horse",
-              "display_name": "Newcomer"},
+        json={
+            "code": code,
+            "username": "newcomer",
+            "password": "correct horse",
+            "display_name": "Newcomer",
+        },
     )
     assert redeemed.status_code == 201
 
 
-async def test_a_revoked_code_cannot_be_redeemed(admin_client: httpx.AsyncClient,
-                                                 client: httpx.AsyncClient) -> None:
+async def test_a_revoked_code_cannot_be_redeemed(
+    admin_client: httpx.AsyncClient, client: httpx.AsyncClient
+) -> None:
     issued = (await admin_client.post("/api/admin/invites", json={"count": 1})).json()[0]
     assert (await admin_client.post(f"/api/admin/invites/{issued['id']}/revoke")).status_code == 200
     redeemed = await client.post(
         "/api/auth/redeem",
-        json={"code": issued["code"], "username": "late", "password": "correct horse",
-              "display_name": "Late"},
+        json={
+            "code": issued["code"],
+            "username": "late",
+            "password": "correct horse",
+            "display_name": "Late",
+        },
     )
     assert redeemed.status_code == 401
     assert redeemed.json()["code"] == "invite_invalid"

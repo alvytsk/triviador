@@ -25,9 +25,7 @@ class RetireReport:
 
 
 class ImportRetirer:
-    def __init__(
-        self, *, imports: ImportPort, staging: ImportStagingStore, clock: Clock
-    ) -> None:
+    def __init__(self, *, imports: ImportPort, staging: ImportStagingStore, clock: Clock) -> None:
         self._imports = imports
         self._staging = staging
         self._clock = clock
@@ -43,9 +41,7 @@ class ImportRetirer:
         """
         now = self._clock.now()
         if dry_run:
-            would_expire = await self._imports.count_expirable(
-                now, all_unconfirmed=after_restore
-            )
+            would_expire = await self._imports.count_expirable(now, all_unconfirmed=after_restore)
             return RetireReport(
                 expired=would_expire,
                 # Not `len(await self._imports.retirable_staged())`: that

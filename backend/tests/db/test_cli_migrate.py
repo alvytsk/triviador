@@ -75,8 +75,6 @@ async def test_migrate_head_does_not_leak_the_advisory_lock(
                 text("SELECT pg_try_advisory_lock(:key)"), {"key": _MIGRATE_LOCK_KEY}
             )
             assert got is True, "advisory lock was still held after migrate_head returned"
-            await conn.execute(
-                text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY}
-            )
+            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATE_LOCK_KEY})
     finally:
         await probe_engine.dispose()

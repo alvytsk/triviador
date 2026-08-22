@@ -111,9 +111,7 @@ def _open_archive(data: bytes) -> tuple[str, dict[str, bytes]]:
         if any(name.startswith("/") or ".." in name.split("/") for name in names):
             raise UploadRejected("the archive contains an unsafe path")
         if sum(info.file_size for info in archive.infolist()) > MAX_EXPANDED_BYTES:
-            raise UploadRejected(
-                f"the archive expands to more than {MAX_EXPANDED_BYTES} bytes"
-            )
+            raise UploadRejected(f"the archive expands to more than {MAX_EXPANDED_BYTES} bytes")
         if "questions.csv" not in names:
             raise UploadRejected("the archive must contain questions.csv")
         text = archive.read("questions.csv").decode("utf-8-sig", errors="replace")
@@ -210,8 +208,9 @@ def _parse_row(
             raise ValueError(f"numeric_answer {answer!r} is not a decimal number") from exc
         if not value.is_finite():
             raise ValueError("numeric_answer must be finite")
-        return ParsedRow(line, kind, prompt, category, difficulty, None, value, unit,
-                         media_file, raw)
+        return ParsedRow(
+            line, kind, prompt, category, difficulty, None, value, unit, media_file, raw
+        )
 
     if answer or unit:
         raise ValueError("a multiple-choice question carries no numeric_answer or unit")

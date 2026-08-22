@@ -420,9 +420,7 @@ class FakePresets:
         return self.presets.get(preset_id)
 
     async def get_default(self) -> PresetAdminRecord | None:
-        return next(
-            (r for r in self.presets.values() if r.is_default and r.is_active), None
-        )
+        return next((r for r in self.presets.values() if r.is_default and r.is_active), None)
 
     async def list_active(self) -> tuple[PresetRecord, ...]:
         return tuple(
@@ -503,9 +501,7 @@ class FakeMediaStore:
         if key not in self.objects:
             return None
         content_type, cache_control = self.metadata[key]
-        return ObjectHead(
-            len(self.objects[key]), content_type, cache_control, self.written[key]
-        )
+        return ObjectHead(len(self.objects[key]), content_type, cache_control, self.written[key])
 
     async def delete(self, key: str) -> None:
         self.objects.pop(key, None)
@@ -656,9 +652,7 @@ class FakeQuestionAdmin:
         self.records[question_id] = updated
         return updated
 
-    async def set_active(
-        self, question_id: str, *, is_active: bool
-    ) -> QuestionDetailRecord | None:
+    async def set_active(self, question_id: str, *, is_active: bool) -> QuestionDetailRecord | None:
         existing = self.records.get(question_id)
         if existing is None:
             return None
@@ -893,9 +887,7 @@ class FakeImports:
 
         category_ids = {c.slug: c.category_id for c in self.categories.records.values()}
         for slug in {row.category_slug for row in rows} - set(category_ids):
-            created = await self.categories.create(
-                slug=slug, name=slug.replace("-", " ").title()
-            )
+            created = await self.categories.create(slug=slug, name=slug.replace("-", " ").title())
             category_ids[slug] = created.category_id
 
         for image in images.values():

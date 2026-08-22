@@ -134,9 +134,7 @@ class BodyLimitMiddleware:
     a prefix, so widening it is a deliberate edit.
     """
 
-    def __init__(
-        self, app: ASGIApp, *, max_bytes: int, exempt_paths: tuple[str, ...] = ()
-    ) -> None:
+    def __init__(self, app: ASGIApp, *, max_bytes: int, exempt_paths: tuple[str, ...] = ()) -> None:
         self.app = app
         self.max_bytes = max_bytes
         self.exempt_paths = exempt_paths

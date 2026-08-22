@@ -120,9 +120,7 @@ def test_an_origin_that_is_not_a_bare_scheme_and_host_is_refused(origin: str) ->
 def test_empty_s3_credentials_are_refused() -> None:
     """Task 2: an unconfigured object store fails loudly at startup rather
     than as a `ClientError` the first time an admin uploads media."""
-    problems = startup_problems(
-        settings(s3_access_key_id="", s3_secret_access_key=SecretStr(""))
-    )
+    problems = startup_problems(settings(s3_access_key_id="", s3_secret_access_key=SecretStr("")))
     assert any("S3_ACCESS_KEY_ID" in p for p in problems)
 
 

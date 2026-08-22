@@ -30,7 +30,7 @@ def jpeg_with_exif(width: int = 64, height: int = 64) -> bytes:
     buffer = io.BytesIO()
     image = Image.new("RGB", (width, height), (200, 100, 50))
     exif = image.getexif()
-    exif[0x010F] = "SecretCameraMaker"   # Make
+    exif[0x010F] = "SecretCameraMaker"  # Make
     exif[0x9286] = "GPS-tagged holiday"  # UserComment
     image.save(buffer, format="JPEG", exif=exif)
     return buffer.getvalue()

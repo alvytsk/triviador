@@ -90,7 +90,7 @@ async def test_a_dry_run_expires_nothing_and_deletes_nothing() -> None:
         dry_run=True
     )
     assert report.deleted is False
-    assert report.expired == 1          # what it *would* have expired
+    assert report.expired == 1  # what it *would* have expired
     # What it *would* have deleted, too: "imp-1" is still `validated` here
     # (this is a dry run), so a real run's `mark_expired` step would flip
     # it to `expired` first and only then see its `staged_key` — undercounting

@@ -41,9 +41,7 @@ async def test_an_asset_referenced_only_by_a_choice_is_not_collectable(
     await _seed_user(sessions, "admin-1")
     await _seed_category(sessions)
     await _seed_asset(sessions, "b" * 64)
-    await _seed_mc_question(
-        sessions, "q-2", choices=(("A", True, "b" * 64), ("B", False, None))
-    )
+    await _seed_mc_question(sessions, "q-2", choices=(("A", True, "b" * 64), ("B", False, None)))
     assert [r.asset_id for r in await MediaAssetRepository(sessions).unreferenced()] == []
 
 

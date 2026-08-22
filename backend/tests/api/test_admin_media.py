@@ -48,7 +48,7 @@ async def test_the_object_carries_the_immutable_cache_header(
 
 
 async def test_re_uploading_the_same_image_answers_200_with_the_same_id(
-    admin_client: httpx.AsyncClient
+    admin_client: httpx.AsyncClient,
 ) -> None:
     first = await _upload(admin_client, png(16, 16), "image/png")
     second = await _upload(admin_client, png(16, 16), "image/png")

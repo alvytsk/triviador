@@ -31,8 +31,7 @@ depends_on = None
 def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
     op.execute(
-        "CREATE INDEX ix_questions_prompt_trgm ON questions "
-        "USING gin (lower(prompt) gin_trgm_ops)"
+        "CREATE INDEX ix_questions_prompt_trgm ON questions USING gin (lower(prompt) gin_trgm_ops)"
     )
 
 

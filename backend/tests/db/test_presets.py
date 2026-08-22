@@ -168,9 +168,7 @@ async def test_creating_a_default_preset_demotes_the_previous_one_in_the_same_tr
     assert created is not None
     async with sessions() as session:
         rows = (
-            (await session.execute(select(RulePreset).where(RulePreset.is_default)))
-            .scalars()
-            .all()
+            (await session.execute(select(RulePreset).where(RulePreset.is_default))).scalars().all()
         )
     assert [row.id for row in rows] == [created.preset_id]
 
@@ -265,9 +263,7 @@ async def test_promoting_a_new_default_demotes_the_previous_one_in_the_same_tran
     assert record is not None and record.is_default
     async with sessions() as session:
         rows = (
-            (await session.execute(select(RulePreset).where(RulePreset.is_default)))
-            .scalars()
-            .all()
+            (await session.execute(select(RulePreset).where(RulePreset.is_default))).scalars().all()
         )
     assert [row.id for row in rows] == [created.preset_id]
 

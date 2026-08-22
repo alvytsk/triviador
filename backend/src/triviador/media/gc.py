@@ -35,9 +35,7 @@ class GcReport:
 
 
 class MediaCollector:
-    def __init__(
-        self, *, assets: MediaAssetPort, store: MediaStore, grace: timedelta
-    ) -> None:
+    def __init__(self, *, assets: MediaAssetPort, store: MediaStore, grace: timedelta) -> None:
         self._assets = assets
         self._store = store
         self._grace = grace

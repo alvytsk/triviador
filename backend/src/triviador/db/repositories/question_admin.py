@@ -149,9 +149,7 @@ class QuestionAdminRepository:
                 )
             ).all()
             total = (
-                await session.execute(
-                    _apply(select(func.count()).select_from(Question), filters)
-                )
+                await session.execute(_apply(select(func.count()).select_from(Question), filters))
             ).scalar_one()
         return QuestionPage(
             items=tuple(_summary(question, slug) for question, slug in rows), total=total
@@ -192,9 +190,7 @@ class QuestionAdminRepository:
             version=question.version,
             media_asset_id=question.media_asset_id,
             choices=(
-                tuple(
-                    ChoiceRecord(c.idx, c.text, c.is_correct, c.media_asset_id) for c in choices
-                )
+                tuple(ChoiceRecord(c.idx, c.text, c.is_correct, c.media_asset_id) for c in choices)
                 if choices
                 else None
             ),
@@ -263,9 +259,7 @@ class QuestionAdminRepository:
             _raise_for_fk_violation(exc, write)
         return await self.get(question_id)
 
-    async def set_active(
-        self, question_id: str, *, is_active: bool
-    ) -> QuestionDetailRecord | None:
+    async def set_active(self, question_id: str, *, is_active: bool) -> QuestionDetailRecord | None:
         """No version bump (Spec 1 §7). The `UPDATE` still takes a row lock
         on `questions`, so a deactivation cannot race a pool draw either —
         that part comes free from touching the parent row."""
