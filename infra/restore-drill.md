@@ -24,12 +24,18 @@ destroys whatever was in them.
 - `docker`, `docker compose`, `psql`/`rclone` on the restore host (or run the DB/media
   restore steps through one-off containers, as below — no host install required).
 
-Set once:
+Set once, both as **absolute** paths — never repo-relative. `.env.example` and
+`compose.prod.yaml`'s `BACKUP_DEST` are both explicit that the backup destination is a
+NAS/Windows/external-drive path, NEVER inside the WSL vhdx (that vhdx is the thing being
+backed up), so the dump and media backup this drill restores from live outside this
+checkout. A repo-relative `DUMP`/`MEDIA` here would only work by accident, on the one
+host where someone happened to run `infra/backup.sh` with `BACKUP_DEST` pointed at this
+checkout — which §10.8 and `.env.example` both say not to do:
 
 ```sh
 COMPOSE="docker compose -f compose.yaml -f compose.prod.yaml"
-DUMP=backups/db/20260821T030000Z.dump   # the chosen dump
-MEDIA=backups/media                     # the append-only media backup
+DUMP=/mnt/d/backups/db/20260821T030000Z.dump   # the chosen dump
+MEDIA=/mnt/d/backups/media                     # the append-only media backup
 ```
 
 ## The seven steps
@@ -72,7 +78,7 @@ website-enabled.
 set -a; . ./.env; set +a
 docker run --rm --network triviador_default \
   -e PGPASSWORD="$POSTGRES_PASSWORD" \
-  -v "$(pwd)/$(dirname "$DUMP")":/dump:ro \
+  -v "$(dirname "$DUMP")":/dump:ro \
   postgres:17-alpine \
   pg_restore -h db -U triviador -d triviador --no-owner --exit-on-error \
     "/dump/$(basename "$DUMP")"
@@ -89,7 +95,7 @@ back into Garage with `rclone copy` sets no object metadata at all, and the app 
 on both: `Content-Type` for the browser to render an image as an image, and the fixed
 `Cache-Control: public, max-age=31536000, immutable` (`api/http/admin/media.py`) that
 makes a content-addressed key cacheable forever. Both are already restored *into the
-database* by step 3 (`media_asset.storage_key`, `media_asset.mime_type`) — re-derive
+database* by step 3 (`media_assets.storage_key`, `media_assets.mime_type`) — re-derive
 them from there instead of guessing from a file extension:
 
 ```sh
@@ -97,7 +103,7 @@ docker run --rm --network triviador_default \
   -e PGPASSWORD="$POSTGRES_PASSWORD" \
   postgres:17-alpine \
   psql -h db -U triviador -d triviador -Atc \
-    "SELECT storage_key || ',' || mime_type FROM media_asset" \
+    "SELECT storage_key || ',' || mime_type FROM media_assets" \
   > /tmp/media_manifest.csv
 
 while IFS=, read -r key mime; do
@@ -110,15 +116,15 @@ while IFS=, read -r key mime; do
     -e RCLONE_CONFIG_GARAGE_ENDPOINT=http://garage:3900 \
     -e RCLONE_CONFIG_GARAGE_REGION=garage \
     -e RCLONE_CONFIG_GARAGE_FORCE_PATH_STYLE=true \
-    -v "$(pwd)/$MEDIA":/media:ro \
-    rclone/rclone:latest copyto \
+    -v "$MEDIA":/media:ro \
+    rclone/rclone:1.68 copyto \
       "/media/$key" "garage:${TRIVIADOR_MEDIA_BUCKET}/$key" \
       --header-upload "Content-Type: $mime" \
       --header-upload "Cache-Control: public, max-age=31536000, immutable"
 done < /tmp/media_manifest.csv
 ```
 
-A row in `media_asset` with no matching file under `backups/media/` means the object
+A row in `media_assets` with no matching file under `backups/media/` means the object
 was created after the last backup ran — report it, but it is not this drill's job to
 paper over data the backup genuinely never had.
 
@@ -162,6 +168,13 @@ always rebuilds `GameState` by folding the persisted event log
 (`triviador.runtime.loader.GameLoader.load`). Pick a game that was finished before the
 backup, and confirm it comes back intact:
 
+Set `$FINISHED_GAME_ID` to that game's id (from your own notes made before the backup,
+or `SELECT id FROM games WHERE status = 'finished' LIMIT 1` against the restored
+database), and `$COOKIE` to a session cookie for a user allowed to read it — the value
+of the `session` cookie in `Set-Cookie` from a `POST /api/auth/login` against this same
+restored deploy (any account with access to the game; §6 has no separate "read-only"
+role).
+
 ```sh
 curl -fsS -b "session=$COOKIE" "http://localhost/api/games/$FINISHED_GAME_ID" \
   | python3 -c 'import json,sys
@@ -195,12 +208,16 @@ freshly-started timer.
 
 ### C. A question image loads through Caddy → Garage
 
+Set `$SOME_STORAGE_KEY` to any `storage_key` from `media_assets` (the same manifest
+query step 4 already ran: `SELECT storage_key FROM media_assets LIMIT 1`) restored
+against the database.
+
 ```sh
 curl -fsS -o /dev/null -w '%{http_code} %{content_type}\n' \
   "http://localhost/media/$SOME_STORAGE_KEY"
 ```
 
-Pass: `200` with the `Content-Type` recorded in `media_asset` for that key — proof step
+Pass: `200` with the `Content-Type` recorded in `media_assets` for that key — proof step
 4's metadata re-application worked and Caddy's `/media/*` proxy reaches the restored
 Garage bucket, not just that the file exists on disk.
 
