@@ -5,10 +5,18 @@
 # bucket into a website.
 set -eu
 
-CONFIG_JSON="$(docker compose -f compose.yaml -f compose.prod.yaml config --format json)"
+# `--profile backup`: without it, `backup` (which never publishes a port
+# of its own, but has real volume/env config worth checking against a
+# future regression) is entirely absent from `config`'s service list, and
+# this guard silently checks nothing for it.
+CONFIG_JSON="$(docker compose -f compose.yaml -f compose.prod.yaml --profile backup config --format json)"
 echo "$CONFIG_JSON" | grep -E '"published"' || true
 
-# Every published-port entry, one per line, as "service:published".
+# Every published-port entry, one per line, as "service:published". Bad
+# means EITHER a non-caddy service publishing anything, OR caddy
+# publishing something other than 80 — a `db: published 80` must fail this
+# guard exactly as loudly as `db: published 5432` does; matching on the
+# port number alone would let it through.
 # `.services[] | select(.ports) | .name + ":" + (.ports[].published)`
 # requires jq; use it when available and fall back to a portable grep/sed
 # scan of the JSON otherwise so this works on any installed Compose/CLI
@@ -20,7 +28,7 @@ if command -v jq >/dev/null 2>&1; then
     | select(.value.ports != null)
     | .key as $svc
     | .value.ports[]
-    | select((.published // "") != "80")
+    | select($svc != "caddy" or (.published // "") != "80")
     | "\($svc): published \(.published)"
   ')"
 else
@@ -34,7 +42,7 @@ bad = []
 for name, svc in cfg.get("services", {}).items():
     for p in svc.get("ports") or []:
         published = str(p.get("published", ""))
-        if published != "80":
+        if name != "caddy" or published != "80":
             bad.append(f"{name}: published {published}")
 print("\n".join(bad))
 ')"

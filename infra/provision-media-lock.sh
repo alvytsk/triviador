@@ -55,11 +55,20 @@ docker run --rm --user 0:0 -e LOCK="$LOCK" -v "$LOCKDIR:$LOCKDIR" alpine:3.21 sh
 set -eu
 if [ -d "$LOCK" ]; then
   echo "FATAL: $LOCK is a directory — Docker auto-vivified it on a prior" >&2
-  echo "       run that skipped this script. Remove it (rmdir \"\$LOCK\") and re-run." >&2
-  exit 1
+  echo "       run that skipped this script. Removing it now (this" >&2
+  echo "       container runs root, the operator would need sudo)." >&2
+  rmdir "$LOCK"
 fi
-rm -f "$LOCK"
-: > "$LOCK"
+# Idempotent, deliberately: a bind mount is pinned to the inode present at
+# container start, and `docker compose up -d` does not recreate an
+# unchanged service. `rm -f "$LOCK"; : > "$LOCK"` (the previous version of
+# this script) minted a NEW inode on every invocation — invisible to any
+# container already running with the old one bind-mounted, and silently
+# swapped under a fresh container started afterward. Two processes that
+# are each certain they hold the lock is exactly the exclusion this file
+# exists to provide, lost. Only create the file when it genuinely is not
+# there yet.
+[ -e "$LOCK" ] || : > "$LOCK"
 chmod 666 "$LOCK"
 '
 

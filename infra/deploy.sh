@@ -10,6 +10,13 @@ cd "$(dirname "$0")/.."
 COMPOSE="docker compose -f compose.yaml -f compose.prod.yaml"
 
 ./infra/render-secrets.sh
+# A pure `docker compose config` check — no service needs to be running for
+# it to work — so it runs here, before `build`/`up`, not after `up -d`
+# below. Checked after `up -d` once published a debug `ports:` entry to the
+# LAN (Postgres, in the case that was caught) before this script printed
+# FATAL and exited, with nothing to tear the exposure back down. Here, a
+# failure never got as far as publishing anything.
+./infra/assert-ports.sh
 # Must run before ANY service that binds the media lock path starts —
 # `backend` (media-gc) and `backup` — or Docker auto-vivifies a missing
 # host path as a root-owned directory, and both sides then fail to open
@@ -53,5 +60,4 @@ $COMPOSE up -d db garage
 $COMPOSE run --rm garage-init
 $COMPOSE run --rm migrate
 $COMPOSE up -d --remove-orphans
-./infra/assert-ports.sh
 $COMPOSE ps
